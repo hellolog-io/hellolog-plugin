@@ -104,6 +104,35 @@ final class QueueRepository {
 	}
 
 	/**
+	 * Reset every `dead` row back to `pending` so the flusher picks
+	 * them up again. The backend went away (Redis OOM, transient
+	 * outage, expired token, …), the rows exceeded max retries and
+	 * landed in `dead` — once the operator confirms the backend is
+	 * healthy again, this brings them back into rotation in one shot.
+	 *
+	 * @return int rows requeued
+	 */
+	public function requeue_dead(): int {
+		global $wpdb;
+		$table = $this->table();
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		$affected = $wpdb->query(
+			$wpdb->prepare(
+				"UPDATE {$table}
+				 SET status     = %s,
+				     attempts   = 0,
+				     next_try   = %s,
+				     last_error = NULL
+				 WHERE status   = %s",
+				self::STATUS_PENDING,
+				current_time( 'mysql', true ),
+				self::STATUS_DEAD
+			)
+		);
+		return (int) $affected;
+	}
+
+	/**
 	 * @param array<int, int> $ids
 	 */
 	public function delete_many( array $ids ): void {

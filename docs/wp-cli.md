@@ -131,6 +131,27 @@ wp hellolog sensors --format=csv
 wp hellolog sensors --format=yaml
 ```
 
+### `wp hellolog requeue-dead`
+
+Move every `dead` row in the local outgoing queue back to `pending`
+so the flusher retries them on the next tick. Use this after a
+backend outage or token rotation has filled the dead pile and the
+backend is healthy again.
+
+```sh
+$ wp hellolog status              # 12 dead, 0 pending
+$ wp hellolog test                # confirm backend accepts a ping
+$ wp hellolog requeue-dead
+Success: Requeued 12 row(s) from dead to pending. Run `wp hellolog flush` to send them now.
+$ wp hellolog flush
+Success: Flush triggered.
+$ wp hellolog status              # 0 dead, 0 pending (or whatever's left after errors)
+```
+
+Successful deliveries delete the rows. Failures re-enter the normal
+back-off ladder (`attempts=0` is reset on requeue, so they get the
+full retry budget again).
+
 ### `wp hellolog enable-sensor <key>`
 
 Removes the `disabled` flag from the sensor identified by `<key>`.
@@ -213,6 +234,8 @@ HelloLog\Cli\Command                    ← public methods become subcommands
   ├─ test()
   ├─ set_token()           → `set-token`
   ├─ clear_token()         → `clear-token`
+  ├─ clear_queue()         → `clear-queue`
+  ├─ requeue_dead()        → `requeue-dead`
   ├─ sensors()
   ├─ enable_sensor()       → `enable-sensor`
   └─ disable_sensor()      → `disable-sensor`

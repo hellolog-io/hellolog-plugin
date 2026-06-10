@@ -4,7 +4,7 @@ Tags:              activity log, audit log, security, monitoring, woocommerce
 Requires at least: 6.4
 Tested up to:      6.7
 Requires PHP:      8.0
-Stable tag:        0.3.0
+Stable tag:        0.3.1
 License:           GPL-2.0-or-later
 License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -74,6 +74,12 @@ Request one from your goBird account — every site is issued its own
 key, bound to its domain. Paste it into **Tools → helloLOG → Settings**.
 
 == Changelog ==
+
+= 0.3.1 =
+* New: `wp hellolog requeue-dead` — move every `dead` queue row back
+  to `pending` so the flusher retries them. Use it after a backend
+  outage / token rotation, once `wp hellolog test` confirms the
+  backend is healthy again.
 
 = 0.3.0 =
 * New: License gate — the plugin only attaches sensors after a stored

@@ -191,6 +191,36 @@ final class Command {
 	}
 
 	/**
+	 * Move every `dead` row back to `pending` so the flusher picks them
+	 * up again. Use after a backend outage / token rotation, once
+	 * `wp hellolog test` confirms the backend is healthy again.
+	 *
+	 * The follow-up `wp hellolog flush` (or the Action Scheduler's
+	 * 30-second tick) sends them. Successful deliveries delete the row;
+	 * failures retry the normal back-off ladder.
+	 *
+	 * ## EXAMPLES
+	 *
+	 *     wp hellolog status            # see the dead count first
+	 *     wp hellolog test              # confirm the backend accepts a ping
+	 *     wp hellolog requeue-dead      # dead -> pending
+	 *     wp hellolog flush             # send them now (or wait 30s)
+	 *
+	 * @subcommand requeue-dead
+	 */
+	public function requeue_dead(): void {
+		$repo     = new QueueRepository();
+		$counts   = $repo->counts_by_status();
+		$dead_now = (int) ( $counts[ QueueRepository::STATUS_DEAD ] ?? 0 );
+		if ( 0 === $dead_now ) {
+			WP_CLI::success( 'No dead rows to requeue.' );
+			return;
+		}
+		$moved = $repo->requeue_dead();
+		WP_CLI::success( sprintf( 'Requeued %d row(s) from dead to pending. Run `wp hellolog flush` to send them now.', $moved ) );
+	}
+
+	/**
 	 * List every registered sensor and whether it's currently enabled.
 	 *
 	 * ## EXAMPLES

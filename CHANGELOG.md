@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.1] - 2026-06-10
+
+### Added
+- `wp hellolog requeue-dead` — move every `dead` row in the local
+  queue back to `pending` so the flusher retries them. Use after a
+  backend outage or token rotation, once `wp hellolog test` confirms
+  the backend is healthy again. The follow-up `wp hellolog flush`
+  drains the recovered rows; successful deliveries delete them,
+  failures re-enter the normal back-off ladder.
+
 ## [0.3.0] - 2026-05-14
 
 ### Added
