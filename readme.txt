@@ -18,7 +18,6 @@ storage, search, retention, and cross-site aggregation happen off-server —
 your WordPress database keeps only a small outgoing queue that drains
 continuously.
 
-Originally built by the hellowp.io and gobird.io teams.
 
 = Why an external backend? =
 

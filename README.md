@@ -5,7 +5,6 @@ every notable change on the site — logins, content edits, plugin/theme
 operations, WooCommerce events, form submissions, … — and ships them to a
 managed log backend so your WordPress database stays lean.
 
-Originally built by the hellowp.io and gobird.io teams.
 
 Out of the box: **43+ sensors**, WSAL-compatible code ranges, an
 admin UI under **Tools → helloLOG**, WP-CLI subcommands (`wp hellolog

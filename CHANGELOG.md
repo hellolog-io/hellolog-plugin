@@ -18,8 +18,7 @@
 - Brand cutover to hellolog.io: plugin header (Plugin URI, Author, Author
   URI), `composer.json` (package name, homepage, support links), and
   `readme.txt` now point at hellolog.io / github.com/hellolog-io instead of
-  hellowp.io / gobird.io. `readme.txt` keeps a heritage credit line for the
-  original hellowp.io and gobird.io teams.
+  hellowp.io / gobird.io.
 - Default backend endpoint (`Options::ENDPOINT_URL`) updated to
   `api.hellolog.io` (was `api.gobird.io`). This points at the new helloLOG
   backend: sites upgrading from 0.3.x must create a site key in the

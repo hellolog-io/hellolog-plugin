@@ -1,6 +1,6 @@
 {
     "name": "hellolog-io/hellolog",
-    "description": "Lightweight WordPress activity log by hellolog.io.",
+    "description": "Lightweight WordPress activity log.",
     "type": "wordpress-plugin",
     "license": "GPL-2.0-or-later",
     "homepage": "https://hellolog.io",
@@ -16,8 +16,8 @@
     ],
     "authors": [
         {
-            "name": "hellolog.io",
-            "homepage": "https://hellolog.io"
+            "name": "goBird",
+            "homepage": "https://gobird.io"
         }
     ],
     "support": {
