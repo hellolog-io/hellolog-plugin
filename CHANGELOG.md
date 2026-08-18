@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Daily token recheck: a new `hellolog_verify_token` Action Scheduler job
+  calls the backend's `GET /verify` once a day for as long as a token is
+  configured, and applies the result to the same "verified" flag `wp hellolog
+  test` / Save Settings already set — `200` confirms it, `401`/`403` clear it
+  (catching a suspended or revoked token between manual checks), any other
+  response (network error, `5xx`, `429`) leaves the flag untouched rather than
+  flipping sensors off on a transient blip. Mirrors the flush job's lifecycle
+  rules (`includes/Scheduler/VerifySchedule.php`,
+  `includes/Scheduler/VerifyScheduleBridge.php`,
+  `includes/Transport/TokenVerifier.php`).
+
 ## [0.3.2] - 2026-06-19
 
 ### Fixed

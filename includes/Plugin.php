@@ -22,6 +22,7 @@ use HelloLog\Queue\QueueRepository;
 use HelloLog\Scheduler\ActionSchedulerBridge;
 use HelloLog\Scheduler\AsLogPruner;
 use HelloLog\Scheduler\FlushLock;
+use HelloLog\Scheduler\VerifyScheduleBridge;
 use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\CommentsSensor;
 use HelloLog\Sensors\Core\ContentSensor;
@@ -52,6 +53,7 @@ use HelloLog\Transport\ApiClient;
 use HelloLog\Transport\PayloadBuilder;
 use HelloLog\Transport\QueueFlusher;
 use HelloLog\Transport\RetryPolicy;
+use HelloLog\Transport\TokenVerifier;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -103,6 +105,10 @@ final class Plugin {
 		// self-heal instead of ticking an unhandled action forever (the 0.3.1
 		// outage).
 		$this->register_flush_scheduler();
+
+		// Same unconditional-registration rule for the daily token recheck —
+		// see {@see self::register_verify_scheduler()}.
+		$this->register_verify_scheduler();
 
 		$this->wire_admin();
 		$this->fire_booted_action();
@@ -258,6 +264,18 @@ final class Plugin {
 			new RetryPolicy()
 		);
 		( new ActionSchedulerBridge( $flusher, $this->options, new FlushLock(), new AsLogPruner() ) )->register();
+	}
+
+	/**
+	 * Wire the daily backend token recheck. Always called (see
+	 * {@see self::boot()}); the {@see VerifyScheduleBridge} decides, per
+	 * request, whether a recurring action should exist — keyed on a token
+	 * being configured, not on it currently being verified (see
+	 * {@see \HelloLog\Scheduler\VerifySchedule::reconcile()}).
+	 */
+	private function register_verify_scheduler(): void {
+		$verifier = new TokenVerifier( $this->options->endpoint_url(), $this->options->token() );
+		( new VerifyScheduleBridge( $this->options, $verifier ) )->register();
 	}
 
 	private function fire_booted_action(): void {
