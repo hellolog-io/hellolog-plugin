@@ -23,6 +23,7 @@ final class Deactivator {
 		'hellolog_flush_queue',
 		'hellolog_file_integrity_scan',
 		'hellolog_prune_as',
+		'hellolog_verify_token',
 	];
 
 	public static function deactivate(): void {
