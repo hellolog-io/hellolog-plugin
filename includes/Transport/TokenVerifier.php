@@ -22,6 +22,9 @@ final class TokenVerifier {
 
 	private const TIMEOUT_SEC = 10;
 
+	/** Raw body of the most recent `verify()` response; '' until a 200. */
+	private string $last_body = '';
+
 	public function __construct(
 		private string $endpoint_url,
 		private string $token
@@ -37,6 +40,8 @@ final class TokenVerifier {
 	 *             (`WP_Error`: timeout, DNS, connection refused, ...).
 	 */
 	public function verify(): int {
+		$this->last_body = '';
+
 		if ( ! $this->is_configured() ) {
 			return 0;
 		}
@@ -57,7 +62,16 @@ final class TokenVerifier {
 			return 0;
 		}
 
+		$this->last_body = (string) wp_remote_retrieve_body( $response );
 		return (int) wp_remote_retrieve_response_code( $response );
+	}
+
+	/**
+	 * Raw body captured by the most recent {@see self::verify()} call.
+	 * Callers only care about this on a 200 status; '' otherwise.
+	 */
+	public function last_body(): string {
+		return $this->last_body;
 	}
 
 	/**

@@ -42,6 +42,14 @@ final class Options {
 	// Sensors only attach hooks when this flag is `1`, otherwise we
 	// would queue thousands of events that the backend rejects.
 	public const KEY_TOKEN_VERIFIED = 'hellolog_token_verified';
+	// Mirrors `GET /verify`'s `api_access` field: `0` once the backend has
+	// told us the site's plan does not include the WP-admin log view (the
+	// read API is gated off). Never written to `0` locally — only the
+	// daily recheck can flip it, and only on an explicit `false` in a
+	// decoded 200 body. The option is left unset on a fresh install and on
+	// every legacy backend response, which is why the reader below
+	// defaults to `true`: absence must never be mistaken for a Free plan.
+	public const KEY_API_ACCESS = 'hellolog_api_access';
 
 	public function endpoint_url(): string {
 		return self::ENDPOINT_URL;
@@ -79,6 +87,20 @@ final class Options {
 
 	public function mark_active( bool $active ): void {
 		update_option( self::KEY_TOKEN_VERIFIED, $active ? 1 : 0 );
+	}
+
+	/**
+	 * `false` only once the backend has explicitly said so. Defaulting to
+	 * `true` covers both a fresh install (option never written) and a
+	 * legacy backend whose `GET /verify` body predates the `api_access`
+	 * field — neither should ever show the upsell in place of the log view.
+	 */
+	public function api_access(): bool {
+		return (bool) get_option( self::KEY_API_ACCESS, true );
+	}
+
+	public function set_api_access( bool $allowed ): void {
+		update_option( self::KEY_API_ACCESS, $allowed ? 1 : 0 );
 	}
 
 	/**

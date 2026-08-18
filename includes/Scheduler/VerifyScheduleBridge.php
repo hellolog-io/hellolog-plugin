@@ -81,12 +81,32 @@ final class VerifyScheduleBridge {
 			return;
 		}
 
-		switch ( VerifySchedule::decide( $this->verifier->verify() ) ) {
+		$status = $this->verifier->verify();
+
+		switch ( VerifySchedule::decide( $status ) ) {
 			case 'set':
 				$this->options->mark_active( true );
 				break;
 			case 'clear':
 				$this->options->mark_active( false );
+				break;
+		}
+
+		if ( 200 === $status ) {
+			$this->apply_api_access( $this->verifier->last_body() );
+		}
+	}
+
+	/**
+	 * Apply the `Options::KEY_API_ACCESS` action decided from a 200 body.
+	 */
+	private function apply_api_access( string $raw_body ): void {
+		switch ( VerifySchedule::api_access_from_body( $raw_body ) ) {
+			case 'set-true':
+				$this->options->set_api_access( true );
+				break;
+			case 'set-false':
+				$this->options->set_api_access( false );
 				break;
 		}
 	}

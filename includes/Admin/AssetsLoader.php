@@ -9,10 +9,6 @@ declare(strict_types=1);
 
 namespace HelloLog\Admin;
 
-use HelloLog\Plugin;
-use HelloLog\Queue\QueueRepository;
-use HelloLog\Settings\Options;
-
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -66,12 +62,11 @@ final class AssetsLoader {
 			wp_add_inline_style( self::HANDLE, $this->screen_reset_css() );
 		}
 
-		// `wp_localize_script()` would casts booleans and ints to strings,
-		// which breaks v-model checkboxes on the Vue side. Inline JSON keeps
-		// `isConfigured: true` a boolean and `queue.pending: 0` an int.
+		// See BootstrapPayload's docblock for why this is inline JSON rather
+		// than `wp_localize_script()`.
 		wp_add_inline_script(
 			self::HANDLE,
-			'var hellologAdmin = ' . wp_json_encode( $this->bootstrap_data() ) . ';',
+			'var hellologAdmin = ' . wp_json_encode( ( new BootstrapPayload() )->build() ) . ';',
 			'before'
 		);
 
@@ -134,60 +129,6 @@ JS;
 
 	private function is_plugin_screen( string $hook ): bool {
 		return str_contains( $hook, AdminPage::SLUG );
-	}
-
-	/**
-	 * @return array<string, mixed>
-	 */
-	private function bootstrap_data(): array {
-		$plugin  = Plugin::instance();
-		$options = $plugin->options();
-		$token   = $options->token();
-
-		return [
-			'ajaxUrl'        => admin_url( 'admin-ajax.php' ),
-			'adminUrl'       => admin_url(),
-			'restUrl'        => rest_url( 'hellolog/v1/' ),
-			'restNonce'      => wp_create_nonce( 'wp_rest' ),
-			'nonce'          => wp_create_nonce( ActivityLogAjax::ACTION ),
-			'testNonce'      => wp_create_nonce( TestConnectionHandler::ACTION ),
-			'endpoint'       => Options::ENDPOINT_URL,
-			'dashboard_url'  => Options::DASHBOARD_URL,
-			'tokenLastFour'  => '' !== $token ? substr( $token, -4 ) : '',
-			'isConfigured'   => $options->is_configured(),
-			'isLicenseValid' => $options->is_active(),
-			'anonymizeIp'    => $options->anonymize_ip(),
-			'sensors'        => $this->sensors_payload( $plugin, $options ),
-			'queue'          => $this->queue_payload(),
-		];
-	}
-
-	/**
-	 * @return array<int, array{key:string,label:string,enabled:bool}>
-	 */
-	private function sensors_payload( Plugin $plugin, Options $options ): array {
-		$disabled = $options->sensor_filters();
-		$out      = [];
-		foreach ( $plugin->sensors()->sensors() as $key => $_sensor ) {
-			$out[] = [
-				'key'     => $key,
-				'label'   => ucwords( str_replace( [ '-', '_' ], ' ', $key ) ),
-				'enabled' => empty( $disabled[ $key ] ),
-			];
-		}
-		return $out;
-	}
-
-	/**
-	 * @return array{pending:int,sending:int,dead:int}
-	 */
-	private function queue_payload(): array {
-		$counts = ( new QueueRepository() )->counts_by_status();
-		return [
-			'pending' => (int) ( $counts[ QueueRepository::STATUS_PENDING ] ?? 0 ),
-			'sending' => (int) ( $counts[ QueueRepository::STATUS_SENDING ] ?? 0 ),
-			'dead'    => (int) ( $counts[ QueueRepository::STATUS_DEAD ] ?? 0 ),
-		];
 	}
 
 	private function asset_version( string $abs_path ): string {

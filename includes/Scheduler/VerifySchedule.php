@@ -66,4 +66,29 @@ final class VerifySchedule {
 		// as-is rather than flipping sensors off on a transient blip.
 		return 'unchanged';
 	}
+
+	/**
+	 * Map a decoded `GET /verify` 200 response body to the action taken
+	 * against `Options::KEY_API_ACCESS`. Pure `json_decode()` only — no WP
+	 * function calls — so the caller owns pulling the raw string out of the
+	 * `wp_remote_get()` response via `wp_remote_retrieve_body()`.
+	 *
+	 * The new body shape is `{status, site_id, domain, plan, api_access}`.
+	 * A legacy backend's body predates `plan`/`api_access` entirely, and an
+	 * empty/malformed body fails to decode into an array — both cases must
+	 * leave the flag untouched (never force a Free-plan upsell on a backend
+	 * that never said so), which is also `Options::api_access()`'s default.
+	 *
+	 * @param string $raw_body Raw HTTP response body, already known to be a
+	 *                          200 response.
+	 *
+	 * @return string One of `set-true`, `set-false`, `unchanged`.
+	 */
+	public static function api_access_from_body( string $raw_body ): string {
+		$decoded = json_decode( $raw_body, true );
+		if ( ! is_array( $decoded ) || ! array_key_exists( 'api_access', $decoded ) ) {
+			return 'unchanged';
+		}
+		return $decoded['api_access'] ? 'set-true' : 'set-false';
+	}
 }

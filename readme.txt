@@ -4,7 +4,7 @@ Tags:              activity log, audit log, security, monitoring, woocommerce
 Requires at least: 6.4
 Tested up to:      6.7
 Requires PHP:      8.0
-Stable tag:        0.4.0
+Stable tag:        0.4.1
 License:           GPL-2.0-or-later
 License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -76,6 +76,10 @@ every site is issued its own key, bound to its domain. Paste it into
 **Tools → helloLOG → Settings**.
 
 == Changelog ==
+
+= 0.4.1 =
+* Change: WP-admin log view requires a paid plan — Free shows a dashboard
+  link (logging itself is unaffected).
 
 = 0.4.0 =
 * New: Daily Action Scheduler recheck against the backend's `GET /verify` —

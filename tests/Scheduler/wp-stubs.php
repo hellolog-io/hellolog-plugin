@@ -110,6 +110,12 @@ if ( ! function_exists( 'wp_remote_retrieve_response_code' ) ) {
 	}
 }
 
+if ( ! function_exists( 'wp_remote_retrieve_body' ) ) {
+	function wp_remote_retrieve_body( $response ) {
+		return is_array( $response ) ? (string) ( $response['body'] ?? '' ) : '';
+	}
+}
+
 if ( ! function_exists( 'home_url' ) ) {
 	function home_url( string $path = '' ): string {
 		return 'https://verify-test.example' . $path;

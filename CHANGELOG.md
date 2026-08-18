@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.1] - 2026-08-18
+
+### Changed
+- WP-admin log view requires a paid plan — Free shows a dashboard link
+  (logging itself is unaffected). The daily token recheck now also parses
+  `GET /verify`'s `api_access` field (200 body `{status, site_id, domain,
+  plan, api_access}`) into a new `hellolog_api_access` option; a legacy
+  backend body that omits the field, or an empty/invalid body, leaves it
+  untouched, which defaults to `true` so an old backend never shows the
+  upsell (`Options::api_access()`, `VerifySchedule::api_access_from_body()`,
+  `VerifyScheduleBridge::run()`). The Vue admin SPA renders a
+  `PlanUpsellCard` in place of the Activity Log table/filters when the
+  bootstrap payload's `api_access` is `false`.
+
 ## [0.4.0] - 2026-08-18
 
 ### Added

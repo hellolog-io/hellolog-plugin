@@ -84,6 +84,42 @@ final class VerifyScheduleTest extends TestCase {
 		$this->assertSame( 'unchanged', VerifySchedule::decide( 404 ) );
 	}
 
+	// -- VerifySchedule::api_access_from_body() — pure ----------------------
+
+	public function test_body_with_api_access_true_sets_true(): void {
+		$this->assertSame(
+			'set-true',
+			VerifySchedule::api_access_from_body( '{"status":"ok","plan":"pro","api_access":true}' )
+		);
+	}
+
+	public function test_body_with_api_access_false_sets_false(): void {
+		$this->assertSame(
+			'set-false',
+			VerifySchedule::api_access_from_body( '{"status":"ok","plan":"free","api_access":false}' )
+		);
+	}
+
+	public function test_legacy_body_without_api_access_field_is_unchanged(): void {
+		// Old backend shape: {status, site_id, domain} only.
+		$this->assertSame(
+			'unchanged',
+			VerifySchedule::api_access_from_body( '{"status":"ok","site_id":"abc","domain":"example.com"}' )
+		);
+	}
+
+	public function test_empty_body_is_unchanged(): void {
+		$this->assertSame( 'unchanged', VerifySchedule::api_access_from_body( '' ) );
+	}
+
+	public function test_invalid_json_body_is_unchanged(): void {
+		$this->assertSame( 'unchanged', VerifySchedule::api_access_from_body( 'not json' ) );
+	}
+
+	public function test_non_object_json_body_is_unchanged(): void {
+		$this->assertSame( 'unchanged', VerifySchedule::api_access_from_body( '"just a string"' ) );
+	}
+
 	// -- TokenVerifier: request shape + status mapping ----------------------
 
 	public function test_verify_sends_bearer_and_site_domain_headers_to_the_verify_path(): void {
@@ -131,6 +167,25 @@ final class VerifyScheduleTest extends TestCase {
 		$this->assertFalse( $called );
 	}
 
+	public function test_verify_captures_the_response_body_for_last_body(): void {
+		$body = '{"status":"ok","plan":"free","api_access":false}';
+		add_filter( 'pre_http_request', fn() => [ 'response' => [ 'code' => 200 ], 'body' => $body ] );
+
+		$verifier = new TokenVerifier( Options::ENDPOINT_URL, $this->token );
+		$verifier->verify();
+
+		$this->assertSame( $body, $verifier->last_body() );
+	}
+
+	public function test_last_body_is_empty_on_wp_error(): void {
+		add_filter( 'pre_http_request', fn() => new \WP_Error( 'http_request_failed', 'timed out' ) );
+
+		$verifier = new TokenVerifier( Options::ENDPOINT_URL, $this->token );
+		$verifier->verify();
+
+		$this->assertSame( '', $verifier->last_body() );
+	}
+
 	// -- VerifyScheduleBridge::run() — the full 200/401/403/error mapping --
 
 	private function options_with_stored_token( bool $verified ): Options {
@@ -173,6 +228,47 @@ final class VerifyScheduleTest extends TestCase {
 		$options = $this->options_with_stored_token( true );
 		$this->bridge_with_response( $options, [ 'response' => [ 'code' => 500 ] ] )->run();
 		$this->assertSame( 1, get_option( Options::KEY_TOKEN_VERIFIED ) );
+	}
+
+	public function test_run_sets_api_access_false_on_200_body_reporting_free_plan(): void {
+		$options = $this->options_with_stored_token( false );
+		$body    = '{"status":"ok","plan":"free","api_access":false}';
+		$this->bridge_with_response( $options, [ 'response' => [ 'code' => 200 ], 'body' => $body ] )->run();
+
+		$this->assertSame( 0, get_option( Options::KEY_API_ACCESS ) );
+	}
+
+	public function test_run_sets_api_access_true_on_200_body_reporting_paid_plan(): void {
+		$options = $this->options_with_stored_token( false );
+		$body    = '{"status":"ok","plan":"pro","api_access":true}';
+		$this->bridge_with_response( $options, [ 'response' => [ 'code' => 200 ], 'body' => $body ] )->run();
+
+		$this->assertSame( 1, get_option( Options::KEY_API_ACCESS ) );
+	}
+
+	public function test_run_leaves_api_access_untouched_on_legacy_200_body(): void {
+		$options = $this->options_with_stored_token( false );
+		$body    = '{"status":"ok","site_id":"abc","domain":"example.com"}';
+		$this->bridge_with_response( $options, [ 'response' => [ 'code' => 200 ], 'body' => $body ] )->run();
+
+		$this->assertArrayNotHasKey( Options::KEY_API_ACCESS, $GLOBALS['__hlg_options'] );
+		$this->assertTrue( $options->api_access() );
+	}
+
+	public function test_run_leaves_api_access_untouched_on_empty_200_body(): void {
+		$options = $this->options_with_stored_token( false );
+		$this->bridge_with_response( $options, [ 'response' => [ 'code' => 200 ] ] )->run();
+
+		$this->assertArrayNotHasKey( Options::KEY_API_ACCESS, $GLOBALS['__hlg_options'] );
+		$this->assertTrue( $options->api_access() );
+	}
+
+	public function test_run_leaves_api_access_untouched_on_401(): void {
+		$options = $this->options_with_stored_token( true );
+		$GLOBALS['__hlg_options'][ Options::KEY_API_ACCESS ] = 0;
+		$this->bridge_with_response( $options, [ 'response' => [ 'code' => 401 ] ] )->run();
+
+		$this->assertSame( 0, get_option( Options::KEY_API_ACCESS ) );
 	}
 
 	public function test_run_unschedules_itself_when_no_token_is_configured(): void {
