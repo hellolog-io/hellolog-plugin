@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.4.0] - 2026-08-18
 
 ### Added
 - Daily token recheck: a new `hellolog_verify_token` Action Scheduler job
@@ -13,6 +13,20 @@
   rules (`includes/Scheduler/VerifySchedule.php`,
   `includes/Scheduler/VerifyScheduleBridge.php`,
   `includes/Transport/TokenVerifier.php`).
+
+### Changed
+- Brand cutover to hellolog.io: plugin header (Plugin URI, Author, Author
+  URI), `composer.json` (package name, homepage, support links), and
+  `readme.txt` now point at hellolog.io / github.com/hellolog-io instead of
+  hellowp.io / gobird.io. `readme.txt` keeps a heritage credit line for the
+  original hellowp.io and gobird.io teams.
+- Default backend endpoint (`Options::ENDPOINT_URL`) updated to
+  `api.hellolog.io` (was `api.gobird.io`). Both hostnames route to the same
+  backend Service, so this has no effect on already-running sites regardless
+  of when they update.
+- The Vue admin SPA's bootstrap data (`window.hellologAdmin`) now carries a
+  `dashboard_url` field (`https://app.hellolog.io`) for onboarding /
+  "get a key" links.
 
 ## [0.3.2] - 2026-06-19
 

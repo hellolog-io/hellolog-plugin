@@ -73,7 +73,7 @@ final class SettingsController {
 		}
 
 		// `clearToken: true` wipes the bearer so the operator can sever the
-		// link to gobird from inside the SPA. We check it first because if
+		// link to hellolog.io from inside the SPA. We check it first because if
 		// both `token` and `clearToken` are sent we treat the explicit clear
 		// as the operator's intent.
 		if ( ! empty( $body['clearToken'] ) ) {

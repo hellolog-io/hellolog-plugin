@@ -16,7 +16,7 @@ defined( 'ABSPATH' ) || exit;
  * The Settings page, the dispatcher, and the transport all go through here
  * so a typo or schema change doesn't silently produce a wrong value.
  *
- * The endpoint URL is fixed across the whole gobird fleet and never
+ * The endpoint URL is fixed across the whole hellolog.io fleet and never
  * stored as an option — see {@see self::endpoint_url()}.
  */
 final class Options {
@@ -25,7 +25,14 @@ final class Options {
 	 * Production backend URL. Operators only configure the site token;
 	 * the endpoint itself is not user-changeable on purpose.
 	 */
-	public const ENDPOINT_URL = 'https://api.gobird.io/v1/wordpress-activity-audit-log';
+	public const ENDPOINT_URL = 'https://api.hellolog.io/v1/wordpress-activity-audit-log';
+
+	/**
+	 * The hosted dashboard the Vue admin SPA links out to (onboarding,
+	 * "get a key", account management). Not user-changeable, same as
+	 * {@see self::ENDPOINT_URL}.
+	 */
+	public const DASHBOARD_URL = 'https://app.hellolog.io';
 
 	public const KEY_TOKEN          = 'hellolog_token';
 	public const KEY_ANONYMIZE_IP   = 'hellolog_anonymize_ip';

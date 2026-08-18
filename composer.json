@@ -1,9 +1,9 @@
 {
-    "name": "gobird-io/hellolog",
-    "description": "Lightweight WordPress activity log by hellowp.io and gobird.io.",
+    "name": "hellolog-io/hellolog",
+    "description": "Lightweight WordPress activity log by hellolog.io.",
     "type": "wordpress-plugin",
     "license": "GPL-2.0-or-later",
-    "homepage": "https://github.com/gobird-io/hellolog",
+    "homepage": "https://hellolog.io",
     "keywords": [
         "wordpress",
         "wordpress-plugin",
@@ -12,22 +12,17 @@
         "security",
         "monitoring",
         "logging",
-        "hellowp",
-        "gobird"
+        "hellolog"
     ],
     "authors": [
         {
-            "name": "HelloWP",
-            "homepage": "https://hellowp.io"
-        },
-        {
-            "name": "goBird",
-            "homepage": "https://gobird.io"
+            "name": "hellolog.io",
+            "homepage": "https://hellolog.io"
         }
     ],
     "support": {
-        "issues": "https://github.com/gobird-io/hellolog/issues",
-        "source": "https://github.com/gobird-io/hellolog"
+        "issues": "https://github.com/hellolog-io/hellolog-plugin/issues",
+        "source": "https://github.com/hellolog-io/hellolog-plugin"
     },
     "minimum-stability": "stable",
     "require": {

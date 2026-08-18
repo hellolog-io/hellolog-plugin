@@ -105,7 +105,7 @@ jobs:
           body: |
             ## helloLOG v${{ steps.get_version.outputs.version }}
 
-            WordPress activity log by **hellowp.io** + **gobird.io**.
+            WordPress activity log by **hellolog.io**.
 
             ### Install
 
@@ -113,7 +113,7 @@ jobs:
             2. WP Admin → Plugins → Add New → Upload Plugin.
             3. Activate, then open `Tools → helloLOG` and paste your API key.
 
-            See [readme.txt](https://github.com/gobird-io/hellolog/blob/main/readme.txt) for the full changelog.
+            See [readme.txt](https://github.com/hellolog-io/hellolog-plugin/blob/main/readme.txt) for the full changelog.
           files: hellolog-${{ steps.get_version.outputs.version }}.zip
           draft: false
           prerelease: false

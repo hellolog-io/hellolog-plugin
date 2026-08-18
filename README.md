@@ -1,10 +1,11 @@
 # helloLOG
 
-WordPress activity log by **[hellowp.io](https://hellowp.io)** and
-**[gobird.io](https://gobird.io)**. Captures every notable change on the
-site — logins, content edits, plugin/theme operations, WooCommerce
-events, form submissions, … — and ships them to a managed log backend
-so your WordPress database stays lean.
+WordPress activity log by **[hellolog.io](https://hellolog.io)**. Captures
+every notable change on the site — logins, content edits, plugin/theme
+operations, WooCommerce events, form submissions, … — and ships them to a
+managed log backend so your WordPress database stays lean.
+
+Originally built by the hellowp.io and gobird.io teams.
 
 Out of the box: **43+ sensors**, WSAL-compatible code ranges, an
 admin UI under **Tools → helloLOG**, WP-CLI subcommands (`wp hellolog
@@ -16,17 +17,17 @@ status|flush|test|sensors|…`), and a token-based privacy model
 ### Composer (Bedrock / Roots / Composer-managed sites)
 
 ```sh
-composer require gobird-io/hellolog
+composer require hellolog-io/hellolog
 ```
 
-The package is registered on [Packagist](https://packagist.org/packages/gobird-io/hellolog).
+The package is registered on [Packagist](https://packagist.org/packages/hellolog-io/hellolog).
 The `wordpress-plugin` type plus `composer/installers` puts it under
 `wp-content/plugins/hellolog/` automatically.
 
 ### Manual upload (classic sites)
 
 1. Grab the latest `hellolog-<version>.zip` from
-   [Releases](https://github.com/gobird-io/hellolog/releases).
+   [Releases](https://github.com/hellolog-io/hellolog-plugin/releases).
 2. **WP Admin → Plugins → Add New → Upload Plugin** → upload, activate.
 
 ### Configure (both install paths)
@@ -59,7 +60,8 @@ sensor individually under **Settings → Filters**.
 
 - WordPress **6.4+**
 - PHP **8.0+**
-- A site API key (request one through the goBird admin)
+- A site API key (request one through the hellolog.io dashboard,
+  https://app.hellolog.io)
 
 ## Local development
 

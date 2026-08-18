@@ -1,14 +1,14 @@
 === helloLOG ===
-Contributors:      gobird, hellowp
+Contributors:      hellologio
 Tags:              activity log, audit log, security, monitoring, woocommerce
 Requires at least: 6.4
 Tested up to:      6.7
 Requires PHP:      8.0
-Stable tag:        0.3.2
+Stable tag:        0.4.0
 License:           GPL-2.0-or-later
 License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 
-Lightweight WordPress activity log by hellowp.io and gobird.io. Events stream to a managed log backend so your WP database stays lean.
+Lightweight WordPress activity log by hellolog.io. Events stream to a managed log backend so your WP database stays lean.
 
 == Description ==
 
@@ -17,6 +17,8 @@ WordPress site and forwards every event to a managed log backend. Long-term
 storage, search, retention, and cross-site aggregation happen off-server —
 your WordPress database keeps only a small outgoing queue that drains
 continuously.
+
+Originally built by the hellowp.io and gobird.io teams.
 
 = Why an external backend? =
 
@@ -70,10 +72,24 @@ visible in the **Diagnostics** tab.
 
 = Where do I get an API key? =
 
-Request one from your goBird account — every site is issued its own
-key, bound to its domain. Paste it into **Tools → helloLOG → Settings**.
+Request one from your hellolog.io dashboard (https://app.hellolog.io) —
+every site is issued its own key, bound to its domain. Paste it into
+**Tools → helloLOG → Settings**.
 
 == Changelog ==
+
+= 0.4.0 =
+* New: Daily Action Scheduler recheck against the backend's `GET /verify` —
+  keeps the stored key's validation state fresh between saves instead of
+  only checking it once at Save time. A 200 response confirms it, 401/403
+  clears it (sensors detach), network errors/5xx leave it unchanged so a
+  backend blip can't silently stop logging.
+* Change: Plugin now ships under the hellolog.io brand — Plugin URI, author,
+  and support links point at hellolog.io / github.com/hellolog-io. See the
+  "Where do I get an API key?" FAQ for the new dashboard link.
+* Change: Default backend endpoint updated to `api.hellolog.io` (was
+  `api.gobird.io`). Both hostnames route to the same backend, so this is
+  transparent whether or not you update from an earlier version.
 
 = 0.3.2 =
 * Fix: Stop the queue-flush Action Scheduler job from running away on an

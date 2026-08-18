@@ -152,6 +152,7 @@ JS;
 			'nonce'          => wp_create_nonce( ActivityLogAjax::ACTION ),
 			'testNonce'      => wp_create_nonce( TestConnectionHandler::ACTION ),
 			'endpoint'       => Options::ENDPOINT_URL,
+			'dashboard_url'  => Options::DASHBOARD_URL,
 			'tokenLastFour'  => '' !== $token ? substr( $token, -4 ) : '',
 			'isConfigured'   => $options->is_configured(),
 			'isLicenseValid' => $options->is_active(),

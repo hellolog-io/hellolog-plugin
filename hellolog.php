@@ -1,20 +1,20 @@
 <?php
 /**
  * Plugin Name:       helloLOG
- * Plugin URI:        https://hellowp.io/hellolog
- * Description:       Lightweight WordPress activity log. By hellowp.io and gobird.io.
- * Version:           0.3.2
+ * Plugin URI:        https://hellolog.io
+ * Description:       Lightweight WordPress activity log. By hellolog.io.
+ * Version:           0.4.0
  * Requires at least: 6.4
  * Requires PHP:      8.0
- * Author:            HelloWP &amp; goBird
- * Author URI:        https://hellowp.io
+ * Author:            hellolog.io
+ * Author URI:        https://hellolog.io
  * License:           GPL-2.0-or-later
  * License URI:       https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain:       hellolog
  * Domain Path:       /languages
  *
  * @package HelloLog
- * @version 0.3.2
+ * @version 0.4.0
  */
 
 declare(strict_types=1);
@@ -51,7 +51,7 @@ if ( version_compare( PHP_VERSION, '8.0', '<' ) ) {
 	return;
 }
 
-const HELLOLOG_VERSION = '0.3.2';
+const HELLOLOG_VERSION = '0.4.0';
 const HELLOLOG_FILE    = __FILE__;
 
 define( 'HELLOLOG_DIR', plugin_dir_path( __FILE__ ) );
