@@ -88,8 +88,8 @@ every site is issued its own key, bound to its domain. Paste it into
   and support links point at hellolog.io / github.com/hellolog-io. See the
   "Where do I get an API key?" FAQ for the new dashboard link.
 * Change: Default backend endpoint updated to `api.hellolog.io` (was
-  `api.gobird.io`). Both hostnames route to the same backend, so this is
-  transparent whether or not you update from an earlier version.
+  `api.gobird.io`). This is the new helloLOG backend: after upgrading from
+  0.3.x, create a site key at app.hellolog.io and reconnect in Settings.
 
 = 0.3.2 =
 * Fix: Stop the queue-flush Action Scheduler job from running away on an
