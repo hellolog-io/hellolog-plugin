@@ -36,7 +36,7 @@ final class Uninstall {
 
 		$table = $wpdb->prefix . 'hellolog_queue';
 
-		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.DirectDatabaseQuery.SchemaChange -- uninstall teardown of the plugin's own table; {$table} is our own prefixed name, nothing to cache, and the schema change IS the point.
 		$wpdb->query( "DROP TABLE IF EXISTS {$table}" );
 	}
 

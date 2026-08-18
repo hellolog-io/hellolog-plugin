@@ -22,6 +22,7 @@ final class Deactivator {
 	private const HOOKS        = [
 		'hellolog_flush_queue',
 		'hellolog_file_integrity_scan',
+		'hellolog_prune_as',
 	];
 
 	public static function deactivate(): void {

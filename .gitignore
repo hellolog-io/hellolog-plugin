@@ -28,3 +28,7 @@ phpunit.xml
 .env
 .env.local
 
+# Claude Code config. Never tracked by this repo — it is PUBLIC, and
+# .claude/settings.local.json carries credentials. On machines without a
+# global gitignore this is the only thing keeping it out of a `git add .`.
+.claude/

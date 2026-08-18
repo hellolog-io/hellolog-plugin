@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.3.2] - 2026-06-19
+
+### Fixed
+- Queue-flush Action Scheduler job no longer runs away on an unconfigured or
+  deconfigured install. The `hellolog_flush_queue` recurring action is created
+  only while the plugin is active (`Options::is_active()`) and is unscheduled
+  when the token is cleared; the hook callback is bound unconditionally so an
+  orphaned action left by an older build self-unschedules instead of ticking
+  forever with no handler. Root cause of a production outage on 2026-06-19.
+- Single-flight MySQL advisory lock (`GET_LOCK`) around the flush so concurrent
+  Action Scheduler async (loopback) and WP-Cron runners can't race the same
+  batch — this was the source of the "action ignored" / "unable to mark this
+  action" log flood (17.9M rows / 3 GB on the affected site).
+
+### Changed
+- Drain cadence raised from 30s to 60s, floored and filterable via
+  `hellolog_flush_interval`. Existing installs migrate automatically (a stored
+  schedule version drops the stale 30s action so it reschedules at 60s).
+
+### Added
+- Daily group-scoped pruner (`hellolog_prune_as`) deletes helloLOG's own
+  finished actions/logs from the shared `actionscheduler_*` tables past a short
+  retention (default 3 days, filter `hellolog_as_retention_days`) via the public
+  Action Scheduler API. The site-global retention is left untouched.
+
 ## [0.3.1] - 2026-06-10
 
 ### Added

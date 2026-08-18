@@ -20,6 +20,8 @@ use HelloLog\Events\NullEventDispatcher;
 use HelloLog\Queue\QueueEventDispatcher;
 use HelloLog\Queue\QueueRepository;
 use HelloLog\Scheduler\ActionSchedulerBridge;
+use HelloLog\Scheduler\AsLogPruner;
+use HelloLog\Scheduler\FlushLock;
 use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\CommentsSensor;
 use HelloLog\Sensors\Core\ContentSensor;
@@ -93,6 +95,15 @@ final class Plugin {
 
 		$this->load_textdomain();
 		$this->assemble_services();
+
+		// ALWAYS register the flush scheduler — even when inactive. The bridge
+		// keeps a recurring action alive only while `is_active()`, and tears
+		// down any orphan otherwise. Registering this unconditionally, right
+		// after `$this->options` exists, is what lets a deconfigured install
+		// self-heal instead of ticking an unhandled action forever (the 0.3.1
+		// outage).
+		$this->register_flush_scheduler();
+
 		$this->wire_admin();
 		$this->fire_booted_action();
 		$this->wire_cli();
@@ -180,12 +191,12 @@ final class Plugin {
 
 		// Apply operator-stored sensor flags on top of the
 		// "off by default" list. A sensor is disabled if either:
-		//   - the stored options say so explicitly (`key => true`), or
-		//   - it's in the off-by-default list AND the stored options
-		//     don't mention it at all (operator hasn't expressed an
-		//     opinion, so we keep our default).
+		// - the stored options say so explicitly (`key => true`), or
+		// - it's in the off-by-default list AND the stored options
+		// don't mention it at all (operator hasn't expressed an
+		// opinion, so we keep our default).
 		// Explicit `key => false` in the stored options always wins.
-		$stored        = $this->options->sensor_filters();
+		$stored         = $this->options->sensor_filters();
 		$off_by_default = [ 'core-request', 'core-failed-login' ];
 
 		$disabled = [];
@@ -231,20 +242,22 @@ final class Plugin {
 			return new NullEventDispatcher();
 		}
 
-		$repository = new QueueRepository();
-		$this->wire_transport( $repository );
-
-		return new QueueEventDispatcher( $this->builder, $repository );
+		return new QueueEventDispatcher( $this->builder, new QueueRepository() );
 	}
 
-	private function wire_transport( QueueRepository $repository ): void {
+	/**
+	 * Wire the out-of-band queue-flush job. Always called (see
+	 * {@see self::boot()}); the {@see ActionSchedulerBridge} decides, per
+	 * request, whether a recurring action should exist.
+	 */
+	private function register_flush_scheduler(): void {
 		$flusher = new QueueFlusher(
-			$repository,
+			new QueueRepository(),
 			new PayloadBuilder(),
 			new ApiClient( $this->options->endpoint_url(), $this->options->token() ),
 			new RetryPolicy()
 		);
-		( new ActionSchedulerBridge( $flusher ) )->register();
+		( new ActionSchedulerBridge( $flusher, $this->options, new FlushLock(), new AsLogPruner() ) )->register();
 	}
 
 	private function fire_booted_action(): void {

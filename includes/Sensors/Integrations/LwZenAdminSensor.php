@@ -1,6 +1,6 @@
 <?php
 /**
- * lw-zenadmin sensor.
+ * The lw-zenadmin sensor.
  *
  * @package HelloLog
  */

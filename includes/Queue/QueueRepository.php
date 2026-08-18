@@ -57,18 +57,19 @@ final class QueueRepository {
 		$table = $this->table();
 		$now   = current_time( 'mysql', true );
 
-		// phpcs:disable WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
-		$sql  = $wpdb->prepare(
-			"SELECT * FROM {$table}
-			 WHERE status = %s AND next_try <= %s
-			 ORDER BY id ASC
-			 LIMIT %d",
-			self::STATUS_PENDING,
-			$now,
-			$limit
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- read from our own queue table, deliberately not cached (must see fresh rows every drain tick).
+		$rows = $wpdb->get_results(
+			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- {$table} is our own prefixed table name, not user input; cannot be a %s/%d placeholder.
+				"SELECT * FROM {$table}
+				 WHERE status = %s AND next_try <= %s
+				 ORDER BY id ASC
+				 LIMIT %d",
+				self::STATUS_PENDING,
+				$now,
+				$limit
+			)
 		);
-		$rows = $wpdb->get_results( $sql );
-		// phpcs:enable
 
 		if ( ! is_array( $rows ) ) {
 			return [];
@@ -115,9 +116,10 @@ final class QueueRepository {
 	public function requeue_dead(): int {
 		global $wpdb;
 		$table = $this->table();
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- flush write, not a read; nothing to cache.
 		$affected = $wpdb->query(
 			$wpdb->prepare(
+				// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- {$table} is our own prefixed table name, not user input; cannot be a %s/%d placeholder.
 				"UPDATE {$table}
 				 SET status     = %s,
 				     attempts   = 0,
@@ -142,7 +144,7 @@ final class QueueRepository {
 		}
 		$placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
 		$table        = $this->table();
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- the %d tokens are inside $placeholders, built dynamically from count($ids); the sniff can't see through the interpolation to confirm they're there, but $ids supplies exactly that many values to $wpdb->prepare().
 		$wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE id IN ({$placeholders})", $ids ) );
 	}
 

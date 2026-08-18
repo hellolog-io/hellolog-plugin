@@ -1,6 +1,6 @@
 <?php
 /**
- * lw-firewall sensor — blocked requests + rule changes.
+ * The lw-firewall sensor — blocked requests + rule changes.
  *
  * @package HelloLog
  */

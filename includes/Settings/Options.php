@@ -27,14 +27,14 @@ final class Options {
 	 */
 	public const ENDPOINT_URL = 'https://api.gobird.io/v1/wordpress-activity-audit-log';
 
-	public const KEY_TOKEN           = 'hellolog_token';
-	public const KEY_ANONYMIZE_IP    = 'hellolog_anonymize_ip';
-	public const KEY_SENSOR_FILTERS  = 'hellolog_sensor_filters';
+	public const KEY_TOKEN          = 'hellolog_token';
+	public const KEY_ANONYMIZE_IP   = 'hellolog_anonymize_ip';
+	public const KEY_SENSOR_FILTERS = 'hellolog_sensor_filters';
 	// `1` once the stored token successfully delivered a test event;
 	// reset to `0` whenever the operator changes (or clears) the key.
 	// Sensors only attach hooks when this flag is `1`, otherwise we
 	// would queue thousands of events that the backend rejects.
-	public const KEY_TOKEN_VERIFIED  = 'hellolog_token_verified';
+	public const KEY_TOKEN_VERIFIED = 'hellolog_token_verified';
 
 	public function endpoint_url(): string {
 		return self::ENDPOINT_URL;

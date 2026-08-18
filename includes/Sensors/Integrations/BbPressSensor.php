@@ -1,6 +1,6 @@
 <?php
 /**
- * bbPress sensor.
+ * The bbPress sensor.
  *
  * @package HelloLog
  */
@@ -15,7 +15,7 @@ use WP_Post;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * bbPress uses dedicated CPTs (`forum`, `topic`, `reply`). We log creation
+ * The bbPress plugin uses dedicated CPTs (`forum`, `topic`, `reply`). We log creation
  * + deletion of any of them as one normalized "bbpress object" event;
  * granular per-type filtering can land later if requested.
  */

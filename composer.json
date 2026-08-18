@@ -68,5 +68,12 @@
         "platform": {
             "php": "8.0"
         }
+    },
+    "extra": {
+        "installer-paths": {
+            "vendor/{$vendor}/{$name}/": [
+                "type:wordpress-plugin"
+            ]
+        }
     }
 }

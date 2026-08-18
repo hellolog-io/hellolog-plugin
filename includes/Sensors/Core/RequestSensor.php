@@ -35,14 +35,15 @@ final class RequestSensor extends AbstractSensor {
 		if ( ! is_404() ) {
 			return;
 		}
-		$path = isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '';
+		$path   = isset( $_SERVER['REQUEST_URI'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_URI'] ) ) : '';
+		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : '';
 		$this->emit(
 			6400,
 			[
 				'path'     => $path,
 				'metadata' => [
 					'path'   => $path,
-					'method' => $_SERVER['REQUEST_METHOD'] ?? '',
+					'method' => $method,
 				],
 			]
 		);

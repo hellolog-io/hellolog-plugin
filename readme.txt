@@ -4,7 +4,7 @@ Tags:              activity log, audit log, security, monitoring, woocommerce
 Requires at least: 6.4
 Tested up to:      6.7
 Requires PHP:      8.0
-Stable tag:        0.3.1
+Stable tag:        0.3.2
 License:           GPL-2.0-or-later
 License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -74,6 +74,19 @@ Request one from your goBird account — every site is issued its own
 key, bound to its domain. Paste it into **Tools → helloLOG → Settings**.
 
 == Changelog ==
+
+= 0.3.2 =
+* Fix: Stop the queue-flush Action Scheduler job from running away on an
+  unconfigured or deconfigured install. The recurring action now exists only
+  while the plugin is active and is torn down when the token is cleared; an
+  orphaned action self-unschedules instead of ticking forever.
+* Change: Drain cadence raised from 30s to 60s (filter `hellolog_flush_interval`,
+  floored at 60s).
+* Fix: Single-flight DB lock around the flush so concurrent async/cron runners
+  no longer race the same batch (the source of the "action ignored" log flood).
+* New: Daily pruner trims helloLOG's own finished actions/logs in the shared
+  `actionscheduler_*` tables past a short retention (default 3 days, filter
+  `hellolog_as_retention_days`) — without touching the site-global retention.
 
 = 0.3.1 =
 * New: `wp hellolog requeue-dead` — move every `dead` queue row back

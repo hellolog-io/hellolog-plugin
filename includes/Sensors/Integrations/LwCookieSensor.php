@@ -1,6 +1,6 @@
 <?php
 /**
- * lw-cookie sensor.
+ * The lw-cookie sensor.
  *
  * @package HelloLog
  */

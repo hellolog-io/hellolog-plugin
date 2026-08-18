@@ -78,10 +78,11 @@ final class ThemesSensor extends AbstractSensor {
 		foreach ( $themes as $stylesheet ) {
 			$stylesheet = (string) $stylesheet;
 			$theme      = wp_get_theme( $stylesheet );
+			$name       = self::resolve_theme_name( $theme->get( 'Name' ), $stylesheet );
 			$this->emit(
 				$code,
 				[
-					'name'     => $theme->get( 'Name' ) ?: $stylesheet,
+					'name'     => $name,
 					'version'  => (string) $theme->get( 'Version' ),
 					'metadata' => [
 						'stylesheet' => $stylesheet,
@@ -94,5 +95,14 @@ final class ThemesSensor extends AbstractSensor {
 
 	public function on_customizer_save(): void {
 		$this->emit( 5104, [] );
+	}
+
+	/**
+	 * `WP_Theme::get( 'Name' )` returns `false` (not `''`) when the header is
+	 * unreadable, so a plain `?:`/`!==''` check isn't enough — fall back to
+	 * the stylesheet slug for anything that isn't a non-empty string.
+	 */
+	public static function resolve_theme_name( mixed $raw_name, string $stylesheet ): string {
+		return is_string( $raw_name ) && '' !== $raw_name ? $raw_name : $stylesheet;
 	}
 }

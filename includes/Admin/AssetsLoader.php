@@ -145,19 +145,19 @@ JS;
 		$token   = $options->token();
 
 		return [
-			'ajaxUrl'       => admin_url( 'admin-ajax.php' ),
-			'adminUrl'      => admin_url(),
-			'restUrl'       => rest_url( 'hellolog/v1/' ),
-			'restNonce'     => wp_create_nonce( 'wp_rest' ),
-			'nonce'         => wp_create_nonce( ActivityLogAjax::ACTION ),
-			'testNonce'     => wp_create_nonce( TestConnectionHandler::ACTION ),
-			'endpoint'      => Options::ENDPOINT_URL,
+			'ajaxUrl'        => admin_url( 'admin-ajax.php' ),
+			'adminUrl'       => admin_url(),
+			'restUrl'        => rest_url( 'hellolog/v1/' ),
+			'restNonce'      => wp_create_nonce( 'wp_rest' ),
+			'nonce'          => wp_create_nonce( ActivityLogAjax::ACTION ),
+			'testNonce'      => wp_create_nonce( TestConnectionHandler::ACTION ),
+			'endpoint'       => Options::ENDPOINT_URL,
 			'tokenLastFour'  => '' !== $token ? substr( $token, -4 ) : '',
 			'isConfigured'   => $options->is_configured(),
 			'isLicenseValid' => $options->is_active(),
 			'anonymizeIp'    => $options->anonymize_ip(),
-			'sensors'       => $this->sensors_payload( $plugin, $options ),
-			'queue'         => $this->queue_payload(),
+			'sensors'        => $this->sensors_payload( $plugin, $options ),
+			'queue'          => $this->queue_payload(),
 		];
 	}
 

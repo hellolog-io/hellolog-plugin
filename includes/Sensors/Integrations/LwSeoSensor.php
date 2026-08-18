@@ -1,6 +1,6 @@
 <?php
 /**
- * lw-seo sensor.
+ * The lw-seo sensor.
  *
  * @package HelloLog
  */

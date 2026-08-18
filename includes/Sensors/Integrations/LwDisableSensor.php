@@ -1,6 +1,6 @@
 <?php
 /**
- * lw-disable sensor.
+ * The lw-disable sensor.
  *
  * @package HelloLog
  */
