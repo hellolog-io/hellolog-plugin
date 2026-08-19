@@ -4,7 +4,7 @@ Tags:              activity log, audit log, security, monitoring, woocommerce
 Requires at least: 6.4
 Tested up to:      6.7
 Requires PHP:      8.0
-Stable tag:        0.4.1
+Stable tag:        0.4.2
 License:           GPL-2.0-or-later
 License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -76,6 +76,16 @@ every site is issued its own key, bound to its domain. Paste it into
 **Tools → helloLOG → Settings**.
 
 == Changelog ==
+
+= 0.4.2 =
+* New: Test connection now also refreshes your plan's API access
+  immediately — a plan upgrade unlocks the wp-admin log view without
+  waiting for the daily recheck.
+* New: The Settings Connection tab shows a dashboard link with setup
+  guidance when no API key is stored yet.
+* Fix: CLI and Diagnostics copy said the queue drains every 30 seconds;
+  it's 60.
+* Fix: Token-format docblock matched to the actual validation.
 
 = 0.4.1 =
 * Change: WP-admin log view requires a paid plan — Free shows a dashboard

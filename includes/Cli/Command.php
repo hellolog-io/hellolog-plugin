@@ -204,7 +204,7 @@ final class Command {
 	 *     wp hellolog status            # see the dead count first
 	 *     wp hellolog test              # confirm the backend accepts a ping
 	 *     wp hellolog requeue-dead      # dead -> pending
-	 *     wp hellolog flush             # send them now (or wait 30s)
+	 *     wp hellolog flush             # send them now (or wait 60s)
 	 *
 	 * @subcommand requeue-dead
 	 */

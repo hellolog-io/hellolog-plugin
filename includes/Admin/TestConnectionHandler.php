@@ -9,8 +9,10 @@ declare(strict_types=1);
 
 namespace HelloLog\Admin;
 
+use HelloLog\Scheduler\VerifySchedule;
 use HelloLog\Settings\Options;
 use HelloLog\Transport\ApiClient;
+use HelloLog\Transport\TokenVerifier;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -18,6 +20,14 @@ defined( 'ABSPATH' ) || exit;
  * One-shot diagnostics call from the admin UI. Bypasses the queue: builds a
  * minimal "ping" payload and POSTs it directly through {@see ApiClient}.
  * Operator gets an immediate status + body in the response.
+ *
+ * A successful round-trip also runs an immediate `GET /verify` — the same
+ * call {@see \HelloLog\Scheduler\VerifyScheduleBridge} makes on its daily
+ * tick — so a plan upgrade's `api_access` flag lands without waiting for
+ * the next recheck. That follow-up call is best-effort and never changes
+ * this handler's response: a transport error or non-200 just leaves
+ * `Options::KEY_API_ACCESS` untouched, same as the daily job does on a
+ * transient failure.
  */
 final class TestConnectionHandler {
 
@@ -64,6 +74,7 @@ final class TestConnectionHandler {
 		// gatekeeping step.
 		$options->mark_active( $result->ok );
 		if ( $result->ok ) {
+			$this->refresh_api_access( $options );
 			wp_send_json_success(
 				[
 					'status' => $result->status,
@@ -79,5 +90,27 @@ final class TestConnectionHandler {
 			],
 			$result->status > 0 ? $result->status : 502
 		);
+	}
+
+	/**
+	 * Best-effort `GET /verify` right after a successful test event.
+	 * Mirrors {@see \HelloLog\Scheduler\VerifyScheduleBridge::run()}'s
+	 * handling of `Options::KEY_API_ACCESS`: only a 200 body is inspected,
+	 * and a legacy/empty body (no `api_access` key) leaves the option
+	 * untouched rather than forcing a Free-plan upsell.
+	 */
+	private function refresh_api_access( Options $options ): void {
+		$verifier = new TokenVerifier( $options->endpoint_url(), $options->token() );
+		if ( 200 !== $verifier->verify() ) {
+			return;
+		}
+		switch ( VerifySchedule::api_access_from_body( $verifier->last_body() ) ) {
+			case 'set-true':
+				$options->set_api_access( true );
+				break;
+			case 'set-false':
+				$options->set_api_access( false );
+				break;
+		}
 	}
 }

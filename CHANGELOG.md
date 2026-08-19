@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.2] - 2026-08-19
+
+### Added
+- Test connection now also refreshes your plan's `api_access` immediately:
+  a successful "Send test event" in Settings → Connection triggers the same
+  `GET /verify` call the daily recheck makes, so a plan upgrade unlocks the
+  wp-admin log view without waiting for the next tick
+  (`TestConnectionHandler::refresh_api_access()`, reuses `TokenVerifier` and
+  `VerifySchedule::api_access_from_body()`). Best-effort: a transport error
+  or non-200 leaves `api_access` untouched and never changes the test
+  result reported to the operator.
+- The Settings Connection tab shows a dashboard link with setup guidance
+  when no API key is stored yet.
+
+### Fixed
+- CLI (`wp hellolog requeue-dead`) and the Diagnostics tab said the queue
+  drains every 30 seconds; it's 60 (`FlushSchedule::MIN_INTERVAL`).
+- `Options::is_valid_token()`'s docblock now matches the actual regex
+  (full-string match, 8/40-char lowercase-alphanumeric prefix/secret).
+
 ## [0.4.1] - 2026-08-18
 
 ### Changed
