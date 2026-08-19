@@ -54,6 +54,7 @@ use HelloLog\Transport\PayloadBuilder;
 use HelloLog\Transport\QueueFlusher;
 use HelloLog\Transport\RetryPolicy;
 use HelloLog\Transport\TokenVerifier;
+use HelloLog\Updater\GitHubUpdater;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -109,6 +110,13 @@ final class Plugin {
 		// Same unconditional-registration rule for the daily token recheck —
 		// see {@see self::register_verify_scheduler()}.
 		$this->register_verify_scheduler();
+
+		// Also unconditional: `pre_set_site_transient_update_plugins` is what
+		// WP core's own cron-driven update check filters, so gating this
+		// behind `is_admin()` (like the rest of {@see self::wire_admin()})
+		// would mean the Plugins screen only ever shows a stale cached
+		// answer instead of one refreshed by cron.
+		( new GitHubUpdater() )->register();
 
 		$this->wire_admin();
 		$this->fire_booted_action();

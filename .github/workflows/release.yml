@@ -93,6 +93,12 @@ jobs:
             --exclude='.phpcs.cache' \
             ./ "$BUILD_DIR/"
           ( cd build && zip -qr "../hellolog-${VERSION}.zip" hellolog )
+          # Stable-name copy so `releases/latest/download/hellolog.zip` is a
+          # permanent direct-download URL — used by the Diagnostics tab's
+          # manual-install link when `hellolog_self_update` is disabled.
+          # The versioned zip above stays the one GitHubUpdater fetches by
+          # its exact asset name.
+          cp "hellolog-${VERSION}.zip" hellolog.zip
 
       - name: Create tag and release
         if: steps.check_tag.outputs.exists == 'false'
@@ -114,7 +120,9 @@ jobs:
             3. Activate, then open `Tools → helloLOG` and paste your API key.
 
             See [readme.txt](https://github.com/hellolog-io/hellolog-plugin/blob/main/readme.txt) for the full changelog.
-          files: hellolog-${{ steps.get_version.outputs.version }}.zip
+          files: |
+            hellolog-${{ steps.get_version.outputs.version }}.zip
+            hellolog.zip
           draft: false
           prerelease: false
           generate_release_notes: true

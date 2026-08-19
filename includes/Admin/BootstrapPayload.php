@@ -49,6 +49,8 @@ final class BootstrapPayload {
 			'anonymizeIp'    => $options->anonymize_ip(),
 			'sensors'        => $this->sensors_payload( $plugin, $options ),
 			'queue'          => $this->queue_payload(),
+			'self_update'    => (bool) apply_filters( 'hellolog_self_update', true ),
+			'download_url'   => 'https://github.com/hellolog-io/hellolog-plugin/releases/latest/download/hellolog.zip',
 		];
 	}
 

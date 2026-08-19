@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.3] - 2026-08-19
+
+### Added
+- Built-in updates from GitHub releases: the Plugins screen now offers new
+  helloLOG versions like any other plugin, no manual zip needed
+  (`Updater\GitHubUpdater`, `Updater\ReleaseInfo`). Only the exact
+  `hellolog-<version>.zip` release asset is ever offered as a package —
+  never GitHub's auto-generated zipball/tarball, whose top-level folder
+  name would break the install — and only a `browser_download_url` under
+  `github.com/hellolog-io/hellolog-plugin/releases/download/` is accepted.
+  The GitHub API response is cached in a transient for 12 hours (1 hour on
+  failure) so an outage or rate limit isn't hammered on every admin load.
+- The `hellolog_self_update` filter disables the built-in updater for
+  managed setups (`add_filter( 'hellolog_self_update', '__return_false' )`),
+  and the Diagnostics tab then links the latest zip for manual installs.
+
 ## [0.4.2] - 2026-08-19
 
 ### Added

@@ -4,7 +4,7 @@ Tags:              activity log, audit log, security, monitoring, woocommerce
 Requires at least: 6.4
 Tested up to:      6.7
 Requires PHP:      8.0
-Stable tag:        0.4.2
+Stable tag:        0.4.3
 License:           GPL-2.0-or-later
 License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -76,6 +76,13 @@ every site is issued its own key, bound to its domain. Paste it into
 **Tools → helloLOG → Settings**.
 
 == Changelog ==
+
+= 0.4.3 =
+* New: Built-in updates from GitHub releases — the Plugins screen now
+  offers new helloLOG versions like any other plugin, no manual zip needed.
+* New: The `hellolog_self_update` filter disables the built-in updater for
+  managed setups, and the Diagnostics tab then links the latest zip for
+  manual installs.
 
 = 0.4.2 =
 * New: Test connection now also refreshes your plan's API access

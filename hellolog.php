@@ -3,7 +3,7 @@
  * Plugin Name:       helloLOG
  * Plugin URI:        https://hellolog.io
  * Description:       Lightweight WordPress activity log.
- * Version:           0.4.2
+ * Version:           0.4.3
  * Requires at least: 6.4
  * Requires PHP:      8.0
  * Author:            goBird
@@ -14,7 +14,7 @@
  * Domain Path:       /languages
  *
  * @package HelloLog
- * @version 0.4.2
+ * @version 0.4.3
  */
 
 declare(strict_types=1);
@@ -51,7 +51,7 @@ if ( version_compare( PHP_VERSION, '8.0', '<' ) ) {
 	return;
 }
 
-const HELLOLOG_VERSION = '0.4.1';
+const HELLOLOG_VERSION = '0.4.3';
 const HELLOLOG_FILE    = __FILE__;
 
 define( 'HELLOLOG_DIR', plugin_dir_path( __FILE__ ) );
