@@ -33,7 +33,7 @@ final class RequestContext {
 		$username = null;
 		$roles    = [];
 
-		if ( function_exists( 'wp_get_current_user' ) ) {
+		if ( function_exists( 'wp_get_current_user' ) && ! self::is_authenticating() ) {
 			$user = wp_get_current_user();
 			if ( $user && $user->ID > 0 ) {
 				$user_id  = (int) $user->ID;
@@ -56,6 +56,21 @@ final class RequestContext {
 		}
 
 		return new self( $user_id, $username, $roles, $ip, $ua, $session_id );
+	}
+
+	/**
+	 * True while WP core is still resolving who the current user is.
+	 *
+	 * Some sensors fire from inside that resolution — e.g.
+	 * `application_password_did_authenticate` is emitted by
+	 * `wp_validate_application_password()`, itself a `determine_current_user`
+	 * callback. `$current_user` is not set yet at that point, so calling
+	 * `wp_get_current_user()` would re-run `determine_current_user`, re-fire
+	 * the sensor, and recurse until memory is exhausted. Sensors that fire
+	 * there already carry the user in their own payload.
+	 */
+	private static function is_authenticating(): bool {
+		return function_exists( 'doing_filter' ) && doing_filter( 'determine_current_user' );
 	}
 
 	private static function detect_ip(): ?string {

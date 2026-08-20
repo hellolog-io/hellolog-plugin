@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Every Application-Password authenticated request (REST API, XML-RPC) died
+  with "Allowed memory size exhausted": `AppPasswordsSensor::on_authenticate()`
+  fires from inside `wp_validate_application_password()`, i.e. while core is
+  still running the `determine_current_user` filter, and `RequestContext::capture()`
+  called `wp_get_current_user()` there — which re-entered `determine_current_user`,
+  re-fired the sensor, and recursed until OOM. `capture()` now skips the
+  current-user lookup while `determine_current_user` is running (the sensor's
+  own payload already carries the authenticated user). Seen live on a shop whose
+  hourly stock-sync integration had been getting HTTP 500 for two weeks.
+
 ## [0.4.3] - 2026-08-19
 
 ### Added
