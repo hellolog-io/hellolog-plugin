@@ -465,6 +465,39 @@ final class EventBuilderV2Test extends TestCase {
 		$this->assertSame( 'bob did x', $payload['message'] );
 	}
 
+	/**
+	 * WordPress stores some titles with their entities (`Order &ndash; …`);
+	 * a template value, and the message rendered from it, are plain text.
+	 */
+	public function test_template_values_have_their_html_entities_decoded(): void {
+		$payload = $this->build(
+			$this->builder( RequestSource::ADMIN, null, '{post_type} "{title}" moved to trash. {note}' ),
+			[
+				'post_type' => 'Shop order',
+				'title'     => 'Order &ndash; October 26, 2026 @ 10:00 AM',
+				'vars'      => [ 'note' => 'Tom&#039;s &amp; &quot;Jerry&quot;' ],
+			]
+		);
+
+		$this->assertSame( 'Order – October 26, 2026 @ 10:00 AM', $payload['vars']['title'] );
+		$this->assertSame( 'Tom\'s & "Jerry"', $payload['vars']['note'] );
+		$this->assertSame( 'Shop order "Order – October 26, 2026 @ 10:00 AM" moved to trash. Tom\'s & "Jerry"', $payload['message'] );
+	}
+
+	/**
+	 * Decoded first, then masked: an `@` written as an entity must not carry
+	 * a password past the masking.
+	 */
+	public function test_template_values_are_decoded_before_they_are_masked(): void {
+		$payload = $this->build(
+			$this->builder( RequestSource::ADMIN, null, 'Saved {url}' ),
+			[ 'url' => 'https://user:secretpw&#64;example.com/x' ]
+		);
+
+		$this->assertSame( 'https://[redacted]@example.com/x', $payload['vars']['url'] );
+		$this->assertStringNotContainsString( 'secretpw', $payload['message'] );
+	}
+
 	public function test_explicit_vars_win_over_template_fields(): void {
 		$payload = $this->build(
 			$this->builder(),

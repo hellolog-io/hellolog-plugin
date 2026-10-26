@@ -389,8 +389,7 @@ class EventBuilder {
 
 		$label = $this->scalar_text( $target['label'] ?? null );
 		if ( '' !== $label ) {
-			$label          = html_entity_decode( $label, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
-			$clean['label'] = $this->clamp( ChangeSet::redact_text( $label ), self::MAX_TARGET_LABEL );
+			$clean['label'] = $this->clamp( ChangeSet::redact_text( self::decode_entities( $label ) ), self::MAX_TARGET_LABEL );
 		}
 
 		return $clean;
@@ -459,7 +458,9 @@ class EventBuilder {
 	 * Template values as text: every scalar field whose `{key}` appears in the
 	 * message template, overlaid with the explicit `vars`. Keys are non-empty strings,
 	 * values go through {@see ChangeSet::stringify()} (a bool reads `yes` or
-	 * `no`); a value that has no text (null) is left out.
+	 * `no`); a value that has no text (null) is left out. A string has its
+	 * HTML entities decoded first (WordPress stores some titles with them),
+	 * before it is masked, so an entity cannot hide a secret from the masking.
 	 *
 	 * @param array<string, mixed> $fields
 	 * @return array<string, string>
@@ -484,13 +485,23 @@ class EventBuilder {
 
 		$texts = [];
 		foreach ( $vars as $key => $value ) {
-			$text = ChangeSet::stringify( $value );
+			$text = ChangeSet::stringify( is_string( $value ) ? self::decode_entities( $value ) : $value );
 			if ( null !== $text ) {
 				$texts[ $key ] = $text;
 			}
 		}
 
 		return $texts;
+	}
+
+	/**
+	 * Plain text of a string that may hold HTML entities (`&ndash;`, `&amp;`,
+	 * `&#039;`): WordPress stores some titles that way.
+	 *
+	 * @param string $text Any text.
+	 */
+	private static function decode_entities( string $text ): string {
+		return html_entity_decode( $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
 	}
 
 	/**
