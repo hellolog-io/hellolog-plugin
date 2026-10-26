@@ -10,11 +10,13 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\OptionChangePolicy;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Termly settings live under the `termly_` option prefix.
+ * Termly settings live under the `termly_` option prefix. Only a person
+ * saving a setting is logged, see {@see OptionChangePolicy}.
  */
 final class TermlySensor extends AbstractSensor {
 
@@ -41,9 +43,16 @@ final class TermlySensor extends AbstractSensor {
 		if ( $old_value === $value ) {
 			return;
 		}
+		if ( ! OptionChangePolicy::should_log_current( $option ) ) {
+			return;
+		}
 		$this->emit(
 			8500,
-			[ 'metadata' => [ 'option' => $option ] ]
+			[
+				'target'   => OptionChangePolicy::target( $option ),
+				'changes'  => OptionChangePolicy::changes( $option, $old_value, $value ),
+				'metadata' => [ 'option' => $option ],
+			]
 		);
 	}
 }

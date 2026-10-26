@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\OptionChangePolicy;
 use HelloLog\Sensors\SensitiveOption;
 
 defined( 'ABSPATH' ) || exit;
@@ -17,7 +18,8 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Many LW plugins ship as "settings-only" surfaces. For those we only
  * need to flag option changes under a prefix. Children specify the
- * prefix, the catalog code, and (optionally) the load guard.
+ * prefix, the catalog code, and (optionally) the load guard. Only a person
+ * saving a setting is logged, see {@see OptionChangePolicy}.
  */
 abstract class LwOptionPrefixSensor extends AbstractSensor {
 
@@ -36,6 +38,9 @@ abstract class LwOptionPrefixSensor extends AbstractSensor {
 		if ( $old_value === $value ) {
 			return;
 		}
+		if ( ! OptionChangePolicy::should_log_current( $option ) ) {
+			return;
+		}
 		$this->emit(
 			$this->event_code(),
 			array_merge(
@@ -43,6 +48,8 @@ abstract class LwOptionPrefixSensor extends AbstractSensor {
 					'option'  => $option,
 					'feature' => $option,
 					'state'   => SensitiveOption::value( $option, $value ),
+					'target'  => OptionChangePolicy::target( $option ),
+					'changes' => OptionChangePolicy::changes( $option, $old_value, $value ),
 				],
 				[ 'metadata' => [ 'option' => $option ] ]
 			)

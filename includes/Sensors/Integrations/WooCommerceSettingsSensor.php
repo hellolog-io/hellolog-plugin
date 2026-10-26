@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\OptionChangePolicy;
 use HelloLog\Sensors\SensitiveOption;
 
 defined( 'ABSPATH' ) || exit;
@@ -17,7 +18,8 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Logs option mutations from WC's General / Shipping / Tax / Payments
  * screens. Listens to `updated_option` and filters by the `woocommerce_`
- * prefix so we don't echo every core option.
+ * prefix so we don't echo every core option. Only a person saving a setting
+ * is logged, see {@see OptionChangePolicy}.
  */
 final class WooCommerceSettingsSensor extends AbstractSensor {
 
@@ -44,11 +46,16 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 		if ( $old_value === $value ) {
 			return;
 		}
+		if ( ! OptionChangePolicy::should_log_current( $option ) ) {
+			return;
+		}
 
 		$this->emit(
 			9400,
 			[
 				'option'   => $option,
+				'target'   => OptionChangePolicy::target( $option ),
+				'changes'  => OptionChangePolicy::changes( $option, $old_value, $value ),
 				'metadata' => [
 					'option' => $option,
 					'old'    => SensitiveOption::value( $option, $old_value ),

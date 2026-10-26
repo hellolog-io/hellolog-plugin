@@ -10,12 +10,14 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\OptionChangePolicy;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
  * RankMath options live under `rank_math_*`. We tag changes with the
- * dedicated 8900 code so SEO traffic stays distinguishable in the log.
+ * dedicated 8900 code so SEO traffic stays distinguishable in the log. Only
+ * a person saving a setting is logged, see {@see OptionChangePolicy}.
  */
 final class RankMathSensor extends AbstractSensor {
 
@@ -42,10 +44,15 @@ final class RankMathSensor extends AbstractSensor {
 		if ( $old_value === $value ) {
 			return;
 		}
+		if ( ! OptionChangePolicy::should_log_current( $option ) ) {
+			return;
+		}
 		$this->emit(
 			8900,
 			[
 				'option'   => $option,
+				'target'   => OptionChangePolicy::target( $option ),
+				'changes'  => OptionChangePolicy::changes( $option, $old_value, $value ),
 				'metadata' => [ 'option' => $option ],
 			]
 		);

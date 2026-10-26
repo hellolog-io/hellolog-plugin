@@ -11,13 +11,15 @@ namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Events\RequestContext;
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\OptionChangePolicy;
 use HelloLog\Settings\Options;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
  * Listens to the lw-firewall action `lw_firewall_blocked` (if available)
- * and the `lw_firewall_*` option-prefix for rule changes.
+ * and the `lw_firewall_*` option-prefix for rule changes. Only a person
+ * saving a setting is logged, see {@see OptionChangePolicy}.
  */
 final class LwFirewallSensor extends AbstractSensor {
 
@@ -72,10 +74,15 @@ final class LwFirewallSensor extends AbstractSensor {
 		if ( $old_value === $value ) {
 			return;
 		}
+		if ( ! OptionChangePolicy::should_log_current( $option ) ) {
+			return;
+		}
 		$this->emit(
 			9501,
 			[
 				'rule'     => $option,
+				'target'   => OptionChangePolicy::target( $option ),
+				'changes'  => OptionChangePolicy::changes( $option, $old_value, $value ),
 				'metadata' => [ 'option' => $option ],
 			]
 		);
