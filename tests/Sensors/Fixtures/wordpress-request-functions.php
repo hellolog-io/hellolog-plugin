@@ -1,7 +1,7 @@
 <?php
 /**
  * Stand-ins for the WordPress calls that tell who is making the current
- * request and through which entry point.
+ * request, through which entry point and with which method.
  *
  * Loaded only by tests that run in a separate process: defining these makes
  * `function_exists()` true for the rest of the process.
@@ -29,5 +29,19 @@ namespace {
 
 	function wp_doing_cron(): bool {
 		return RequestState::$cron;
+	}
+
+	/**
+	 * @param string $value A string; core also takes arrays, the policy never passes one.
+	 */
+	function wp_unslash( $value ): string {
+		return stripslashes( (string) $value );
+	}
+
+	/**
+	 * @param string $value A string; the policy only reads the request method.
+	 */
+	function sanitize_text_field( $value ): string {
+		return trim( strip_tags( (string) $value ) );
 	}
 }

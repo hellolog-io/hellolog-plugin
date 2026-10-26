@@ -30,8 +30,13 @@ final class SensitiveOption {
 	 * content fields. The lookahead skips `auth` only when it is the whole
 	 * word `author(s)`; `authorization`, `authorise` and the like keep
 	 * matching because a letter follows `author`/`authors`.
+	 *
+	 * Bank details and signatures count too (`iban`, `account_number`,
+	 * `sort_code`, `routing_number`, `swift`, `signature`, `bic`). `bic` is
+	 * short enough to sit inside ordinary words (bicycle, bicolor), so it only
+	 * matches as a whole word between non-letters.
 	 */
-	private const PATTERN = '/key|secret|token|pass(word)?|pwd|credential|private|license|licence|salt|auth(?!ors?(?![a-z]))/i';
+	private const PATTERN = '/key|secret|token|pass(word)?|pwd|credential|private|license|licence|salt|iban|account_number|sort_code|routing_number|swift|signature|(?<![a-z])bic(?![a-z])|auth(?!ors?(?![a-z]))/i';
 
 	public static function is_sensitive( string $option ): bool {
 		return 1 === preg_match( self::PATTERN, $option );

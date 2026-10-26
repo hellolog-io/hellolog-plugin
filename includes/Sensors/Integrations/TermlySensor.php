@@ -43,14 +43,15 @@ final class TermlySensor extends AbstractSensor {
 		if ( $old_value === $value ) {
 			return;
 		}
-		if ( ! OptionChangePolicy::should_log_current( $option ) ) {
+		$changes = OptionChangePolicy::saved_changes( $option, $old_value, $value );
+		if ( [] === $changes ) {
 			return;
 		}
 		$this->emit(
 			8500,
 			[
 				'target'   => OptionChangePolicy::target( $option ),
-				'changes'  => OptionChangePolicy::changes( $option, $old_value, $value ),
+				'changes'  => $changes,
 				'metadata' => [ 'option' => $option ],
 			]
 		);

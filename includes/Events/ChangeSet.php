@@ -23,8 +23,15 @@ defined( 'ABSPATH' ) || exit;
  *
  * Some items carry no readable values and only say "this field changed":
  * fields that hold content or a password (both sides null), credential-like
- * names (both sides masked) and long values whose cut-off texts would look
- * identical (both sides null).
+ * names (both sides masked) and values whose reported texts would look
+ * identical (both sides null): long values cut to the same text, and arrays
+ * that only differ in a credential-like key.
+ *
+ * Arrays and objects are written out in full, so a credential-like KEY inside
+ * one (`secret_key`, `access_token`, `iban`…) has its value replaced by
+ * {@see SensitiveOption::REDACTED} at every depth, in every reported text.
+ * The comparison still sees the real values, so a changed secret is never
+ * lost, only never shown.
  */
 final class ChangeSet {
 
@@ -49,7 +56,7 @@ final class ChangeSet {
 	 *
 	 * Fields are compared by their stringified value, so `5` and `'5'`, or a
 	 * list in a different order, are not a change. The comparison runs on the
-	 * full value; only the reported values are truncated.
+	 * full, unmasked value; only the reported values are masked and truncated.
 	 *
 	 * @param array<int|string, mixed> $before         Snapshot before the change.
 	 * @param array<int|string, mixed> $after          Snapshot after the change.
@@ -90,12 +97,14 @@ final class ChangeSet {
 				$old = SensitiveOption::REDACTED;
 				$new = SensitiveOption::REDACTED;
 			} else {
-				$old_cut = self::truncate( $old );
-				$new_cut = self::truncate( $new );
+				// What is reported is the masked text: the comparison above ran
+				// on the real values, the reported ones never carry a secret.
+				$old_cut = self::truncate( self::normalize( $before[ $name ] ?? null, 0, true ) );
+				$new_cut = self::truncate( self::normalize( $after[ $name ] ?? null, 0, true ) );
 
-				// Values that only differ past the cut-off would read as "no
-				// change" (and merge() would drop them), so they become a
-				// plain "changed" flag instead.
+				// Values that only differ past the cut-off, or only in a masked
+				// secret, would read as "no change" (and merge() would drop
+				// them), so they become a plain "changed" flag instead.
 				$old = $old_cut === $new_cut ? null : $old_cut;
 				$new = $old_cut === $new_cut ? null : $new_cut;
 			}
@@ -115,13 +124,15 @@ final class ChangeSet {
 	 *
 	 * A null stays null, booleans read `yes`/`no`, numbers and strings are
 	 * cast, a list becomes its sorted values joined by `, ` and any other
-	 * array becomes JSON with its keys sorted at every depth. The result is
-	 * cut to {@see self::MAX_VALUE_LENGTH} characters, ending in `…`.
+	 * array becomes JSON with its keys sorted at every depth. The value of a
+	 * credential-like key inside an array or object reads
+	 * {@see SensitiveOption::REDACTED}. The result is cut to
+	 * {@see self::MAX_VALUE_LENGTH} characters, ending in `…`.
 	 *
 	 * @param mixed $v Any value.
 	 */
 	public static function stringify( $v ): ?string {
-		return self::truncate( self::normalize( $v ) );
+		return self::truncate( self::normalize( $v, 0, true ) );
 	}
 
 	/**
@@ -193,10 +204,16 @@ final class ChangeSet {
 	/**
 	 * Full, untruncated text of a value — what two snapshots are compared on.
 	 *
+	 * With `$mask` the value of every credential-like key inside an array or
+	 * object is replaced by {@see SensitiveOption::REDACTED}: that is the text
+	 * that may be reported. Without it the text is for comparing only and must
+	 * never leave this class.
+	 *
 	 * @param mixed $v     Any value.
 	 * @param int   $depth Array nesting level of `$v`.
+	 * @param bool  $mask  Whether to mask credential-like keys.
 	 */
-	private static function normalize( $v, int $depth = 0 ): ?string {
+	private static function normalize( $v, int $depth = 0, bool $mask = false ): ?string {
 		if ( null === $v ) {
 			return null;
 		}
@@ -224,7 +241,7 @@ final class ChangeSet {
 				return self::ELLIPSIS;
 			}
 
-			return self::is_list( $v ) ? self::join_list( $v, $depth ) : self::encode( $v, $depth );
+			return self::is_list( $v ) ? self::join_list( $v, $depth, $mask ) : self::encode( $v, $depth, $mask );
 		}
 
 		// Resources and anything else without a readable form.
@@ -254,11 +271,12 @@ final class ChangeSet {
 	 *
 	 * @param array<int, mixed> $list  List array.
 	 * @param int               $depth Array nesting level of `$list`.
+	 * @param bool              $mask  Whether to mask credential-like keys.
 	 */
-	private static function join_list( array $list, int $depth ): string {
+	private static function join_list( array $list, int $depth, bool $mask ): string {
 		$parts = [];
 		foreach ( $list as $item ) {
-			$parts[] = self::normalize( $item, $depth + 1 ) ?? '';
+			$parts[] = self::normalize( $item, $depth + 1, $mask ) ?? '';
 		}
 		sort( $parts, SORT_STRING );
 
@@ -271,9 +289,10 @@ final class ChangeSet {
 	 *
 	 * @param array<int|string, mixed> $data  Associative array.
 	 * @param int                      $depth Array nesting level of `$data`.
+	 * @param bool                     $mask  Whether to mask credential-like keys.
 	 */
-	private static function encode( array $data, int $depth ): string {
-		$json = self::json( self::sort_keys( $data, $depth ) );
+	private static function encode( array $data, int $depth, bool $mask ): string {
+		$json = self::json( self::sort_keys( $data, $depth, $mask ) );
 
 		return false === $json ? '<complex>' : $json;
 	}
@@ -281,14 +300,29 @@ final class ChangeSet {
 	/**
 	 * Recursively sort the keys of every associative array. Lists keep their
 	 * order. Builds a new array and never writes into the input, which may
-	 * hold references to the caller's own variables.
+	 * hold references to the caller's own variables. A nested object is read
+	 * the way a top-level one is: its text if it has one, else its properties,
+	 * so no object can carry a value past the masking.
+	 *
+	 * With `$mask`, the value of every credential-like key is replaced by
+	 * {@see SensitiveOption::REDACTED}, whatever it holds.
 	 *
 	 * @param mixed $v     Any value.
 	 * @param int   $depth Array nesting level of `$v`.
+	 * @param bool  $mask  Whether to mask credential-like keys.
 	 *
 	 * @return mixed
 	 */
-	private static function sort_keys( $v, int $depth ) {
+	private static function sort_keys( $v, int $depth, bool $mask ) {
+		if ( is_object( $v ) ) {
+			if ( $depth > self::MAX_DEPTH ) {
+				return self::ELLIPSIS;
+			}
+			if ( $v instanceof \Stringable ) {
+				return self::scrub( (string) $v );
+			}
+			$v = get_object_vars( $v );
+		}
 		if ( ! is_array( $v ) ) {
 			return $v;
 		}
@@ -298,7 +332,11 @@ final class ChangeSet {
 
 		$sorted = [];
 		foreach ( $v as $key => $item ) {
-			$sorted[ $key ] = self::sort_keys( $item, $depth + 1 );
+			if ( $mask && is_string( $key ) && SensitiveOption::is_sensitive( $key ) ) {
+				$sorted[ $key ] = SensitiveOption::REDACTED;
+				continue;
+			}
+			$sorted[ $key ] = self::sort_keys( $item, $depth + 1, $mask );
 		}
 		if ( ! self::is_list( $v ) ) {
 			ksort( $sorted, SORT_STRING );

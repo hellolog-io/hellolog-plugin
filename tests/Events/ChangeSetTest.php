@@ -263,6 +263,207 @@ final class ChangeSetTest extends TestCase {
 	}
 
 	/**
+	 * A gateway's whole settings array is one option. The keys inside it that
+	 * look like credentials must never be sent, whatever else changes.
+	 *
+	 * @param string $enabled Value of the `enabled` setting.
+	 * @param string $suffix  Distinguishes the secrets of one snapshot from another.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private static function stripe_settings( string $enabled, string $suffix ): array {
+		return [
+			'enabled'         => $enabled,
+			'title'           => 'Card',
+			'secret_key'      => 'sk_live_' . $suffix,
+			'test_secret_key' => 'sk_test_' . $suffix,
+			'webhook_secret'  => 'whsec_' . $suffix,
+		];
+	}
+
+	public function test_a_nested_secret_that_is_the_only_change_becomes_a_changed_flag(): void {
+		$changes = ChangeSet::diff(
+			[ 'woocommerce_stripe_settings' => self::stripe_settings( 'yes', 'OLD' ) ],
+			[ 'woocommerce_stripe_settings' => self::stripe_settings( 'yes', 'NEW' ) ],
+			[ 'woocommerce_stripe_settings' ]
+		);
+
+		$this->assertSame( [ self::item( 'woocommerce_stripe_settings', null, null ) ], $changes );
+	}
+
+	public function test_nested_secrets_are_masked_next_to_a_visible_change(): void {
+		$changes = ChangeSet::diff(
+			[ 'woocommerce_stripe_settings' => self::stripe_settings( 'no', 'OLD' ) ],
+			[ 'woocommerce_stripe_settings' => self::stripe_settings( 'yes', 'NEW' ) ],
+			[ 'woocommerce_stripe_settings' ]
+		);
+
+		$this->assertSame(
+			[
+				self::item(
+					'woocommerce_stripe_settings',
+					'{"enabled":"no","secret_key":"[redacted]","test_secret_key":"[redacted]","title":"Card","webhook_secret":"[redacted]"}',
+					'{"enabled":"yes","secret_key":"[redacted]","test_secret_key":"[redacted]","title":"Card","webhook_secret":"[redacted]"}'
+				),
+			],
+			$changes
+		);
+
+		$json = (string) json_encode( $changes );
+		foreach ( [ 'sk_live_', 'sk_test_', 'whsec_', 'OLD', 'NEW' ] as $secret ) {
+			$this->assertStringNotContainsString( $secret, $json );
+		}
+	}
+
+	public function test_a_structure_stored_under_a_credential_like_key_is_masked_whole(): void {
+		$tokens = static fn( string $suffix ): array => [
+			'access_token'  => 'at_' . $suffix,
+			'refresh_token' => 'rt_' . $suffix,
+			'expires'       => 3600,
+		];
+
+		$changes = ChangeSet::diff(
+			[
+				'wpseo' => [
+					'content_analysis_active' => false,
+					'semrush_tokens'          => $tokens( 'OLD' ),
+					'wincher_tokens'          => $tokens( 'OLD' ),
+				],
+			],
+			[
+				'wpseo' => [
+					'content_analysis_active' => true,
+					'semrush_tokens'          => $tokens( 'NEW' ),
+					'wincher_tokens'          => $tokens( 'NEW' ),
+				],
+			],
+			[ 'wpseo' ]
+		);
+
+		$this->assertSame(
+			[
+				self::item(
+					'wpseo',
+					'{"content_analysis_active":false,"semrush_tokens":"[redacted]","wincher_tokens":"[redacted]"}',
+					'{"content_analysis_active":true,"semrush_tokens":"[redacted]","wincher_tokens":"[redacted]"}'
+				),
+			],
+			$changes
+		);
+
+		$json = (string) json_encode( $changes );
+		foreach ( [ 'at_', 'rt_', 'OLD', 'NEW' ] as $secret ) {
+			$this->assertStringNotContainsString( $secret, $json );
+		}
+	}
+
+	/**
+	 * @param string $iban IBAN of the second account.
+	 *
+	 * @return array<int, array<string, string>>
+	 */
+	private static function bacs_accounts( string $iban ): array {
+		return [
+			[
+				'account_name'   => 'Shop Ltd',
+				'account_number' => '12345678',
+				'sort_code'      => '12-34-56',
+				'bank_name'      => 'Example Bank',
+				'iban'           => 'GB33BUKB20201555555555',
+				'bic'            => 'BUKBGB22',
+			],
+			[
+				'account_name'   => 'Shop Ltd EUR',
+				'account_number' => '87654321',
+				'sort_code'      => '65-43-21',
+				'bank_name'      => 'Other Bank',
+				'iban'           => $iban,
+				'bic'            => 'ABCDDEFF',
+			],
+		];
+	}
+
+	public function test_bank_details_inside_a_list_of_accounts_are_masked(): void {
+		$changes = ChangeSet::diff(
+			[ 'woocommerce_bacs_accounts' => self::bacs_accounts( 'DE89370400440532013000' ) ],
+			[ 'woocommerce_bacs_accounts' => self::bacs_accounts( 'FR1420041010050500013M02606' ) ],
+			[ 'woocommerce_bacs_accounts' ]
+		);
+
+		$this->assertSame( [ self::item( 'woocommerce_bacs_accounts', null, null ) ], $changes );
+
+		$renamed = self::bacs_accounts( 'DE89370400440532013000' );
+		$renamed[1]['account_name'] = 'Shop Ltd EUR 2';
+
+		$changes = ChangeSet::diff(
+			[ 'woocommerce_bacs_accounts' => self::bacs_accounts( 'DE89370400440532013000' ) ],
+			[ 'woocommerce_bacs_accounts' => $renamed ],
+			[ 'woocommerce_bacs_accounts' ]
+		);
+
+		$this->assertCount( 1, $changes );
+		$json = (string) json_encode( $changes );
+		$this->assertStringContainsString( 'Shop Ltd EUR 2', $json );
+		$this->assertStringContainsString( '"iban":"[redacted]"', (string) $changes[0]['new'] );
+		foreach ( [ '12345678', '87654321', '12-34-56', 'GB33BUKB', 'DE89', 'BUKBGB22', 'ABCDDEFF' ] as $detail ) {
+			$this->assertStringNotContainsString( $detail, $json );
+		}
+	}
+
+	public function test_nested_masking_ignores_the_case_of_a_key(): void {
+		$changes = ChangeSet::diff(
+			[ 'gateway' => [ 'API_KEY' => 'one' ] ],
+			[ 'gateway' => [ 'API_KEY' => 'two' ] ],
+			[ 'gateway' ]
+		);
+
+		$this->assertSame( [ self::item( 'gateway', null, null ) ], $changes );
+	}
+
+	public function test_a_secret_inside_a_nested_object_is_masked_too(): void {
+		$old = [ 'gateway' => [ 'mode' => 'test', 'client' => (object) [ 'client_secret' => 'OLD', 'id' => 'abc' ] ] ];
+		$new = [ 'gateway' => [ 'mode' => 'live', 'client' => (object) [ 'client_secret' => 'NEW', 'id' => 'abc' ] ] ];
+
+		$changes = ChangeSet::diff( $old, $new, [ 'gateway' ] );
+
+		$this->assertSame(
+			[
+				self::item(
+					'gateway',
+					'{"client":{"client_secret":"[redacted]","id":"abc"},"mode":"test"}',
+					'{"client":{"client_secret":"[redacted]","id":"abc"},"mode":"live"}'
+				),
+			],
+			$changes
+		);
+	}
+
+	public function test_a_credential_like_key_in_a_list_item_is_masked(): void {
+		$changes = ChangeSet::diff(
+			[ 'hooks' => [ [ 'url' => 'https://a.example', 'secret' => 'OLD' ] ] ],
+			[ 'hooks' => [ [ 'url' => 'https://b.example', 'secret' => 'NEW' ] ] ],
+			[ 'hooks' ]
+		);
+
+		$this->assertCount( 1, $changes );
+		$this->assertStringNotContainsString( 'OLD', (string) json_encode( $changes ) );
+		$this->assertStringNotContainsString( 'NEW', (string) json_encode( $changes ) );
+	}
+
+	public function test_a_key_that_is_not_a_credential_keeps_its_value(): void {
+		$changes = ChangeSet::diff(
+			[ 'gateway' => [ 'title' => 'Card', 'authors' => 'Ann' ] ],
+			[ 'gateway' => [ 'title' => 'Credit card', 'authors' => 'Ann' ] ],
+			[ 'gateway' ]
+		);
+
+		$this->assertSame(
+			[ self::item( 'gateway', '{"authors":"Ann","title":"Card"}', '{"authors":"Ann","title":"Credit card"}' ) ],
+			$changes
+		);
+	}
+
+	/**
 	 * @return array<string, array{0: string}>
 	 */
 	public static function password_field_provider(): array {
@@ -376,6 +577,21 @@ final class ChangeSetTest extends TestCase {
 		];
 
 		$this->assertSame( [], ChangeSet::diff( $before, $after, [ 'opt' ] ) );
+	}
+
+	public function test_stringify_masks_credential_like_keys_at_every_depth(): void {
+		$this->assertSame(
+			'{"a":{"api_key":"[redacted]","name":"x"},"token":"[redacted]"}',
+			ChangeSet::stringify(
+				[
+					'token' => 'tk',
+					'a'     => [
+						'name'    => 'x',
+						'api_key' => 'k',
+					],
+				]
+			)
+		);
 	}
 
 	public function test_long_strings_are_cut_to_1024_characters_ending_with_an_ellipsis(): void {

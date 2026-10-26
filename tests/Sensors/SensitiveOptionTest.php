@@ -62,6 +62,55 @@ final class SensitiveOptionTest extends TestCase {
 	}
 
 	/**
+	 * @dataProvider bank_names
+	 */
+	public function test_bank_detail_names_are_sensitive( string $name ): void {
+		$this->assertTrue( SensitiveOption::is_sensitive( $name ) );
+	}
+
+	/**
+	 * @return array<string, array{string}>
+	 */
+	public static function bank_names(): array {
+		return [
+			'iban'           => [ 'iban' ],
+			'upper case iban' => [ 'IBAN' ],
+			'account iban'   => [ 'woocommerce_bacs_iban' ],
+			'account number' => [ 'account_number' ],
+			'sort code'      => [ 'sort_code' ],
+			'bic'            => [ 'bic' ],
+			'bic prefixed'   => [ 'bank_bic' ],
+			'bic suffixed'   => [ 'bic_code' ],
+			'upper case bic' => [ 'BIC' ],
+			'routing number' => [ 'routing_number' ],
+			'swift'          => [ 'swift' ],
+			'swift code'     => [ 'swift_code' ],
+			'signature'      => [ 'webhook_signature' ],
+		];
+	}
+
+	/**
+	 * `bic` is short enough to sit inside ordinary words.
+	 *
+	 * @dataProvider words_with_bic_inside
+	 */
+	public function test_a_name_that_only_contains_bic_inside_a_word_is_not_sensitive( string $name ): void {
+		$this->assertFalse( SensitiveOption::is_sensitive( $name ) );
+	}
+
+	/**
+	 * @return array<string, array{string}>
+	 */
+	public static function words_with_bic_inside(): array {
+		return [
+			'bicycle' => [ 'shop_bicycle_rental' ],
+			'bicolor' => [ 'banner_bicolor' ],
+			'fabric'  => [ 'fabric_type' ],
+			'public'  => [ 'public_name' ],
+		];
+	}
+
+	/**
 	 * @dataProvider author_names
 	 */
 	public function test_author_names_are_not_sensitive( string $name ): void {

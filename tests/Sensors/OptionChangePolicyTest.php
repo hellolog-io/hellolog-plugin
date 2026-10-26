@@ -19,32 +19,38 @@ final class OptionChangePolicyTest extends TestCase {
 	/**
 	 * @dataProvider decisions
 	 */
-	public function test_only_a_person_saving_a_real_setting_is_logged( string $option, string $source, bool $has_actor, bool $expected ): void {
-		$this->assertSame( $expected, OptionChangePolicy::should_log( $option, $source, $has_actor ) );
+	public function test_only_a_person_saving_a_real_setting_is_logged( string $option, string $source, bool $has_actor, string $method, bool $expected ): void {
+		$this->assertSame( $expected, OptionChangePolicy::should_log( $option, $source, $has_actor, $method ) );
 	}
 
 	/**
-	 * @return array<string, array{0: string, 1: string, 2: bool, 3: bool}> Option, source, has actor, logged.
+	 * @return array<string, array{0: string, 1: string, 2: bool, 3: string, 4: bool}> Option, source, has actor, HTTP method, logged.
 	 */
 	public static function decisions(): array {
 		return [
-			'woo tracks queue bookkeeping in admin'   => [ 'woocommerce_clear_ces_tracks_queue_for_page', 'admin', true, false ],
-			'rank math notifications in admin'        => [ 'rank_math_notifications', 'admin', true, false ],
-			'woo currency saved in admin'             => [ 'woocommerce_currency', 'admin', true, true ],
-			'woo guest checkout saved over ajax'      => [ 'woocommerce_enable_guest_checkout', 'ajax', true, true ],
-			'rank math modules saved in admin'        => [ 'rank_math_modules', 'admin', true, true ],
-			'woo currency from cron without actor'    => [ 'woocommerce_currency', 'cron', false, false ],
-			'woo currency from the frontend'          => [ 'woocommerce_currency', 'frontend', true, false ],
-			'yoast titles saved over rest'            => [ 'wpseo_titles', 'rest', true, true ],
-			'woo db version bumped by cli'            => [ 'woocommerce_db_version', 'cli', true, false ],
+			'woo tracks queue bookkeeping in admin'   => [ 'woocommerce_clear_ces_tracks_queue_for_page', 'admin', true, 'POST', false ],
+			'rank math notifications in admin'        => [ 'rank_math_notifications', 'admin', true, 'POST', false ],
+			'woo currency saved in admin'             => [ 'woocommerce_currency', 'admin', true, 'POST', true ],
+			'woo guest checkout saved over ajax'      => [ 'woocommerce_enable_guest_checkout', 'ajax', true, 'POST', true ],
+			'rank math modules saved in admin'        => [ 'rank_math_modules', 'admin', true, 'POST', true ],
+			'woo currency from cron without actor'    => [ 'woocommerce_currency', 'cron', false, 'GET', false ],
+			'woo currency from the frontend'          => [ 'woocommerce_currency', 'frontend', true, 'POST', false ],
+			'yoast titles saved over rest'            => [ 'wpseo_titles', 'rest', true, 'POST', true ],
+			'woo db version bumped by cli'            => [ 'woocommerce_db_version', 'cli', true, '', false ],
 		];
+	}
+
+	public function test_the_original_three_argument_rule_still_holds(): void {
+		$this->assertTrue( OptionChangePolicy::should_log( 'woocommerce_currency', 'admin', true ) );
+		$this->assertFalse( OptionChangePolicy::should_log( 'woocommerce_currency', 'admin', false ) );
+		$this->assertFalse( OptionChangePolicy::should_log( 'woocommerce_currency', 'cron', true ) );
 	}
 
 	/**
 	 * @dataProvider sources
 	 */
 	public function test_a_real_setting_is_logged_for_interactive_sources_only( string $source, bool $expected ): void {
-		$this->assertSame( $expected, OptionChangePolicy::should_log( 'woocommerce_currency', $source, true ) );
+		$this->assertSame( $expected, OptionChangePolicy::should_log( 'woocommerce_currency', $source, true, 'POST' ) );
 	}
 
 	/**
@@ -66,18 +72,75 @@ final class OptionChangePolicyTest extends TestCase {
 	}
 
 	/**
+	 * A person is needed everywhere except the command line: WP-CLI runs as
+	 * nobody unless `--user` is given, and a command is always somebody's
+	 * deliberate act.
+	 *
 	 * @dataProvider sources
 	 */
-	public function test_no_source_is_logged_without_a_signed_in_person( string $source ): void {
-		$this->assertFalse( OptionChangePolicy::should_log( 'woocommerce_currency', $source, false ) );
+	public function test_only_the_command_line_is_logged_without_a_signed_in_person( string $source ): void {
+		$this->assertSame(
+			RequestSource::CLI === $source,
+			OptionChangePolicy::should_log( 'woocommerce_currency', $source, false, 'POST' )
+		);
 	}
 
 	/**
+	 * @dataProvider sources
+	 */
+	public function test_background_work_is_never_logged_whatever_the_source( string $source ): void {
+		foreach ( [ true, false ] as $has_actor ) {
+			$this->assertFalse( OptionChangePolicy::should_log( 'woocommerce_currency', $source, $has_actor, 'POST', true ) );
+		}
+	}
+
+	public function test_a_cron_event_run_from_the_command_line_is_background_work(): void {
+		$this->assertTrue( OptionChangePolicy::should_log( 'woocommerce_currency', RequestSource::CLI, false, '', false ) );
+		$this->assertFalse( OptionChangePolicy::should_log( 'woocommerce_currency', RequestSource::CLI, false, '', true ) );
+	}
+
+	/**
+	 * @dataProvider methods
+	 */
+	public function test_only_a_save_counts_not_a_page_view( string $source, string $method, bool $expected ): void {
+		$this->assertSame( $expected, OptionChangePolicy::should_log( 'woocommerce_currency', $source, true, $method ) );
+	}
+
+	/**
+	 * @return array<string, array{0: string, 1: string, 2: bool}> Source, HTTP method, logged.
+	 */
+	public static function methods(): array {
+		return [
+			'admin POST'              => [ RequestSource::ADMIN, 'POST', true ],
+			'admin POST lower case'   => [ RequestSource::ADMIN, 'post', true ],
+			'admin GET'               => [ RequestSource::ADMIN, 'GET', false ],
+			'admin HEAD'              => [ RequestSource::ADMIN, 'HEAD', false ],
+			'admin unknown method'    => [ RequestSource::ADMIN, '', false ],
+			'ajax POST'               => [ RequestSource::AJAX, 'POST', true ],
+			'ajax GET'                => [ RequestSource::AJAX, 'GET', false ],
+			'rest POST'               => [ RequestSource::REST, 'POST', true ],
+			'rest PUT'                => [ RequestSource::REST, 'PUT', true ],
+			'rest PATCH'              => [ RequestSource::REST, 'PATCH', true ],
+			'rest DELETE'             => [ RequestSource::REST, 'DELETE', true ],
+			'rest GET'                => [ RequestSource::REST, 'GET', false ],
+			'rest HEAD'               => [ RequestSource::REST, 'HEAD', false ],
+			'rest OPTIONS'            => [ RequestSource::REST, 'OPTIONS', false ],
+			'rest unknown method'     => [ RequestSource::REST, '', false ],
+			'cli without a method'    => [ RequestSource::CLI, '', true ],
+			'cli with a stray method' => [ RequestSource::CLI, 'GET', true ],
+		];
+	}
+
+	/**
+	 * Real names (the brief and production): the first group is plugin
+	 * bookkeeping. Names marked "(synthetic)" are made up to exercise exactly
+	 * one alternative of the pattern.
+	 *
 	 * @dataProvider internal_options
 	 */
 	public function test_bookkeeping_options_are_never_logged( string $option ): void {
 		$this->assertTrue( OptionChangePolicy::is_internal( $option ) );
-		$this->assertFalse( OptionChangePolicy::should_log( $option, 'admin', true ) );
+		$this->assertFalse( OptionChangePolicy::should_log( $option, 'admin', true, 'POST' ) );
 	}
 
 	/**
@@ -85,36 +148,53 @@ final class OptionChangePolicyTest extends TestCase {
 	 */
 	public static function internal_options(): array {
 		return [
-			'leading underscore'   => [ '_woocommerce_helper_data' ],
-			'transient'            => [ 'woocommerce_admin_transient_x' ],
-			'queue'                => [ 'woocommerce_clear_ces_tracks_queue_for_page' ],
-			'notifications'        => [ 'rank_math_notifications' ],
-			'notification'         => [ 'wpseo_first_notification' ],
-			'notices'              => [ 'wpseo_dismissed_notices' ],
-			'notice'               => [ 'rank_math_admin_notice' ],
-			'tracks'               => [ 'woocommerce_tracks_anon_id' ],
-			'cache'                => [ 'woocommerce_cache_settings' ],
-			'lock'                 => [ 'woocommerce_task_lock' ],
-			'version'              => [ 'rank_math_version' ],
-			'db version'           => [ 'woocommerce_db_version' ],
-			'last run'             => [ 'woocommerce_last_run' ],
-			'timestamp'            => [ 'wpseo_activation_timestamp' ],
-			'onboarding'           => [ 'woocommerce_onboarding_profile' ],
-			'task list'            => [ 'woocommerce_task_list_hidden' ],
-			'marketplace'          => [ 'woocommerce_marketplace_suggestions' ],
-			'admin notes'          => [ 'woocommerce_admin_notes_x' ],
-			'dismissed'            => [ 'rank_math_dismissed_x' ],
-			'flush rewrite'        => [ 'wpseo_flush_rewrite' ],
-			'schema version'       => [ 'wpseo_schema_version' ],
-			'usage tracking'       => [ 'woocommerce_allow_tracking_usage_tracking' ],
+			// Real names.
+			'tracks queue (real)'                    => [ 'woocommerce_clear_ces_tracks_queue_for_page' ],
+			'rank math notifications (real)'         => [ 'rank_math_notifications' ],
+			'woo db version (real)'                  => [ 'woocommerce_db_version' ],
+			'woo marketplace suggestions (real)'     => [ 'woocommerce_marketplace_suggestions' ],
+			'firewall log (real)'                    => [ 'lw_firewall_log' ],
+			'firewall user locks (real)'             => [ 'lw_firewall_user_locks' ],
+			'seo cleanup done flag (real)'           => [ 'lw_seo_cleanup_v1314_done' ],
+			// One synthetic name per alternative of the pattern.
+			'leading underscore (synthetic)'         => [ '_woocommerce_helper_data' ],
+			'transient (synthetic)'                  => [ 'woocommerce_admin_transient_x' ],
+			'queue (synthetic)'                      => [ 'woocommerce_sync_queue' ],
+			'notification (synthetic)'               => [ 'wpseo_first_notification' ],
+			'plural notices (synthetic)'             => [ 'wpseo_dismissed_notices' ],
+			'admin notice (synthetic)'               => [ 'rank_math_admin_notice' ],
+			'admin notices (synthetic)'              => [ 'woocommerce_admin_notices' ],
+			'tracks (synthetic)'                     => [ 'woocommerce_tracks_anon_id' ],
+			'cache (synthetic)'                      => [ 'woocommerce_cache_settings' ],
+			'lock (synthetic)'                       => [ 'woocommerce_task_lock' ],
+			'locks (synthetic)'                      => [ 'lw_firewall_ip_locks' ],
+			'log (synthetic)'                        => [ 'lw_cookie_consent_log' ],
+			'bans (synthetic)'                       => [ 'lw_firewall_ip_bans' ],
+			'baseline (synthetic)'                   => [ 'lw_firewall_file_baseline' ],
+			'rev (synthetic)'                        => [ 'lw_seo_cache_rev' ],
+			'done (synthetic)'                       => [ 'lw_cookie_migration_done' ],
+			'skipped (synthetic)'                    => [ 'lw_seo_skipped_urls' ],
+			'version (synthetic)'                    => [ 'rank_math_version' ],
+			'last run (synthetic)'                   => [ 'woocommerce_last_run' ],
+			'timestamp (synthetic)'                  => [ 'wpseo_activation_timestamp' ],
+			'onboarding (synthetic)'                 => [ 'woocommerce_onboarding_profile' ],
+			'task list (synthetic)'                  => [ 'woocommerce_task_list_hidden' ],
+			'admin notes (synthetic)'                => [ 'woocommerce_admin_notes_x' ],
+			'dismissed (synthetic)'                  => [ 'rank_math_dismissed_x' ],
+			'flush rewrite (synthetic)'              => [ 'wpseo_flush_rewrite' ],
+			'schema version (synthetic)'             => [ 'wpseo_schema_version' ],
+			'usage tracking (synthetic)'             => [ 'woocommerce_allow_tracking_usage_tracking' ],
 		];
 	}
 
 	/**
+	 * Settings that the bookkeeping pattern must NOT swallow.
+	 *
 	 * @dataProvider setting_options
 	 */
 	public function test_ordinary_setting_names_are_not_internal( string $option ): void {
 		$this->assertFalse( OptionChangePolicy::is_internal( $option ) );
+		$this->assertTrue( OptionChangePolicy::should_log( $option, 'admin', true, 'POST' ) );
 	}
 
 	/**
@@ -122,12 +202,15 @@ final class OptionChangePolicyTest extends TestCase {
 	 */
 	public static function setting_options(): array {
 		return [
-			'currency'       => [ 'woocommerce_currency' ],
-			'guest checkout' => [ 'woocommerce_enable_guest_checkout' ],
-			'modules'        => [ 'rank_math_modules' ],
-			'titles'         => [ 'wpseo_titles' ],
-			'termly'         => [ 'termly_banner_position' ],
-			'firewall'       => [ 'lw_firewall_rules' ],
+			'currency (real)'                      => [ 'woocommerce_currency' ],
+			'guest checkout (real)'                => [ 'woocommerce_enable_guest_checkout' ],
+			'demo store notice (real)'             => [ 'woocommerce_demo_store_notice' ],
+			'show marketplace suggestions (real)'  => [ 'woocommerce_show_marketplace_suggestions' ],
+			'rank math modules (real)'             => [ 'rank_math_modules' ],
+			'rank math general (real)'             => [ 'rank-math-options-general' ],
+			'yoast titles (real)'                  => [ 'wpseo_titles' ],
+			'firewall rules (synthetic)'           => [ 'lw_firewall_rules' ],
+			'termly banner position (synthetic)'   => [ 'termly_banner_position' ],
 		];
 	}
 

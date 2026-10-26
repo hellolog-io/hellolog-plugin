@@ -38,6 +38,9 @@ use PHPUnit\Framework\TestCase;
 final class OptionSensorsTest extends TestCase {
 
 	/**
+	 * The option names here are synthetic: one plausible setting under each
+	 * sensor's prefix, not a name any plugin is known to use.
+	 *
 	 * @return array<string, array{0: class-string<AbstractSensor>, 1: string, 2: string, 3: int}>
 	 *         Sensor, the method `updated_option` calls, a setting of its own, event code.
 	 */
@@ -241,6 +244,229 @@ final class OptionSensorsTest extends TestCase {
 	}
 
 	/**
+	 * An admin page view that happens to write an option (a plugin's queue or
+	 * counter) is bookkeeping, not a save.
+	 *
+	 * @dataProvider sensors
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param class-string<AbstractSensor> $class  Sensor.
+	 * @param string                       $method Method `updated_option` calls.
+	 * @param string                       $option A setting of the sensor's own.
+	 */
+	public function test_a_write_during_a_dashboard_page_view_logs_nothing( string $class, string $method, string $option ): void {
+		$_SERVER['REQUEST_METHOD'] = 'GET';
+
+		$recorder = $this->recorder();
+		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after' );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * @dataProvider sensors
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param class-string<AbstractSensor> $class  Sensor.
+	 * @param string                       $method Method `updated_option` calls.
+	 * @param string                       $option A setting of the sensor's own.
+	 */
+	public function test_a_rest_write_is_logged_but_a_rest_read_is_not( string $class, string $method, string $option ): void {
+		define( 'REST_REQUEST', true );
+		RequestState::$admin = false;
+
+		$_SERVER['REQUEST_METHOD'] = 'PUT';
+		$recorder                  = $this->recorder();
+		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after' );
+		$this->assertCount( 1, $recorder->calls );
+
+		$_SERVER['REQUEST_METHOD'] = 'GET';
+		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after again' );
+		$this->assertCount( 1, $recorder->calls );
+	}
+
+	/**
+	 * WP-CLI runs as nobody unless `--user` is given; a command is deliberate.
+	 *
+	 * @dataProvider sensors
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param class-string<AbstractSensor> $class  Sensor.
+	 * @param string                       $method Method `updated_option` calls.
+	 * @param string                       $option A setting of the sensor's own.
+	 */
+	public function test_a_command_line_write_is_logged_without_a_signed_in_person( string $class, string $method, string $option ): void {
+		define( 'WP_CLI', true );
+		RequestState::$admin   = false;
+		RequestState::$user_id = 0;
+
+		$recorder = $this->recorder();
+		unset( $_SERVER['REQUEST_METHOD'] );
+		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after' );
+
+		$this->assertCount( 1, $recorder->calls );
+	}
+
+	/**
+	 * `wp cron event run` defines DOING_CRON inside a WP-CLI process, and
+	 * Action Scheduler runs jobs from the command line too. Even with a user
+	 * given to WP-CLI (`--user`) such a run has no person behind its writes.
+	 *
+	 * @dataProvider sensors
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param class-string<AbstractSensor> $class  Sensor.
+	 * @param string                       $method Method `updated_option` calls.
+	 * @param string                       $option A setting of the sensor's own.
+	 */
+	public function test_a_command_line_cron_run_or_job_logs_nothing( string $class, string $method, string $option ): void {
+		define( 'WP_CLI', true );
+		RequestState::$admin   = false;
+		RequestState::$user_id = 1;
+		RequestState::$cron    = true;
+
+		$recorder = $this->recorder();
+		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after' );
+		$this->assertSame( [], $recorder->calls );
+
+		RequestState::$cron = false;
+		ActionSchedulerContext::begin();
+		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after' );
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * `updated_option` fires when the stored text differs, which `1` and `'1'`
+	 * do, but nothing a reader could see changed.
+	 *
+	 * @dataProvider sensors
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param class-string<AbstractSensor> $class  Sensor.
+	 * @param string                       $method Method `updated_option` calls.
+	 * @param string                       $option A setting of the sensor's own.
+	 */
+	public function test_a_write_that_changes_nothing_a_reader_can_see_logs_nothing( string $class, string $method, string $option ): void {
+		$recorder = $this->recorder();
+		$sensor   = $this->sensor( $class, $recorder );
+		$sensor->$method( $option, 1, '1' );
+		$sensor->$method( $option, [ 'a', 'b' ], [ 'b', 'a' ] );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_real_settings_the_pattern_used_to_hide_are_logged(): void {
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceSettingsSensor( $recorder );
+		$sensor->on_update( 'woocommerce_demo_store_notice', 'Sale', 'Big sale' );
+		$sensor->on_update( 'woocommerce_show_marketplace_suggestions', 'yes', 'no' );
+		$sensor->on_update( 'woocommerce_marketplace_suggestions', [ 'a' ], [ 'b' ] );
+
+		$this->assertSame(
+			[ 'woocommerce_demo_store_notice', 'woocommerce_show_marketplace_suggestions' ],
+			array_column( array_column( $recorder->calls, 1 ), 'option' )
+		);
+	}
+
+	/**
+	 * Rank Math's own settings options are hyphenated.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_rank_math_settings_with_hyphenated_names_are_logged(): void {
+		$recorder = $this->recorder();
+		$sensor   = new RankMathSensor( $recorder );
+		foreach ( [ 'rank-math-options-general', 'rank-math-options-titles', 'rank-math-options-sitemap' ] as $option ) {
+			$sensor->on_update( $option, [ 'a' => 'before' ], [ 'a' => 'after' ] );
+		}
+
+		$this->assertSame( [ 8900, 8900, 8900 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame(
+			[ 'rank-math-options-general', 'rank-math-options-titles', 'rank-math-options-sitemap' ],
+			array_column( array_column( array_column( $recorder->calls, 1 ), 'target' ), 'id' )
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_option_that_only_starts_with_rank_logs_nothing(): void {
+		$recorder = $this->recorder();
+		( new RankMathSensor( $recorder ) )->on_update( 'ranking_page', 'before', 'after' );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * A gateway keeps all its settings, secrets included, in one array option.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_gateway_settings_save_never_carries_its_secrets(): void {
+		$settings = static fn( string $enabled, string $suffix ): array => [
+			'enabled'         => $enabled,
+			'secret_key'      => 'sk_live_' . $suffix,
+			'test_secret_key' => 'sk_test_' . $suffix,
+			'webhook_secret'  => 'whsec_' . $suffix,
+		];
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceSettingsSensor( $recorder );
+		$sensor->on_update( 'woocommerce_stripe_settings', $settings( 'no', 'OLD' ), $settings( 'yes', 'NEW' ) );
+		$sensor->on_update( 'woocommerce_stripe_settings', $settings( 'yes', 'NEW' ), $settings( 'yes', 'NEWER' ) );
+
+		$this->assertCount( 2, $recorder->calls );
+		$this->assertSame(
+			'{"enabled":"yes","secret_key":"[redacted]","test_secret_key":"[redacted]","webhook_secret":"[redacted]"}',
+			$recorder->calls[0][1]['changes'][0]['new']
+		);
+		$this->assertNull( $recorder->calls[1][1]['changes'][0]['old'], 'A secret that is the only change is a plain changed flag.' );
+		$this->assertNull( $recorder->calls[1][1]['changes'][0]['new'] );
+		foreach ( $recorder->calls as $call ) {
+			$flat = serialize( $call[1] );
+			foreach ( [ 'sk_live_', 'sk_test_', 'whsec_', 'OLD', 'NEW' ] as $secret ) {
+				$this->assertStringNotContainsString( $secret, $flat );
+			}
+		}
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_seo_plugin_settings_never_carry_the_nested_tokens(): void {
+		$wpseo = static fn( bool $on, string $suffix ): array => [
+			'content_analysis_active' => $on,
+			'semrush_tokens'          => [
+				'access_token'  => 'at_' . $suffix,
+				'refresh_token' => 'rt_' . $suffix,
+			],
+		];
+
+		$recorder = $this->recorder();
+		( new YoastSeoSensor( $recorder ) )->on_update( 'wpseo', $wpseo( false, 'OLD' ), $wpseo( true, 'NEW' ) );
+
+		$this->assertCount( 1, $recorder->calls );
+		$flat = serialize( $recorder->calls[0][1] );
+		foreach ( [ 'at_', 'rt_', 'OLD', 'NEW' ] as $secret ) {
+			$this->assertStringNotContainsString( $secret, $flat );
+		}
+		$this->assertStringContainsString( '"semrush_tokens":"[redacted]"', $recorder->calls[0][1]['changes'][0]['new'] );
+	}
+
+	/**
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
@@ -365,10 +591,14 @@ final class OptionSensorsTest extends TestCase {
 
 	/**
 	 * A dispatcher that keeps what it was given. Also loads the request
-	 * stand-ins, so call it before any sensor runs.
+	 * stand-ins and defaults the request to a POST, so call it before any
+	 * sensor runs.
 	 */
 	private function recorder(): EventDispatcher {
 		require_once __DIR__ . '/Fixtures/wordpress-request-functions.php';
+
+		// A dashboard save unless the test set another method first.
+		$_SERVER['REQUEST_METHOD'] = $_SERVER['REQUEST_METHOD'] ?? 'POST';
 
 		return new class() implements EventDispatcher {
 

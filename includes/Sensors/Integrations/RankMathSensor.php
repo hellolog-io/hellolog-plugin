@@ -15,9 +15,11 @@ use HelloLog\Sensors\OptionChangePolicy;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * RankMath options live under `rank_math_*`. We tag changes with the
- * dedicated 8900 code so SEO traffic stays distinguishable in the log. Only
- * a person saving a setting is logged, see {@see OptionChangePolicy}.
+ * RankMath options live under `rank_math_*`, and its settings screens save
+ * hyphenated ones (`rank-math-options-general`, `-titles`, `-sitemap`). We
+ * tag changes with the dedicated 8900 code so SEO traffic stays
+ * distinguishable in the log. Only a person saving a setting is logged, see
+ * {@see OptionChangePolicy}.
  */
 final class RankMathSensor extends AbstractSensor {
 
@@ -38,13 +40,14 @@ final class RankMathSensor extends AbstractSensor {
 	 * @param mixed $value
 	 */
 	public function on_update( string $option, $old_value, $value ): void {
-		if ( ! str_starts_with( $option, 'rank_math' ) ) {
+		if ( ! str_starts_with( $option, 'rank_math' ) && ! str_starts_with( $option, 'rank-math' ) ) {
 			return;
 		}
 		if ( $old_value === $value ) {
 			return;
 		}
-		if ( ! OptionChangePolicy::should_log_current( $option ) ) {
+		$changes = OptionChangePolicy::saved_changes( $option, $old_value, $value );
+		if ( [] === $changes ) {
 			return;
 		}
 		$this->emit(
@@ -52,7 +55,7 @@ final class RankMathSensor extends AbstractSensor {
 			[
 				'option'   => $option,
 				'target'   => OptionChangePolicy::target( $option ),
-				'changes'  => OptionChangePolicy::changes( $option, $old_value, $value ),
+				'changes'  => $changes,
 				'metadata' => [ 'option' => $option ],
 			]
 		);
