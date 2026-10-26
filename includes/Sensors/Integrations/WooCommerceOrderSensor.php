@@ -161,7 +161,10 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.strip_tags_strip_tags -- only reached when core's helper is not loaded.
 		$text = function_exists( 'wp_strip_all_tags' ) ? wp_strip_all_tags( $content ) : strip_tags( $content );
 		$text = ChangeSet::redact_text( html_entity_decode( $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
-		$text = (string) preg_replace( '/^[\p{Z}\s]+|[\p{Z}\s]+$/u', '', $text );
+		// Trailing blanks are only tried from the start of a blank run and
+		// taken whole (possessive), so a long run inside the text is read
+		// once, not once from every position in it: linear even without JIT.
+		$text = (string) preg_replace( '/^[\p{Z}\s]++|(?<![\p{Z}\s])[\p{Z}\s]++$/u', '', $text );
 
 		if ( '' === $text ) {
 			return self::EMPTY_NOTE;

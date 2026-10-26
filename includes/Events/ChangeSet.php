@@ -47,8 +47,14 @@ final class ChangeSet {
 	 * (`mysql://root:p@ss@host/db`), and the host never does. The slashes may
 	 * be escaped the way JSON writes them (`https:\/\/`), with any number of
 	 * backslashes for text that was escaped more than once.
+	 *
+	 * A scheme is only tried from the start of a run of scheme characters
+	 * (the lookbehind), and a run's leading digits and signs are taken without
+	 * giving any back (possessive), so a long run is read once, not once from
+	 * every position in it: the time stays linear even where PCRE has no JIT.
+	 * The scheme still starts at its first letter, as before.
 	 */
-	private const URL_USERINFO = '~([a-z][a-z0-9+.\-]*:(?:\\\\*/){2})[^\s/?#]*@~i';
+	private const URL_USERINFO = '~(?<![a-z0-9+.\-])([0-9+.\-]*+[a-z][a-z0-9+.\-]*:(?:\\\\*/){2})[^\s/?#]*@~i';
 
 	/**
 	 * UTF-8 byte order mark. A JSON decoder refuses it, so it is dropped from

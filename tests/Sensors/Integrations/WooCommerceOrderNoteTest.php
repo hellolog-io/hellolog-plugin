@@ -305,6 +305,60 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	}
 
 	/**
+	 * @return array<string, array{0: string, 1: string}> Note text, what is sent.
+	 */
+	public static function long_blank_runs(): array {
+		return [
+			'spaces between two words'             => [ 'x' . str_repeat( ' ', 300000 ) . 'y', 'x' . str_repeat( ' ', 498 ) . '…' ],
+			'ideographic spaces between two words' => [ 'x' . str_repeat( "\u{3000}", 100000 ) . 'y', 'x' . str_repeat( "\u{3000}", 498 ) . '…' ],
+			'spaces at the end'                    => [ 'x' . str_repeat( ' ', 300000 ), 'x' ],
+			'blanks at both ends'                  => [ str_repeat( "\u{00a0}", 100000 ) . 'x' . str_repeat( ' ', 300000 ), 'x' ],
+		];
+	}
+
+	/**
+	 * Without JIT a trim that tries the trailing blanks from every position of
+	 * a long blank run inside the text takes quadratic time.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @dataProvider long_blank_runs
+	 *
+	 * @param string $content Text of the note.
+	 * @param string $sent    What is sent.
+	 */
+	public function test_without_pcre_jit_a_long_blank_run_is_trimmed_in_linear_time( string $content, string $sent ): void {
+		$this->stubs();
+		ini_set( 'pcre.jit', '0' );
+		// A runaway regex fails this test instead of stalling the suite.
+		set_time_limit( 10 );
+
+		$start   = microtime( true );
+		$text    = WooCommerceOrderSensor::note_text( $content );
+		$elapsed = microtime( true ) - $start;
+
+		$this->assertSame( $sent, $text );
+		$this->assertLessThan( 0.5, $elapsed );
+	}
+
+	/**
+	 * The trim without JIT sends exactly what it sends with it.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_without_pcre_jit_blanks_are_trimmed_the_same_way(): void {
+		$this->stubs();
+		ini_set( 'pcre.jit', '0' );
+
+		$this->assertSame( 'a b', WooCommerceOrderSensor::note_text( '  a b  ' ) );
+		$this->assertSame( 'x', WooCommerceOrderSensor::note_text( "\u{3000}x\u{00a0}" ) );
+		$this->assertSame( 'a', WooCommerceOrderSensor::note_text( " a\n" ) );
+		$this->assertSame( '(empty note)', WooCommerceOrderSensor::note_text( "  \n " ) );
+	}
+
+	/**
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */

@@ -1010,6 +1010,63 @@ final class ChangeSetTest extends TestCase {
 	}
 
 	/**
+	 * @return array<string, array{0: string}>
+	 */
+	public static function long_scheme_like_runs(): array {
+		return [
+			'letters, then an at sign'            => [ str_repeat( 'a', 300000 ) . '@' ],
+			'letters and digits, then an at sign' => [ str_repeat( 'a1', 150000 ) . '@' ],
+			'scheme characters, then an at sign'  => [ str_repeat( 'a+b.c-', 50000 ) . '@' ],
+		];
+	}
+
+	/**
+	 * Without JIT a URL rule that tries a scheme from every position of a long
+	 * run of scheme characters takes quadratic time: a value of a few hundred
+	 * kilobytes would stall the request that logs it.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @dataProvider long_scheme_like_runs
+	 *
+	 * @param string $text A long text with nothing to mask.
+	 */
+	public function test_without_pcre_jit_a_long_scheme_like_run_is_read_in_linear_time( string $text ): void {
+		ini_set( 'pcre.jit', '0' );
+		// A runaway regex fails this test instead of stalling the suite.
+		set_time_limit( 10 );
+
+		$start   = microtime( true );
+		$masked  = ChangeSet::redact_text( $text );
+		$elapsed = microtime( true ) - $start;
+
+		$this->assertSame( $text, $masked );
+		$this->assertLessThan( 0.5, $elapsed );
+	}
+
+	/**
+	 * The URL rule without JIT reports exactly what it reports with it.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_without_pcre_jit_urls_are_masked_the_same_way(): void {
+		ini_set( 'pcre.jit', '0' );
+
+		foreach ( self::urls_with_userinfo() as $name => [ $text, $reported ] ) {
+			$this->assertSame( $reported, ChangeSet::stringify( $text ), $name );
+		}
+		foreach ( self::urls_without_userinfo() as $name => [ $text ] ) {
+			$this->assertSame( $text, ChangeSet::stringify( $text ), $name );
+		}
+		$this->assertSame( '1https://[redacted]@h', ChangeSet::redact_text( '1https://u:p@h' ) );
+		$this->assertSame( '.https://[redacted]@h', ChangeSet::redact_text( '.https://u:p@h' ) );
+		$this->assertSame( 'a+b.c-d://[redacted]@h', ChangeSet::redact_text( 'a+b.c-d://u:p@h' ) );
+		$this->assertSame( 'a:b@c', ChangeSet::redact_text( 'a:b@c' ) );
+	}
+
+	/**
 	 * A text the regex engine gives up on is cut, never reported unmasked.
 	 *
 	 * @runInSeparateProcess
