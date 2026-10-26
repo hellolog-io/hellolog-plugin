@@ -25,6 +25,9 @@ final class Activator {
 
 	private const TABLE_BASENAME = 'hellolog_queue';
 
+	/** Longest time network activation spends setting up sites, in seconds. */
+	private const NETWORK_ACTIVATION_BUDGET = 5.0;
+
 	/**
 	 * Sensors that are noisy on a typical site (REST polling, XML-RPC,
 	 * 404 monitor) and not useful enough to justify their volume by
@@ -86,6 +89,26 @@ final class Activator {
 			return;
 		}
 
+		self::activate_network();
+	}
+
+	/**
+	 * Set up the sites of the current network, within bounds.
+	 *
+	 * WordPress records the plugin as network-active only after the
+	 * activation hook returns, so running out of time or memory here would
+	 * leave it inactive. On a large network ({@see wp_is_large_network()}) no
+	 * site is set up here; otherwise the loop stops once
+	 * {@see self::NETWORK_ACTIVATION_BUDGET} seconds are spent, and the
+	 * in-memory runtime cache is freed after every site. A site left out is
+	 * set up before its first event, see {@see Queue\QueueRepository}.
+	 */
+	private static function activate_network(): void {
+		if ( wp_is_large_network() ) {
+			return;
+		}
+
+		$start = timer_float();
 		$sites = get_sites(
 			[
 				'fields'     => 'ids',
@@ -97,6 +120,21 @@ final class Activator {
 			switch_to_blog( (int) $blog_id );
 			self::activate_site();
 			restore_current_blog();
+			self::free_runtime_cache();
+
+			if ( timer_float() - $start >= self::NETWORK_ACTIVATION_BUDGET ) {
+				return;
+			}
+		}
+	}
+
+	/**
+	 * Drop what the object cache holds in memory for this request, where it
+	 * can: every site switched to adds its options to it.
+	 */
+	private static function free_runtime_cache(): void {
+		if ( function_exists( 'wp_cache_supports' ) && function_exists( 'wp_cache_flush_runtime' ) && wp_cache_supports( 'flush_runtime' ) ) {
+			wp_cache_flush_runtime();
 		}
 	}
 

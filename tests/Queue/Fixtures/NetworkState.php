@@ -18,6 +18,21 @@ final class NetworkState {
 	/** What `is_multisite()` reports. */
 	public static bool $multisite = true;
 
+	/** What `wp_is_large_network()` reports. */
+	public static bool $large = false;
+
+	/** Seconds `timer_float()` moves on by every time it is read. */
+	public static float $tick = 0.0;
+
+	/** What `timer_float()` read last. */
+	public static float $clock = 0.0;
+
+	/** Whether the object cache can flush its in-memory runtime cache. */
+	public static bool $flush_runtime_supported = true;
+
+	/** Calls of `wp_cache_flush_runtime()`. */
+	public static int $runtime_flushes = 0;
+
 	/**
 	 * Every site: blog id => id of its network.
 	 *

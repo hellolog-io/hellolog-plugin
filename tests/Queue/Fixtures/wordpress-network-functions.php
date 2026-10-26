@@ -37,6 +37,41 @@ namespace {
 		return NetworkState::$multisite;
 	}
 
+	/**
+	 * @param string   $using      `sites` or `users`.
+	 * @param int|null $network_id Network.
+	 */
+	function wp_is_large_network( $using = 'sites', $network_id = null ): bool {
+		return NetworkState::$large;
+	}
+
+	/**
+	 * Seconds since the request started; moves on by {@see NetworkState::$tick}
+	 * every time it is read.
+	 */
+	function timer_float(): float {
+		NetworkState::$clock += NetworkState::$tick;
+
+		return NetworkState::$clock;
+	}
+
+	function wp_cache_supports( string $feature ): bool {
+		return 'flush_runtime' === $feature && NetworkState::$flush_runtime_supported;
+	}
+
+	/**
+	 * Like core's compatibility version, it fails loudly where the cache
+	 * cannot do it.
+	 */
+	function wp_cache_flush_runtime(): bool {
+		if ( ! NetworkState::$flush_runtime_supported ) {
+			throw new \LogicException( 'wp_cache_flush_runtime() called without support' );
+		}
+		++NetworkState::$runtime_flushes;
+
+		return true;
+	}
+
 	function get_current_network_id(): int {
 		return NetworkState::$sites[ NetworkState::$current_blog ] ?? 1;
 	}

@@ -52,6 +52,52 @@ final class ActivatorTest extends TestCase {
 		$this->assertSame( [], NetworkState::$switched );
 	}
 
+	/**
+	 * WordPress records the plugin as network-active only once activation
+	 * returns. On a large network setting every site up could run out of
+	 * time or memory first, so no site is set up there; each one is before
+	 * its first event.
+	 */
+	public function test_network_activation_on_a_large_network_sets_up_no_site(): void {
+		NetworkState::$large = true;
+
+		Activator::activate( true );
+
+		$this->assertSame( [], $this->wpdb->tables );
+		$this->assertSame( [], NetworkState::$options );
+		$this->assertSame( 0, NetworkState::$switch_count );
+	}
+
+	/**
+	 * Each site here takes two seconds: after three the budget of five is
+	 * spent and activation returns, without an error, on its own site.
+	 */
+	public function test_network_activation_stops_when_its_time_is_up(): void {
+		NetworkState::$tick = 2.0;
+
+		Activator::activate( true );
+
+		$this->assertSame( [ 'wp_hellolog_queue', 'wp_2_hellolog_queue', 'wp_3_hellolog_queue' ], $this->wpdb->tables );
+		$this->assertSame( 1, NetworkState::$current_blog );
+		$this->assertSame( 'wp_', $this->wpdb->prefix );
+		$this->assertSame( [], NetworkState::$switched );
+	}
+
+	public function test_network_activation_frees_the_runtime_cache_after_every_site(): void {
+		Activator::activate( true );
+
+		$this->assertSame( 150, NetworkState::$runtime_flushes );
+	}
+
+	public function test_network_activation_leaves_a_cache_alone_that_cannot_free_its_runtime_part(): void {
+		NetworkState::$flush_runtime_supported = false;
+
+		Activator::activate( true );
+
+		$this->assertCount( 150, $this->wpdb->tables );
+		$this->assertSame( 0, NetworkState::$runtime_flushes );
+	}
+
 	public function test_network_activation_sets_up_each_site_like_a_single_activation(): void {
 		Activator::activate( true );
 
