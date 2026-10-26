@@ -293,7 +293,8 @@ final class SuppressionRules {
 		// Clamp once, after folding: a change that cancels out later should
 		// not have taken up a slot of the limit on the way.
 		foreach ( array_keys( $folded ) as $position ) {
-			$changes = self::clamp_changes( self::changes_of( $result[ $position ] ) );
+			$changes             = self::clamp_changes( self::changes_of( $result[ $position ] ) );
+			$result[ $position ] = self::with_changed_fields( $result[ $position ], $changes );
 			if ( [] === $changes ) {
 				unset( $result[ $position ]['changes'] );
 				continue;
@@ -302,6 +303,27 @@ final class SuppressionRules {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * A folded payload that lists the names of its changed fields in
+	 * `metadata.changed` (the post update does) lists those of the folded
+	 * changes, not only those of the first payload. A payload without that
+	 * list is returned as it is.
+	 *
+	 * @param array<string, mixed>                                         $payload Folded payload.
+	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes Its folded changes.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private static function with_changed_fields( array $payload, array $changes ): array {
+		if ( ! isset( $payload['metadata'] ) || ! is_array( $payload['metadata'] ) || ! array_key_exists( 'changed', $payload['metadata'] ) ) {
+			return $payload;
+		}
+
+		$payload['metadata']['changed'] = array_column( $changes, 'field' );
+
+		return $payload;
 	}
 
 	/**

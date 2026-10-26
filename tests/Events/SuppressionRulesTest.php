@@ -548,6 +548,69 @@ final class SuppressionRulesTest extends TestCase {
 		$this->assertSame( [ $expected ], $result );
 	}
 
+	/**
+	 * A post update (2006) the way the post sensor sends it: the names of the
+	 * changed fields in `metadata.changed`.
+	 *
+	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes Changes.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private static function post_update( array $changes ): array {
+		return self::event(
+			2006,
+			self::post( 1 ),
+			$changes,
+			[
+				'metadata' => [
+					'slug'    => 'hello',
+					'changed' => array_column( $changes, 'field' ),
+				],
+			]
+		);
+	}
+
+	public function test_a_merged_update_lists_the_fields_of_its_merged_changes(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::post_update( [ self::change( 'post_title', 'A', 'B' ) ] ),
+				self::post_update( [ self::change( 'post_excerpt', 'x', 'y' ) ] ),
+			]
+		);
+
+		$this->assertCount( 1, $result );
+		$this->assertSame(
+			[
+				'slug'    => 'hello',
+				'changed' => [ 'post_title', 'post_excerpt' ],
+			],
+			$result[0]['metadata']
+		);
+	}
+
+	public function test_a_merged_update_no_longer_lists_a_field_that_went_back(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::post_update( [ self::change( 'post_title', 'A', 'B' ), self::change( 'post_excerpt', 'x', 'y' ) ] ),
+				self::post_update( [ self::change( 'post_title', 'B', 'A' ) ] ),
+			]
+		);
+
+		$this->assertSame( [ self::change( 'post_excerpt', 'x', 'y' ) ], $result[0]['changes'] );
+		$this->assertSame( [ 'post_excerpt' ], $result[0]['metadata']['changed'] );
+	}
+
+	public function test_a_merge_adds_no_changed_list_where_there_was_none(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 2006, self::post( 1 ), [ self::change( 'post_title', 'A', 'B' ) ], [ 'metadata' => [ 'slug' => 'hello' ] ] ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'post_excerpt', 'x', 'y' ) ], [ 'metadata' => [ 'slug' => 'hello' ] ] ),
+			]
+		);
+
+		$this->assertSame( [ 'slug' => 'hello' ], $result[0]['metadata'] );
+	}
+
 	public function test_merge_does_not_cross_targets_or_codes(): void {
 		$result = SuppressionRules::defaults()->apply(
 			[
