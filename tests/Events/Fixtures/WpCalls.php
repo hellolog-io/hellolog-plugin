@@ -31,4 +31,7 @@ final class WpCalls {
 
 	/** Whether the `do_action()` stub plays a callback that throws. */
 	public static bool $action_throws = false;
+
+	/** The site `get_current_blog_id()` reports as current. */
+	public static int $blog_id = 1;
 }

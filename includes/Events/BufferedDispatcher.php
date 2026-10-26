@@ -24,6 +24,12 @@ defined( 'ABSPATH' ) || exit;
  * production is a single `INSERT` into the local queue; the transport layer
  * drains that queue out-of-band.
  *
+ * On a network a request can switch to another site and act there, and by
+ * shutdown it is back on its own. So every event remembers the site it was
+ * dispatched on: the rules only compare events of one site, and the sink is
+ * told the site, so the event lands in that site's queue. The site is kept
+ * under {@see SuppressionRules::BLOG_KEY} while buffered and never sent.
+ *
  * A request that produces more than `$max` events flushes every `$max`, so
  * the buffer stays small. Rules then apply per batch, not across batches.
  *
@@ -38,7 +44,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class BufferedDispatcher implements EventDispatcher {
 
-	/** @var \Closure(string): mixed */
+	/** @var \Closure(string, ?int): mixed */
 	private \Closure $sink;
 
 	/** The rules, or a provider of them until they are first needed. */
@@ -56,7 +62,8 @@ final class BufferedDispatcher implements EventDispatcher {
 
 	/**
 	 * @param EventBuilder                   $builder Turns a code and fields into a payload.
-	 * @param callable                       $sink    Receives the JSON of one event; may throw.
+	 * @param callable                       $sink    Receives the JSON of one event and the id of the site it was
+	 *                                                dispatched on (null outside WordPress); may throw.
 	 * @param SuppressionRules|callable      $rules   Decides which buffered events survive; a callable returns
 	 *                                                them and is called once, at the first flush.
 	 * @param int                            $max     Buffered events that trigger an immediate flush.
@@ -78,6 +85,9 @@ final class BufferedDispatcher implements EventDispatcher {
 				return; // Unknown code — silently drop.
 			}
 
+			if ( function_exists( 'get_current_blog_id' ) ) {
+				$payload[ SuppressionRules::BLOG_KEY ] = (int) get_current_blog_id();
+			}
 			$this->buffer[] = $payload;
 		} catch ( Throwable $e ) {
 			$this->report( $e, $code, $fields );
@@ -126,9 +136,12 @@ final class BufferedDispatcher implements EventDispatcher {
 
 		foreach ( $survivors as $payload ) {
 			try {
+				$blog_id = isset( $payload[ SuppressionRules::BLOG_KEY ] ) ? (int) $payload[ SuppressionRules::BLOG_KEY ] : null;
+				unset( $payload[ SuppressionRules::BLOG_KEY ] );
+
 				$json = self::encode( $payload );
 				if ( null !== $json ) {
-					( $this->sink )( $json );
+					( $this->sink )( $json, $blog_id );
 				}
 			} catch ( Throwable $e ) {
 				$this->report( $e );

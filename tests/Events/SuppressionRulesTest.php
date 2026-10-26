@@ -1036,6 +1036,27 @@ final class SuppressionRulesTest extends TestCase {
 		$this->assertSame( [ 2001, 2006 ], self::codes( $result ) );
 	}
 
+	// ---- sites of a network --------------------------------------------
+
+	public function test_events_of_one_site_never_thin_out_those_of_another(): void {
+		$on    = static fn( int $site, array $payload ): array => $payload + [ SuppressionRules::BLOG_KEY => $site ];
+		$title = [ self::change( 'post_title', 'A', 'B' ) ];
+
+		$result = SuppressionRules::defaults()->apply(
+			[
+				$on( 1, self::event( 2001, self::post( 42 ) ) ),
+				$on( 2, self::event( 2006, self::post( 42 ), $title ) ),
+				$on( 3, self::event( 2006, self::post( 42 ), $title ) ),
+				$on( 2, self::event( 1001, null, null, [ 'message' => 'Logged in' ] ) ),
+				$on( 3, self::event( 1001, null, null, [ 'message' => 'Logged in' ] ) ),
+				$on( 1, self::event( 2006, self::post( 42 ), $title ) ),
+			]
+		);
+
+		$this->assertSame( [ 2001, 2006, 2006, 1001, 1001 ], self::codes( $result ) );
+		$this->assertSame( [ 1, 2, 3, 2, 3 ], array_column( $result, SuppressionRules::BLOG_KEY ) );
+	}
+
 	// ---- construction, defaults, with ---------------------------------
 
 	public function test_empty_rules_keep_everything_but_exact_duplicates(): void {

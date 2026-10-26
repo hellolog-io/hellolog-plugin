@@ -22,19 +22,34 @@ final class QueueRepository {
 	public const STATUS_SENDING = 'sending';
 	public const STATUS_DEAD    = 'dead';
 
-	public function table(): string {
+	/**
+	 * The queue table of the current site, or of the site `$blog_id` names.
+	 *
+	 * @param ?int $blog_id Site id on a network; null for the current site.
+	 */
+	public function table( ?int $blog_id = null ): string {
 		global $wpdb;
 
-		return $wpdb->prefix . 'hellolog_queue';
+		return ( null === $blog_id ? $wpdb->prefix : $wpdb->get_blog_prefix( $blog_id ) ) . 'hellolog_queue';
 	}
 
-	public function insert( string $payload ): int {
+	/**
+	 * Queue one event.
+	 *
+	 * On a network the request may have switched sites since the event
+	 * happened, so the caller names the site the event belongs to; its queue
+	 * gets the row. Without a site the current site's queue does.
+	 *
+	 * @param string $payload JSON of the event.
+	 * @param ?int   $blog_id Site the event happened on; null for the current site.
+	 */
+	public function insert( string $payload, ?int $blog_id = null ): int {
 		global $wpdb;
 
 		$now = current_time( 'mysql', true );
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$wpdb->insert(
-			$this->table(),
+			$this->table( $blog_id ),
 			[
 				'payload'    => $payload,
 				'attempts'   => 0,

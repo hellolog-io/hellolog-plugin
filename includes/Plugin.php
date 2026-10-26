@@ -295,7 +295,9 @@ final class Plugin {
 		$repository = new QueueRepository();
 		$dispatcher = new BufferedDispatcher(
 			$this->builder,
-			static fn( string $json ): int => $repository->insert( $json ),
+			// Into the queue of the site the event happened on: on a network the
+			// request may have switched sites since.
+			static fn( string $json, ?int $blog_id = null ): int => $repository->insert( $json, $blog_id ),
 			[ $this, 'rules' ]
 		);
 

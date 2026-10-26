@@ -88,6 +88,17 @@ final class BufferedDispatcherTest extends TestCase {
 	}
 
 	/**
+	 * @return array{field: string, old: ?string, new: ?string}
+	 */
+	private static function change( string $field, ?string $old, ?string $new ): array {
+		return [
+			'field' => $field,
+			'old'   => $old,
+			'new'   => $new,
+		];
+	}
+
+	/**
 	 * The decoded payloads written so far.
 	 *
 	 * @return array<int, array<string, mixed>>
@@ -453,5 +464,98 @@ final class BufferedDispatcherTest extends TestCase {
 		$dispatcher->flush();
 
 		$this->assertStringContainsString( 'Árvíztűrő tükörfúrógép https://example.com/a', $this->written[0] );
+	}
+
+	public function test_without_wordpress_the_sink_is_told_no_site(): void {
+		$sites      = [];
+		$dispatcher = $this->dispatcher(
+			200,
+			static function ( string $json, ?int $blog_id ) use ( &$sites ): void {
+				$sites[] = $blog_id;
+			}
+		);
+
+		$dispatcher->dispatch( 2001, [ 'target' => self::post( 1 ) ] );
+		$dispatcher->flush();
+
+		$this->assertSame( [ null ], $sites );
+	}
+
+	/**
+	 * A network request can switch to another site and act there; the event
+	 * must reach the queue of that site, and only events of one site can make
+	 * each other redundant (a post id names a different post on every site).
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_on_a_network_each_event_goes_to_the_queue_of_its_own_site(): void {
+		require_once __DIR__ . '/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/Fixtures/wordpress-multisite-functions.php';
+
+		$written    = [];
+		$dispatcher = $this->dispatcher(
+			200,
+			static function ( string $json, ?int $blog_id ) use ( &$written ): void {
+				$written[] = [ $blog_id, $json ];
+			}
+		);
+
+		\HelloLog\Tests\Events\Fixtures\WpCalls::$blog_id = 1;
+		$dispatcher->dispatch( 2001, [ 'target' => self::post( 42 ) ] );
+		\HelloLog\Tests\Events\Fixtures\WpCalls::$blog_id = 2;
+		$dispatcher->dispatch( 2006, [ 'target' => self::post( 42 ), 'changes' => [ self::change( 'post_title', 'A', 'B' ) ] ] );
+		$dispatcher->dispatch( 2006, [ 'target' => self::post( 42 ), 'changes' => [ self::change( 'post_excerpt', 'x', 'y' ) ] ] );
+		\HelloLog\Tests\Events\Fixtures\WpCalls::$blog_id = 1;
+		$dispatcher->flush();
+
+		$this->assertSame( [ 1, 2 ], array_column( $written, 0 ) );
+		$this->assertSame(
+			[
+				'code'   => 2001,
+				'target' => self::post( 42 ),
+			],
+			json_decode( $written[0][1], true )
+		);
+		$this->assertSame(
+			[
+				'code'    => 2006,
+				'target'  => self::post( 42 ),
+				'changes' => [ self::change( 'post_title', 'A', 'B' ), self::change( 'post_excerpt', 'x', 'y' ) ],
+			],
+			json_decode( $written[1][1], true ),
+			'Not suppressed by the publish on the other site; merged with its own site\'s update.'
+		);
+	}
+
+	/**
+	 * The same event on two sites is two events, not a repeat.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_on_a_network_the_same_event_on_two_sites_is_kept_twice(): void {
+		require_once __DIR__ . '/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/Fixtures/wordpress-multisite-functions.php';
+
+		$written    = [];
+		$dispatcher = $this->dispatcher(
+			200,
+			static function ( string $json, ?int $blog_id ) use ( &$written ): void {
+				$written[] = [ $blog_id, $json ];
+			}
+		);
+
+		foreach ( [ 3, 4 ] as $blog_id ) {
+			\HelloLog\Tests\Events\Fixtures\WpCalls::$blog_id = $blog_id;
+			$dispatcher->dispatch( 1001, [ 'message' => 'Logged in' ] );
+			$dispatcher->dispatch( 2003, [ 'target' => self::post( 42 ) ] );
+		}
+		$dispatcher->flush();
+
+		$this->assertSame( [ 3, 3, 4, 4 ], array_column( $written, 0 ) );
+		foreach ( $written as [ , $json ] ) {
+			$this->assertStringNotContainsString( 'blog', $json );
+		}
 	}
 }

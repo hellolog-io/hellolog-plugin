@@ -42,8 +42,19 @@ defined( 'ABSPATH' ) || exit;
  *
  * A payload without a target takes part in nothing but the removal of
  * repeats.
+ *
+ * On a network every payload may carry the site it happened on under
+ * {@see self::BLOG_KEY}. The site is part of the target (`post:42` is a
+ * different post on every site) and of the code group of a payload without
+ * a target, so the events of one site never thin out those of another.
  */
 final class SuppressionRules {
+
+	/**
+	 * Payload key of the site (blog id) an event was dispatched on. Set and
+	 * removed again by {@see BufferedDispatcher}: it is never sent.
+	 */
+	public const BLOG_KEY = '_blog_id';
 
 	/** Wire limits of `changes`, the same as the ones {@see EventBuilder} applies. */
 	private const MAX_CHANGES      = 50;
@@ -369,7 +380,7 @@ final class SuppressionRules {
 	}
 
 	/**
-	 * `type:id` of the payload's target; null when it has no usable one.
+	 * `site|type:id` of the payload's target; null when it has no usable one.
 	 *
 	 * @param array<string, mixed> $payload Payload.
 	 */
@@ -382,12 +393,25 @@ final class SuppressionRules {
 		$type = (string) $target['type'];
 		$id   = (string) $target['id'];
 
-		return ( '' === $type || '' === $id ) ? null : $type . ':' . $id;
+		return ( '' === $type || '' === $id ) ? null : self::site_of( $payload ) . '|' . $type . ':' . $id;
+	}
+
+	/**
+	 * The site a payload was dispatched on, as text; empty when it does not
+	 * say.
+	 *
+	 * @param array<string, mixed> $payload Payload.
+	 */
+	private static function site_of( array $payload ): string {
+		$site = $payload[ self::BLOG_KEY ] ?? null;
+
+		return is_int( $site ) || ( is_string( $site ) && ctype_digit( $site ) ) ? (string) $site : '';
 	}
 
 	/**
 	 * Drop every payload that is the same as the last payload kept on its
-	 * target, or, without a target, the last one kept of its code.
+	 * target, or, without a target, the last one kept of its code (on its
+	 * site).
 	 *
 	 * @param array<int, array<string, mixed>> $payloads Payloads.
 	 *
@@ -398,7 +422,7 @@ final class SuppressionRules {
 		$last   = [];
 		foreach ( $payloads as $payload ) {
 			$key         = self::target_key( $payload );
-			$group       = null === $key ? 'code|' . self::code_of( $payload ) : 'target|' . $key;
+			$group       = null === $key ? 'code|' . self::site_of( $payload ) . '|' . self::code_of( $payload ) : 'target|' . $key;
 			$fingerprint = self::fingerprint( $payload );
 			if ( ( $last[ $group ] ?? null ) === $fingerprint ) {
 				continue;
