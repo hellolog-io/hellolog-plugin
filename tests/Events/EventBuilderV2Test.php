@@ -385,6 +385,40 @@ final class EventBuilderV2Test extends TestCase {
 		$this->assertSame( 'Backup to sftp://[redacted]@files.example.com', $payload['target']['label'] );
 	}
 
+	/**
+	 * WordPress stores some titles with their entities (an order is titled
+	 * `Order &ndash; …`); a label is plain text.
+	 */
+	public function test_the_target_label_has_its_html_entities_decoded(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'target' => [
+					'type'  => 'post',
+					'id'    => '13',
+					'label' => 'Order &ndash; October 26, 2026 @ 10:00 AM &amp; Tom&#039;s &quot;gift&quot;',
+				],
+			]
+		);
+
+		$this->assertSame( 'Order – October 26, 2026 @ 10:00 AM & Tom\'s "gift"', $payload['target']['label'] );
+	}
+
+	public function test_the_target_label_is_decoded_before_it_is_cut(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'target' => [
+					'type'  => 'post',
+					'id'    => '13',
+					'label' => str_repeat( 'a', 250 ) . '&ndash;',
+				],
+			]
+		);
+
+		$this->assertSame( str_repeat( 'a', 250 ) . '–', $payload['target']['label'] );
+	}
+
 	public function test_the_target_label_is_masked_before_it_is_cut(): void {
 		// Cut first, the 254 characters would end inside the password, leaving
 		// a piece of it with no URL around it to be recognised by.

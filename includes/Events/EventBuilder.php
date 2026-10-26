@@ -359,8 +359,10 @@ class EventBuilder {
 	 *
 	 * A type over 32 or an id over 64 characters cannot be cut without
 	 * pointing at another object, so the whole target is dropped. Only the
-	 * label is shortened, after it is masked the way vars are (a label is
-	 * often a name somebody typed, or a setting's value).
+	 * label is shortened, after its HTML entities are decoded (WordPress
+	 * stores some titles with them, `Order &ndash; …`) and it is masked the
+	 * way vars are (a label is often a name somebody typed, or a setting's
+	 * value).
 	 *
 	 * @param mixed $target Sensor-supplied `target`.
 	 * @return array{type: string, id: string, label?: string}|null
@@ -387,6 +389,7 @@ class EventBuilder {
 
 		$label = $this->scalar_text( $target['label'] ?? null );
 		if ( '' !== $label ) {
+			$label          = html_entity_decode( $label, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
 			$clean['label'] = $this->clamp( ChangeSet::redact_text( $label ), self::MAX_TARGET_LABEL );
 		}
 
