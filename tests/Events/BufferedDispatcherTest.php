@@ -65,11 +65,11 @@ final class BufferedDispatcherTest extends TestCase {
 	}
 
 	/**
-	 * @param int    $max   Auto-flush threshold.
-	 * @param ?callable $sink  Sink; defaults to one that collects into `$written`.
-	 * @param ?SuppressionRules $rules Rules; defaults to the initial table.
+	 * @param int                                 $max   Auto-flush threshold.
+	 * @param ?callable                           $sink  Sink; defaults to one that collects into `$written`.
+	 * @param SuppressionRules|callable|null      $rules Rules or a provider of them; defaults to the initial table.
 	 */
-	private function dispatcher( int $max = 200, ?callable $sink = null, ?SuppressionRules $rules = null ): BufferedDispatcher {
+	private function dispatcher( int $max = 200, ?callable $sink = null, $rules = null ): BufferedDispatcher {
 		$sink ??= function ( string $json ): void {
 			$this->written[] = $json;
 		};
@@ -272,25 +272,156 @@ final class BufferedDispatcherTest extends TestCase {
 		$this->assertSame( [ 2003 ], array_column( $this->decoded(), 'code' ) );
 	}
 
-	public function test_a_throwing_rule_condition_falls_back_to_the_unfiltered_events(): void {
-		$rules      = new SuppressionRules(
-			[ 2006 => [ 2001 ] ],
-			[],
-			[],
-			[
-				2006 => static function (): bool {
-					throw new \RuntimeException( 'bad condition' );
-				},
-			]
-		);
-		$dispatcher = $this->dispatcher( 200, null, $rules );
+	public function test_flush_writes_the_raw_events_when_the_rules_cannot_be_applied(): void {
+		$dispatcher = $this->dispatcher();
 
-		$dispatcher->dispatch( 2006, [ 'target' => self::post( 1 ) ] );
-		$dispatcher->dispatch( 2001, [ 'target' => self::post( 1 ) ] );
+		// An int where the change list wants strings: folding the two fails.
+		$bad = static fn( string $new ): array => [
+			'target'  => [
+				'type' => 'user',
+				'id'   => '7',
+			],
+			'changes' => [
+				[
+					'field' => 'role',
+					'old'   => 5,
+					'new'   => $new,
+				],
+			],
+		];
+		$dispatcher->dispatch( 4002, $bad( 'a' ) );
+		$dispatcher->dispatch( 4002, $bad( 'b' ) );
 		$dispatcher->flush();
 
 		// Better a duplicate than a lost audit event.
-		$this->assertSame( [ 2006, 2001 ], array_column( $this->decoded(), 'code' ) );
+		$this->assertSame( [ 4002, 4002 ], array_column( $this->decoded(), 'code' ) );
+	}
+
+	// ---- lazy rules ----------------------------------------------------
+
+	public function test_rules_provider_is_resolved_at_the_first_flush_only(): void {
+		$resolved   = 0;
+		$dispatcher = $this->dispatcher(
+			200,
+			null,
+			static function () use ( &$resolved ): SuppressionRules {
+				++$resolved;
+
+				return SuppressionRules::defaults();
+			}
+		);
+		$this->assertSame( 0, $resolved, 'not at construction' );
+
+		$dispatcher->dispatch( 2001, [ 'target' => self::post( 1 ) ] );
+		$this->assertSame( 0, $resolved, 'not at dispatch' );
+
+		$dispatcher->flush();
+		$this->assertSame( 1, $resolved );
+
+		$dispatcher->dispatch( 2001, [ 'target' => self::post( 2 ) ] );
+		$dispatcher->flush();
+		$this->assertSame( 1, $resolved, 'resolved once' );
+	}
+
+	public function test_rules_added_after_construction_take_effect(): void {
+		$current    = new SuppressionRules();
+		$dispatcher = $this->dispatcher( 200, null, static function () use ( &$current ): SuppressionRules {
+			return $current;
+		} );
+
+		// What a loader does after the dispatcher was built.
+		$current = new SuppressionRules( [ 5000 => [ 5001 ] ] );
+
+		$dispatcher->dispatch( 5000, [ 'target' => self::post( 1 ) ] );
+		$dispatcher->dispatch( 5001, [ 'target' => self::post( 1 ) ] );
+		$dispatcher->flush();
+
+		$this->assertSame( [ 5001 ], array_column( $this->decoded(), 'code' ) );
+	}
+
+	public function test_a_failing_rules_provider_falls_back_to_the_initial_table(): void {
+		$dispatcher = $this->dispatcher(
+			200,
+			null,
+			static function (): SuppressionRules {
+				throw new \RuntimeException( 'a filter callback failed' );
+			}
+		);
+
+		$dispatcher->dispatch(
+			2006,
+			[
+				'target'  => self::post( 1 ),
+				'changes' => [
+					[
+						'field' => 'post_title',
+						'old'   => 'A',
+						'new'   => 'B',
+					],
+				],
+			]
+		);
+		$dispatcher->dispatch( 2001, [ 'target' => self::post( 1 ) ] );
+		$dispatcher->flush();
+
+		$this->assertSame( [ 2001 ], array_column( $this->decoded(), 'code' ) );
+	}
+
+	public function test_a_provider_that_returns_something_else_falls_back_to_the_initial_table(): void {
+		$dispatcher = $this->dispatcher( 200, null, static fn() => null );
+
+		$dispatcher->dispatch( 2006, [ 'target' => self::post( 1 ) ] );
+		$dispatcher->flush();
+
+		// 2006 without changes is dropped by the initial table.
+		$this->assertSame( [], $this->written );
+	}
+
+	// ---- final flush ---------------------------------------------------
+
+	public function test_events_after_the_final_flush_are_written_through(): void {
+		$dispatcher = $this->dispatcher();
+
+		$dispatcher->dispatch( 2001, [ 'target' => self::post( 1 ) ] );
+		$dispatcher->flush_final();
+		$this->assertSame( [ 2001 ], array_column( $this->decoded(), 'code' ) );
+
+		$dispatcher->dispatch( 2003, [ 'target' => self::post( 2 ) ] );
+		$this->assertSame( [ 2001, 2003 ], array_column( $this->decoded(), 'code' ), 'written at once, no further flush needed' );
+	}
+
+	public function test_written_through_events_still_go_through_the_rules(): void {
+		$dispatcher = $this->dispatcher();
+		$dispatcher->flush_final();
+
+		// An empty "post updated" is dropped by the rules even on its own.
+		$dispatcher->dispatch( 2006, [ 'target' => self::post( 1 ) ] );
+		$dispatcher->dispatch( 2001, [ 'target' => self::post( 1 ) ] );
+
+		$this->assertSame( [ 2001 ], array_column( $this->decoded(), 'code' ) );
+	}
+
+	public function test_a_plain_flush_does_not_start_writing_through(): void {
+		$dispatcher = $this->dispatcher();
+
+		$dispatcher->flush();
+		$dispatcher->dispatch( 2001, [ 'target' => self::post( 1 ) ] );
+
+		$this->assertSame( [], $this->written );
+	}
+
+	public function test_a_throwing_sink_does_not_escape_a_written_through_dispatch(): void {
+		$dispatcher = $this->dispatcher(
+			200,
+			static function (): void {
+				throw new \RuntimeException( 'queue is down' );
+			}
+		);
+		$dispatcher->flush_final();
+
+		$dispatcher->dispatch( 2001, [ 'target' => self::post( 1 ) ] );
+
+		$this->addToAssertionCount( 1 );
 	}
 
 	public function test_an_unencodable_payload_is_skipped(): void {
@@ -309,7 +440,7 @@ final class BufferedDispatcherTest extends TestCase {
 		$this->assertSame( [ 2003 ], array_column( $this->decoded(), 'code' ) );
 	}
 
-	public function test_json_keeps_unicode_and_slashes_readable(): void {
+	public function test_without_wordpress_json_keeps_unicode_and_slashes_readable(): void {
 		$dispatcher = $this->dispatcher();
 
 		$dispatcher->dispatch(

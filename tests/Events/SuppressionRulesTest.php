@@ -408,6 +408,134 @@ final class SuppressionRulesTest extends TestCase {
 		$this->assertSame( [ 9101, 9101 ], self::codes( $result ) );
 	}
 
+	public function test_events_that_differ_only_in_metadata_both_survive(): void {
+		// Two private notes on one order in one request: only the note id tells
+		// them apart.
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 9103, self::order( 5 ), null, [ 'metadata' => [ 'note_type' => 'private', 'note_id' => 11 ] ] ),
+				self::event( 9103, self::order( 5 ), null, [ 'metadata' => [ 'note_type' => 'private', 'note_id' => 12 ] ] ),
+			]
+		);
+
+		$this->assertSame( [ 9103, 9103 ], self::codes( $result ) );
+		$this->assertSame( 11, $result[0]['metadata']['note_id'] );
+		$this->assertSame( 12, $result[1]['metadata']['note_id'] );
+	}
+
+	/**
+	 * @return array<string, array{0: string, 1: mixed, 2: mixed}>
+	 */
+	public static function differing_keys(): array {
+		return [
+			'vars'     => [ 'vars', [ 'note' => 'one' ], [ 'note' => 'two' ] ],
+			'user'     => [ 'user', [ 'id' => 1 ], [ 'id' => 2 ] ],
+			'post'     => [ 'post', [ 'id' => 1 ], [ 'id' => 2 ] ],
+			'links'    => [ 'links', [ 'edit' => 'https://example.com/1' ], [ 'edit' => 'https://example.com/2' ] ],
+			'severity' => [ 'severity', 'info', 'warning' ],
+			'source'   => [ 'source', 'admin', 'rest' ],
+		];
+	}
+
+	/**
+	 * @dataProvider differing_keys
+	 *
+	 * @param string $key   Payload key that differs.
+	 * @param mixed  $one   Value of the first event.
+	 * @param mixed  $two   Value of the second event.
+	 */
+	public function test_events_that_differ_in_any_other_key_both_survive( string $key, $one, $two ): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 9101, self::order( 5 ), null, [ $key => $one ] ),
+				self::event( 9101, self::order( 5 ), null, [ $key => $two ] ),
+			]
+		);
+
+		$this->assertSame( [ 9101, 9101 ], self::codes( $result ) );
+	}
+
+	public function test_identical_events_with_different_timestamps_and_client_ids_dedupe(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 9101, self::order( 5 ), null, [ 'occurred_at' => '2026-10-26T10:00:00.000Z', 'client_event_id' => 'a', 'metadata' => [ 'x' => 1 ] ] ),
+				self::event( 9101, self::order( 5 ), null, [ 'occurred_at' => '2026-10-26T10:00:01.250Z', 'client_event_id' => 'b', 'metadata' => [ 'x' => 1 ] ] ),
+			]
+		);
+
+		$this->assertCount( 1, $result );
+		$this->assertSame( '2026-10-26T10:00:00.000Z', $result[0]['occurred_at'] );
+	}
+
+	public function test_dedupe_ignores_key_order_at_every_depth(): void {
+		$first  = [
+			'code'     => 9101,
+			'target'   => [ 'type' => 'order', 'id' => '5' ],
+			'metadata' => [ 'a' => 1, 'b' => [ 'x' => 1, 'y' => 2 ] ],
+		];
+		$second = [
+			'metadata' => [ 'b' => [ 'y' => 2, 'x' => 1 ], 'a' => 1 ],
+			'target'   => [ 'id' => '5', 'type' => 'order' ],
+			'code'     => 9101,
+		];
+
+		$this->assertCount( 1, SuppressionRules::defaults()->apply( [ $first, $second ] ) );
+	}
+
+	public function test_dedupe_keeps_the_order_of_list_values(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 9101, self::order( 5 ), null, [ 'metadata' => [ 'items' => [ 'a', 'b' ] ] ] ),
+				self::event( 9101, self::order( 5 ), null, [ 'metadata' => [ 'items' => [ 'b', 'a' ] ] ] ),
+			]
+		);
+
+		$this->assertCount( 2, $result );
+	}
+
+	public function test_merge_runs_before_dedupe(): void {
+		// Title A to B, back to A, and to B again: the first and last are exact
+		// duplicates, but the whole sequence nets out to A to B.
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 2006, self::post( 1 ), [ self::change( 'post_title', 'A', 'B' ) ] ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'post_title', 'B', 'A' ) ] ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'post_title', 'A', 'B' ) ] ),
+			]
+		);
+
+		$this->assertCount( 1, $result );
+		$this->assertSame( [ self::change( 'post_title', 'A', 'B' ) ], $result[0]['changes'] );
+	}
+
+	public function test_a_throwing_condition_leaves_only_that_payload_unsuppressed(): void {
+		$rules = new SuppressionRules(
+			[
+				9103 => [ 9101 ],
+				9104 => [ 9101 ],
+			],
+			[],
+			[],
+			[
+				9103 => static function (): bool {
+					throw new \RuntimeException( 'bad condition' );
+				},
+				9104 => static fn(): bool => true,
+			]
+		);
+
+		$result = $rules->apply(
+			[
+				self::event( 9101, self::order( 5 ) ),
+				self::event( 9103, self::order( 5 ) ),
+				self::event( 9104, self::order( 5 ) ),
+			]
+		);
+
+		// 9103 stays (its test failed), 9104 is still suppressed.
+		$this->assertSame( [ 9101, 9103 ], self::codes( $result ) );
+	}
+
 	// ---- no target -----------------------------------------------------
 
 	public function test_no_target_never_suppressed(): void {

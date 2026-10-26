@@ -26,11 +26,23 @@ defined( 'ABSPATH' ) || exit;
  *
  * A request that produces more than `$max` events flushes every `$max`, so
  * the buffer stays small. Rules then apply per batch, not across batches.
+ *
+ * The final flush ({@see self::flush_final()}) is the last thing a request
+ * does; an event dispatched after it would never see another flush, so from
+ * then on every event is written at once (still through the rules, one at a
+ * time).
+ *
+ * The rules are given as a provider and resolved at the first flush, not when
+ * the dispatcher is built: loaders and sensors attach after that and may add
+ * theirs in between.
  */
 final class BufferedDispatcher implements EventDispatcher {
 
 	/** @var \Closure(string): mixed */
 	private \Closure $sink;
+
+	/** The rules, or a provider of them until they are first needed. */
+	private SuppressionRules|\Closure $rules;
 
 	/**
 	 * Built payloads waiting for the next flush, in dispatch order.
@@ -39,19 +51,24 @@ final class BufferedDispatcher implements EventDispatcher {
 	 */
 	private array $buffer = [];
 
+	/** Whether the final flush has run: nothing will flush again, so write at once. */
+	private bool $final = false;
+
 	/**
-	 * @param EventBuilder      $builder Turns a code and fields into a payload.
-	 * @param callable          $sink    Receives the JSON of one event; may throw.
-	 * @param SuppressionRules  $rules   Decides which buffered events survive.
-	 * @param int               $max     Buffered events that trigger an immediate flush.
+	 * @param EventBuilder                   $builder Turns a code and fields into a payload.
+	 * @param callable                       $sink    Receives the JSON of one event; may throw.
+	 * @param SuppressionRules|callable      $rules   Decides which buffered events survive; a callable returns
+	 *                                                them and is called once, at the first flush.
+	 * @param int                            $max     Buffered events that trigger an immediate flush.
 	 */
 	public function __construct(
 		private EventBuilder $builder,
 		callable $sink,
-		private SuppressionRules $rules,
+		SuppressionRules|callable $rules,
 		private int $max = 200
 	) {
-		$this->sink = \Closure::fromCallable( $sink );
+		$this->sink  = \Closure::fromCallable( $sink );
+		$this->rules = $rules instanceof SuppressionRules ? $rules : \Closure::fromCallable( $rules );
 	}
 
 	public function dispatch( int $code, array $fields = [] ): void {
@@ -67,9 +84,19 @@ final class BufferedDispatcher implements EventDispatcher {
 			return;
 		}
 
-		if ( count( $this->buffer ) >= $this->max ) {
+		if ( $this->final || count( $this->buffer ) >= $this->max ) {
 			$this->flush();
 		}
+	}
+
+	/**
+	 * Flush for the last time. Call it at the very end of the request: events
+	 * dispatched afterwards are written at once instead of waiting for a flush
+	 * that will not come.
+	 */
+	public function flush_final(): void {
+		$this->flush();
+		$this->final = true;
 	}
 
 	/**
@@ -89,7 +116,7 @@ final class BufferedDispatcher implements EventDispatcher {
 		$this->buffer = [];
 
 		try {
-			$survivors = $this->rules->apply( $payloads );
+			$survivors = $this->rules()->apply( $payloads );
 		} catch ( Throwable $e ) {
 			// A rule that fails (a broken condition from a filter, say) must
 			// not cost the audit trail: better a duplicate than a lost event.
@@ -110,25 +137,49 @@ final class BufferedDispatcher implements EventDispatcher {
 	}
 
 	/**
+	 * The rules in force, resolved on first use.
+	 *
+	 * A provider that fails or returns anything but rules (a filter callback
+	 * that threw, say) leaves the built-in table in place.
+	 */
+	private function rules(): SuppressionRules {
+		if ( $this->rules instanceof SuppressionRules ) {
+			return $this->rules;
+		}
+
+		try {
+			$rules = ( $this->rules )();
+		} catch ( Throwable $e ) {
+			$this->report( $e );
+			$rules = null;
+		}
+
+		$this->rules = $rules instanceof SuppressionRules ? $rules : SuppressionRules::defaults();
+
+		return $this->rules;
+	}
+
+	/**
 	 * JSON text of a payload; null when it can not be encoded.
 	 *
 	 * @param array<string, mixed> $payload Payload.
 	 */
 	private static function encode( array $payload ): ?string {
-		$flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
-
 		if ( function_exists( 'wp_json_encode' ) ) {
-			$json = wp_json_encode( $payload, $flags );
+			// Default flags on purpose: the escaped form keeps 4-byte characters
+			// intact in a table whose charset can not store them.
+			$json = wp_json_encode( $payload );
 		} else {
 			// phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode -- Only reached where WordPress is not loaded.
-			$json = json_encode( $payload, $flags );
+			$json = json_encode( $payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 		}
 
 		return is_string( $json ) ? $json : null;
 	}
 
 	/**
-	 * Let operators observe a failure without bringing the request down.
+	 * Let operators observe a failure without bringing the request down. A
+	 * listener that throws is swallowed too.
 	 *
 	 * @param Throwable            $e      The captured throwable.
 	 * @param int                  $code   Event code that was being dispatched; 0 when a flush failed.
@@ -150,6 +201,11 @@ final class BufferedDispatcher implements EventDispatcher {
 		 * @param int                  $code   Event code that was being dispatched, or 0 when a flush failed.
 		 * @param array<string, mixed> $fields Sensor-supplied fields, or an empty array when a flush failed.
 		 */
-		do_action( 'hellolog_dispatch_failed', $e, $code, $fields );
+		try {
+			do_action( 'hellolog_dispatch_failed', $e, $code, $fields );
+		} catch ( Throwable $callback_error ) {
+			// A listener that fails must not make the dispatcher throw.
+			return;
+		}
 	}
 }

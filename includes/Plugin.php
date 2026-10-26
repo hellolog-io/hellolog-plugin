@@ -178,8 +178,8 @@ final class Plugin {
 	/**
 	 * The rules that thin out each request's events before they are queued:
 	 * the built-in table, passed through the `hellolog_suppression_rules`
-	 * filter. Built once, when the dispatcher is assembled, so a callback
-	 * has to be hooked before then.
+	 * filter. The dispatcher asks for them at its first flush, so a loader or
+	 * sensor that attaches during boot can still hook the filter in time.
 	 */
 	public function rules(): SuppressionRules {
 		if ( null === $this->rules ) {
@@ -296,12 +296,16 @@ final class Plugin {
 		$dispatcher = new BufferedDispatcher(
 			$this->builder,
 			static fn( string $json ): int => $repository->insert( $json ),
-			$this->rules()
+			[ $this, 'rules' ]
 		);
 
 		// Events are only collected during the request; this is what writes
 		// them. Priority 1 so they are written before other shutdown callbacks run.
 		add_action( 'shutdown', [ $dispatcher, 'flush' ], 1 );
+
+		// Whatever is dispatched after that (later shutdown callbacks) is
+		// flushed here, and from then on events are written at once.
+		add_action( 'shutdown', [ $dispatcher, 'flush_final' ], PHP_INT_MAX );
 
 		return $dispatcher;
 	}

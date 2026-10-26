@@ -25,13 +25,16 @@ defined( 'ABSPATH' ) || exit;
  * 1. Suppress. A payload is dropped when one of the codes listed for it
  *    exists on the same target, unless a condition says this payload is
  *    different. Which codes exist is decided on the input, before anything is
- *    dropped, so a chain (A beats B beats C) removes both B and C.
- * 2. Exact duplicates (same code, target, changes and message) collapse to
- *    the first.
- * 3. Merge. Payloads of a merge code on the same target become one, at the
+ *    dropped, so a chain (A beats B beats C) removes both B and C. A
+ *    condition that throws counts as "not different": that payload stays.
+ * 2. Merge. Payloads of a merge code on the same target become one, at the
  *    position of the first, with their changes folded together.
- * 4. Drop empty. A payload of a drop-empty code that has no changes left is
+ * 3. Drop empty. A payload of a drop-empty code that has no changes left is
  *    removed.
+ * 4. Exact duplicates collapse to the first. Two payloads are the same when
+ *    they match in everything but the moment they were built (`occurred_at`)
+ *    and their `client_event_id`, so events that differ only in their
+ *    metadata, vars, actor or links are both kept.
  *
  * A payload without a target takes part in nothing but exact-duplicate
  * removal.
@@ -159,22 +162,13 @@ final class SuppressionRules {
 		$present  = self::presence( $payloads );
 
 		$kept = [];
-		$seen = [];
 		foreach ( $payloads as $payload ) {
-			if ( $this->is_suppressed( $payload, $present ) ) {
-				continue;
+			if ( ! $this->is_suppressed( $payload, $present ) ) {
+				$kept[] = $payload;
 			}
-
-			$fingerprint = self::fingerprint( $payload );
-			if ( isset( $seen[ $fingerprint ] ) ) {
-				continue;
-			}
-			$seen[ $fingerprint ] = true;
-
-			$kept[] = $payload;
 		}
 
-		return $this->prune_empty( $this->fold_merges( $kept ) );
+		return self::without_duplicates( $this->prune_empty( $this->fold_merges( $kept ) ) );
 	}
 
 	/**
@@ -213,11 +207,27 @@ final class SuppressionRules {
 			if ( isset( $present[ $key ][ $other ] ) ) {
 				// Asked only now: a test callable never runs for a payload
 				// nothing could suppress.
-				return ! isset( $this->conditions[ $code ] ) || (bool) ( $this->conditions[ $code ] )( $payload );
+				return ! isset( $this->conditions[ $code ] ) || $this->condition_holds( $this->conditions[ $code ], $payload );
 			}
 		}
 
 		return false;
+	}
+
+	/**
+	 * Run a condition. One that throws is treated as not holding, so the
+	 * payload stays: a broken test must not decide what is audited, nor stop
+	 * the other payloads from being thinned out.
+	 *
+	 * @param callable             $condition Condition of the payload's code.
+	 * @param array<string, mixed> $payload   Payload.
+	 */
+	private function condition_holds( callable $condition, array $payload ): bool {
+		try {
+			return (bool) $condition( $payload );
+		} catch ( \Throwable $e ) {
+			return false;
+		}
 	}
 
 	/**
@@ -307,20 +317,65 @@ final class SuppressionRules {
 	}
 
 	/**
-	 * What makes two payloads "the same event": code, target, changes and message.
+	 * Keep the first of every group of identical payloads.
+	 *
+	 * @param array<int, array<string, mixed>> $payloads Payloads.
+	 *
+	 * @return array<int, array<string, mixed>>
+	 */
+	private static function without_duplicates( array $payloads ): array {
+		$unique = [];
+		$seen   = [];
+		foreach ( $payloads as $payload ) {
+			$fingerprint = self::fingerprint( $payload );
+			if ( ! isset( $seen[ $fingerprint ] ) ) {
+				$seen[ $fingerprint ] = true;
+				$unique[]             = $payload;
+			}
+		}
+
+		return $unique;
+	}
+
+	/**
+	 * What makes two payloads "the same event": everything but the time it was
+	 * built and its client id, with the keys of every associative array in a
+	 * fixed order.
 	 *
 	 * @param array<string, mixed> $payload Payload.
 	 */
 	private static function fingerprint( array $payload ): string {
-		$parts = [
-			self::code_of( $payload ),
-			self::target_key( $payload ),
-			self::changes_of( $payload ),
-			$payload['message'] ?? null,
-		];
+		unset( $payload['occurred_at'], $payload['client_event_id'] );
 
 		// phpcs:ignore WordPress.PHP.DiscouragedPHPFunctions.serialize_serialize -- Never stored or unserialized: only a stable string to compare payloads by.
-		return md5( serialize( $parts ) );
+		return md5( serialize( self::sorted( $payload ) ) );
+	}
+
+	/**
+	 * The value with the keys of every associative array sorted; lists keep
+	 * their order.
+	 *
+	 * @param mixed $value Any value.
+	 *
+	 * @return mixed
+	 */
+	private static function sorted( $value ) {
+		if ( ! is_array( $value ) ) {
+			return $value;
+		}
+
+		$sorted = [];
+		foreach ( $value as $key => $item ) {
+			$sorted[ $key ] = self::sorted( $item );
+		}
+
+		// `array_is_list()` needs PHP 8.1.
+		$list = [] === $sorted || array_keys( $sorted ) === range( 0, count( $sorted ) - 1 );
+		if ( ! $list ) {
+			ksort( $sorted, SORT_STRING );
+		}
+
+		return $sorted;
 	}
 
 	/**
