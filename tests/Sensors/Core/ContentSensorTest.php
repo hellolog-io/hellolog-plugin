@@ -631,6 +631,28 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
+	 * A restore through a status update leaves nothing behind: a later
+	 * `untrashed_post` of its own (fired by some plugin) is still logged.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_status_update_restore_does_not_swallow_a_later_untrashed_post(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$draft             = $post( [ 'post_status' => 'draft' ] );
+				WpState::$posts[7] = $draft;
+
+				$sensor->on_status( 'draft', 'trash', $draft );
+				$sensor->on_untrashed( 7, 'publish' );
+			}
+		);
+
+		$this->assertSame( [ 2004, 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame( 'publish', $calls[1][1]['metadata']['previous_status'] );
+	}
+
+	/**
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */

@@ -98,8 +98,8 @@ final class ContentSensor extends AbstractSensor {
 	private array $untrashing = [];
 
 	/**
-	 * Posts whose restore a status change has logged, so `untrashed_post`,
-	 * which `wp_untrash_post()` fires after that change, does not log it again.
+	 * Posts whose restore by `wp_untrash_post()` the status change has logged,
+	 * so the `untrashed_post` it fires next does not log it again.
 	 *
 	 * @var array<int, true>
 	 */
@@ -130,13 +130,11 @@ final class ContentSensor extends AbstractSensor {
 		}
 
 		$extra = [];
-		if ( 2004 === $code ) {
-			$id = (int) $post->ID;
-			if ( array_key_exists( $id, $this->untrashing ) ) {
-				$extra['previous_status'] = $this->untrashing[ $id ];
-				unset( $this->untrashing[ $id ] );
-			}
-			$this->restored[ $id ] = true;
+		$id    = (int) $post->ID;
+		if ( 2004 === $code && array_key_exists( $id, $this->untrashing ) ) {
+			$extra['previous_status'] = $this->untrashing[ $id ];
+			$this->restored[ $id ]    = true;
+			unset( $this->untrashing[ $id ] );
 		}
 
 		if ( $this->should_track( $post, $code ) ) {
