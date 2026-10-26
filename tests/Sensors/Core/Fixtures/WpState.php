@@ -10,8 +10,9 @@ declare(strict_types=1);
 namespace HelloLog\Tests\Sensors\Core\Fixtures;
 
 /**
- * Shared state of `wordpress-content-functions.php`. Only ever used inside a
- * test that runs in its own process, together with those stubs.
+ * Shared state of `wordpress-content-functions.php` and
+ * `wordpress-user-functions.php`. Only ever used inside a test that runs in
+ * its own process, together with those stubs.
  */
 final class WpState {
 
@@ -36,4 +37,12 @@ final class WpState {
 
 	/** What `get_comment()` returns. */
 	public static ?\WP_Comment $comment = null;
+
+	/**
+	 * User id => the user `get_user_by()` and `get_userdata()` find. An id
+	 * that is not listed has no such user.
+	 *
+	 * @var array<int, \WP_User>
+	 */
+	public static array $users = [];
 }

@@ -40,6 +40,7 @@ final class AppPasswordsSensor extends AbstractSensor {
 		$this->emit(
 			4500,
 			[
+				'target'   => UserProfileSensor::user_target( $user_id, $user instanceof WP_User ? (string) $user->user_login : '' ),
 				'name'     => (string) ( $new_item['name'] ?? '' ),
 				'username' => $user instanceof WP_User ? (string) $user->user_login : '#' . $user_id,
 				'metadata' => [
@@ -56,6 +57,7 @@ final class AppPasswordsSensor extends AbstractSensor {
 		$this->emit(
 			4501,
 			[
+				'target'   => UserProfileSensor::user_target( $user_id, $user instanceof WP_User ? (string) $user->user_login : '' ),
 				'username' => $user instanceof WP_User ? (string) $user->user_login : '#' . $user_id,
 				'metadata' => [
 					'user_id' => $user_id,
@@ -66,18 +68,20 @@ final class AppPasswordsSensor extends AbstractSensor {
 	}
 
 	/**
+	 * The user is both the actor and the target; this hook fires while the
+	 * request is still being authenticated, before the user is the current
+	 * one, so the actor is passed explicitly.
+	 *
 	 * @param array<string, mixed> $item
 	 */
 	public function on_authenticate( WP_User $user, array $item ): void {
+		$login = (string) $user->user_login;
 		$this->emit(
 			4502,
 			[
-				'user'     => [
-					'id'       => (int) $user->ID,
-					'username' => (string) $user->user_login,
-					'roles'    => array_values( (array) $user->roles ),
-				],
-				'username' => (string) $user->user_login,
+				'actor'    => UserProfileSensor::user_actor( (int) $user->ID, $login, (array) $user->roles ),
+				'target'   => UserProfileSensor::user_target( (int) $user->ID, $login ),
+				'username' => $login,
 				'metadata' => [
 					'name'   => (string) ( $item['name'] ?? '' ),
 					'uuid'   => (string) ( $item['uuid'] ?? '' ),

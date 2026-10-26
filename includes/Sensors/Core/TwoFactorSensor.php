@@ -37,11 +37,7 @@ final class TwoFactorSensor extends AbstractSensor {
 		$this->emit(
 			4400,
 			[
-				'user'     => [
-					'id'       => (int) $user->ID,
-					'username' => (string) $user->user_login,
-					'roles'    => array_values( (array) $user->roles ),
-				],
+				'target'   => UserProfileSensor::user_target( (int) $user->ID, (string) $user->user_login ),
 				'username' => (string) $user->user_login,
 				'metadata' => [ 'provider' => is_object( $provider ) ? get_class( $provider ) : (string) $provider ],
 			]
@@ -64,6 +60,7 @@ final class TwoFactorSensor extends AbstractSensor {
 		$this->emit(
 			$enabled ? 4400 : 4401,
 			[
+				'target'   => UserProfileSensor::user_target( $user_id, (string) $user->user_login ),
 				'username' => (string) $user->user_login,
 				'metadata' => [
 					'user_id'   => $user_id,

@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\Core\UserProfileSensor;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -42,6 +43,7 @@ final class WooCommerceCustomerSensor extends AbstractSensor {
 		$this->emit(
 			9300,
 			[
+				'target'   => UserProfileSensor::user_target( $customer_id, $user ? (string) $user->user_login : '' ),
 				'username' => $user ? (string) $user->user_login : '#' . $customer_id,
 				'metadata' => [
 					'customer_id'        => $customer_id,
@@ -56,6 +58,7 @@ final class WooCommerceCustomerSensor extends AbstractSensor {
 		$this->emit(
 			9301,
 			[
+				'target'   => UserProfileSensor::user_target( $user_id, $user ? (string) $user->user_login : '' ),
 				'username' => $user ? (string) $user->user_login : '#' . $user_id,
 				'metadata' => [
 					'customer_id'  => $user_id,
