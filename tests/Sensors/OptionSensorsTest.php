@@ -17,6 +17,7 @@ use HelloLog\Events\RequestContext;
 use HelloLog\Events\RequestSource;
 use HelloLog\Sensors\AbstractSensor;
 use HelloLog\Sensors\CatalogSeeder;
+use HelloLog\Sensors\Core\SettingsSensor;
 use HelloLog\Sensors\Integrations\LwCookieSensor;
 use HelloLog\Sensors\Integrations\LwDisableSensor;
 use HelloLog\Sensors\Integrations\LwFirewallSensor;
@@ -27,6 +28,7 @@ use HelloLog\Sensors\Integrations\TermlySensor;
 use HelloLog\Sensors\Integrations\WooCommerceSettingsSensor;
 use HelloLog\Sensors\Integrations\YoastSeoSensor;
 use HelloLog\Sensors\SensitiveOption;
+use HelloLog\Tests\Events\Fixtures\WpCalls;
 use HelloLog\Tests\Sensors\Fixtures\RequestState;
 use PHPUnit\Framework\TestCase;
 
@@ -631,6 +633,87 @@ final class OptionSensorsTest extends TestCase {
 			],
 			$payload['changes']
 		);
+	}
+
+	/**
+	 * A value no masking can read: turning it into text throws. Whatever goes
+	 * wrong while a sensor reads a write must stay out of the request that
+	 * made it.
+	 *
+	 * @dataProvider sensors
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param class-string<AbstractSensor> $class  Sensor.
+	 * @param string                       $method Method `updated_option` calls.
+	 * @param string                       $option A setting of the sensor's own.
+	 * @param int                          $code   Event code.
+	 */
+	public function test_a_value_that_cannot_be_read_is_reported_and_never_thrown( string $class, string $method, string $option, int $code ): void {
+		$recorder = $this->recorder();
+		require_once __DIR__ . '/../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../Events/Fixtures/wordpress-functions.php';
+
+		$unreadable = new class() implements \Stringable {
+			public function __toString(): string {
+				throw new \RuntimeException( 'unreadable' );
+			}
+		};
+
+		$this->sensor( $class, $recorder )->$method( $option, 'before', $unreadable );
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertCount( 1, WpCalls::$actions );
+		[ $hook, $args ] = WpCalls::$actions[0];
+		$this->assertSame( 'hellolog_dispatch_failed', $hook );
+		$this->assertInstanceOf( \RuntimeException::class, $args[0] );
+		$this->assertSame( 'unreadable', $args[0]->getMessage() );
+		$this->assertSame( $code, $args[1] );
+		$this->assertSame( [ 'option' => $option ], $args[2] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_core_setting_that_cannot_be_read_is_reported_and_never_thrown(): void {
+		$recorder = $this->recorder();
+		require_once __DIR__ . '/../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../Events/Fixtures/wordpress-functions.php';
+
+		$unreadable = new class() implements \JsonSerializable {
+			public function jsonSerialize(): mixed {
+				throw new \RuntimeException( 'unreadable' );
+			}
+		};
+
+		( new SettingsSensor( $recorder ) )->on_update( 'admin_email', 'a@example.com', $unreadable );
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertSame( 'hellolog_dispatch_failed', WpCalls::$actions[0][0] );
+		$this->assertSame( 6002, WpCalls::$actions[0][1][1] );
+		$this->assertSame( [ 'option' => 'admin_email' ], WpCalls::$actions[0][1][2] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_failure_listener_that_throws_does_not_reach_wordpress_either(): void {
+		$recorder = $this->recorder();
+		require_once __DIR__ . '/../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../Events/Fixtures/wordpress-functions.php';
+		WpCalls::$action_throws = true;
+
+		$unreadable = new class() implements \Stringable {
+			public function __toString(): string {
+				throw new \RuntimeException( 'unreadable' );
+			}
+		};
+
+		( new TermlySensor( $recorder ) )->on_update( 'termly_banner_position', 'before', $unreadable );
+
+		$this->assertCount( 1, WpCalls::$actions );
 	}
 
 	/**

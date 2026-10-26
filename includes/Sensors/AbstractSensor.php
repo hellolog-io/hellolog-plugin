@@ -63,4 +63,28 @@ abstract class AbstractSensor {
 	protected function emit( int $code, array $fields = [] ): void {
 		$this->dispatcher->dispatch( $code, $fields );
 	}
+
+	/**
+	 * Report a failure of the sensor's own work before dispatch (reading the
+	 * values of a write, say) the way the dispatcher reports its own, so a
+	 * hook callback can catch it instead of letting it reach WordPress. A
+	 * listener that throws is swallowed too.
+	 *
+	 * @param \Throwable           $e      What went wrong.
+	 * @param int                  $code   Code of the event the sensor was working on.
+	 * @param array<string, mixed> $fields What identifies the object, never the values that failed.
+	 */
+	protected function report_failure( \Throwable $e, int $code, array $fields = [] ): void {
+		if ( ! function_exists( 'do_action' ) ) {
+			return;
+		}
+
+		try {
+			/** This action is documented in includes/Events/BufferedDispatcher.php */
+			do_action( 'hellolog_dispatch_failed', $e, $code, $fields );
+		} catch ( \Throwable $callback_error ) {
+			// A listener that fails must not make the sensor throw.
+			return;
+		}
+	}
 }

@@ -208,6 +208,10 @@ final class BufferedDispatcher implements EventDispatcher {
 		 * (e.g. via Query Monitor) without bringing the surrounding
 		 * request down. We intentionally swallow the throwable here.
 		 *
+		 * Since 0.5.0 a sensor whose own work before dispatch fails (reading
+		 * the values of an option write) reports through this action too;
+		 * its `$fields` then only name the object, e.g. the option.
+		 *
 		 * @since 0.1.0
 		 *
 		 * @param Throwable            $error  The captured exception.

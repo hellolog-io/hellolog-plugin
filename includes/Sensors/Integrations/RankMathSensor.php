@@ -11,6 +11,7 @@ namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Sensors\AbstractSensor;
 use HelloLog\Sensors\OptionChangePolicy;
+use Throwable;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -40,24 +41,30 @@ final class RankMathSensor extends AbstractSensor {
 	 * @param mixed $value
 	 */
 	public function on_update( string $option, $old_value, $value ): void {
-		if ( ! str_starts_with( $option, 'rank_math' ) && ! str_starts_with( $option, 'rank-math' ) ) {
-			return;
+		// Reading the values of a write can fail (an object whose text throws);
+		// that must never reach the request that saved the setting.
+		try {
+			if ( ! str_starts_with( $option, 'rank_math' ) && ! str_starts_with( $option, 'rank-math' ) ) {
+				return;
+			}
+			if ( $old_value === $value ) {
+				return;
+			}
+			$changes = OptionChangePolicy::saved_changes( $option, $old_value, $value );
+			if ( [] === $changes ) {
+				return;
+			}
+			$this->emit(
+				8900,
+				[
+					'option'   => $option,
+					'target'   => OptionChangePolicy::target( $option ),
+					'changes'  => $changes,
+					'metadata' => array_merge( [ 'option' => $option ], OptionChangePolicy::request_metadata() ),
+				]
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 8900, [ 'option' => $option ] );
 		}
-		if ( $old_value === $value ) {
-			return;
-		}
-		$changes = OptionChangePolicy::saved_changes( $option, $old_value, $value );
-		if ( [] === $changes ) {
-			return;
-		}
-		$this->emit(
-			8900,
-			[
-				'option'   => $option,
-				'target'   => OptionChangePolicy::target( $option ),
-				'changes'  => $changes,
-				'metadata' => array_merge( [ 'option' => $option ], OptionChangePolicy::request_metadata() ),
-			]
-		);
 	}
 }

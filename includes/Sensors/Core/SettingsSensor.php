@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Core;
 
 use HelloLog\Sensors\AbstractSensor;
+use Throwable;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -63,28 +64,34 @@ final class SettingsSensor extends AbstractSensor {
 	 * @param mixed $value
 	 */
 	public function on_update( string $option, $old_value, $value ): void {
-		if ( ! in_array( $option, self::WATCHED, true ) ) {
-			return;
-		}
-		if ( $old_value === $value ) {
-			return;
-		}
+		// Reading the values of a write can fail (an object whose text throws);
+		// that must never reach the request that saved the setting.
+		try {
+			if ( ! in_array( $option, self::WATCHED, true ) ) {
+				return;
+			}
+			if ( $old_value === $value ) {
+				return;
+			}
 
-		$code = $this->code_for( $option );
-		$this->emit(
-			$code,
-			[
-				'option'   => $option,
-				'old'      => $this->stringify( $old_value ),
-				'new'      => $this->stringify( $value ),
-				'state'    => $this->stringify( $value ),
-				'metadata' => [
-					'option' => $option,
-					'old'    => $this->stringify( $old_value ),
-					'new'    => $this->stringify( $value ),
-				],
-			]
-		);
+			$code = $this->code_for( $option );
+			$this->emit(
+				$code,
+				[
+					'option'   => $option,
+					'old'      => $this->stringify( $old_value ),
+					'new'      => $this->stringify( $value ),
+					'state'    => $this->stringify( $value ),
+					'metadata' => [
+						'option' => $option,
+						'old'    => $this->stringify( $old_value ),
+						'new'    => $this->stringify( $value ),
+					],
+				]
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, $this->code_for( $option ), [ 'option' => $option ] );
+		}
 	}
 
 	private function code_for( string $option ): int {
