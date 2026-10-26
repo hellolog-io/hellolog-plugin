@@ -364,6 +364,31 @@ final class OptionSensorsTest extends TestCase {
 	}
 
 	/**
+	 * WP-CLI sets `REQUEST_METHOD` (to GET) itself; a command still has no
+	 * HTTP method to record.
+	 *
+	 * @dataProvider sensors
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param class-string<AbstractSensor> $class  Sensor.
+	 * @param string                       $method Method `updated_option` calls.
+	 * @param string                       $option A setting of the sensor's own.
+	 */
+	public function test_a_command_line_write_records_no_http_method_even_when_one_is_set( string $class, string $method, string $option ): void {
+		define( 'WP_CLI', true );
+		RequestState::$admin       = false;
+		$_SERVER['REQUEST_METHOD'] = 'GET';
+
+		$recorder = $this->recorder();
+		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after' );
+
+		$this->assertCount( 1, $recorder->calls );
+		$this->assertArrayNotHasKey( 'http_method', $recorder->calls[0][1]['metadata'] );
+		$this->assertSame( $option, $recorder->calls[0][1]['metadata']['option'] );
+	}
+
+	/**
 	 * `wp cron event run` defines DOING_CRON inside a WP-CLI process, and
 	 * Action Scheduler runs jobs from the command line too. Even with a user
 	 * given to WP-CLI (`--user`) such a run has no person behind its writes.

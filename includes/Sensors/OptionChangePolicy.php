@@ -98,13 +98,14 @@ final class OptionChangePolicy {
 
 	/**
 	 * What the event should say about the request itself: its HTTP method,
-	 * upper-cased, when there is one (a WP-CLI command has none). A value that
-	 * is not a plain method word is left out rather than sent.
+	 * upper-cased, when it is an HTTP request. A WP-CLI command has none,
+	 * although WP-CLI sets `REQUEST_METHOD` itself. A value that is not a
+	 * plain method word is left out rather than sent.
 	 *
 	 * @return array{http_method?: string}
 	 */
 	public static function request_metadata(): array {
-		if ( ! isset( $_SERVER['REQUEST_METHOD'] ) ) {
+		if ( ! isset( $_SERVER['REQUEST_METHOD'] ) || RequestSource::CLI === RequestSource::current() ) {
 			return [];
 		}
 
