@@ -15,9 +15,19 @@ defined( 'ABSPATH' ) || exit;
 
 /**
  * Tracks terms (categories, tags, custom taxonomies) — create, edit, delete.
- * Skips automatically-generated taxonomy on user_register and similar.
+ * Skips automatically-generated taxonomy on user_register and similar, and
+ * the taxonomies listed in {@see self::UNTRACKED}.
  */
 final class TaxonomySensor extends AbstractSensor {
+
+	/**
+	 * Taxonomies that are not something an editor manages: menus are reported
+	 * by the menus sensor (a menu is a `nav_menu` term, so tracking the term
+	 * would log every menu change twice), the others are internal bookkeeping.
+	 *
+	 * @var array<int, string>
+	 */
+	private const UNTRACKED = [ 'nav_menu', 'post_format', 'wp_theme', 'wp_template_part_area' ];
 
 	public function key(): string {
 		return 'core-taxonomy';
@@ -30,6 +40,9 @@ final class TaxonomySensor extends AbstractSensor {
 	}
 
 	public function on_created( int $term_id, int $tt_id, string $taxonomy ): void {
+		if ( ! self::is_tracked( $taxonomy ) ) {
+			return;
+		}
 		$term = get_term( $term_id, $taxonomy );
 		if ( ! $term || is_wp_error( $term ) ) {
 			return;
@@ -49,6 +62,9 @@ final class TaxonomySensor extends AbstractSensor {
 	}
 
 	public function on_edited( int $term_id, int $tt_id, string $taxonomy ): void {
+		if ( ! self::is_tracked( $taxonomy ) ) {
+			return;
+		}
 		$term = get_term( $term_id, $taxonomy );
 		if ( ! $term || is_wp_error( $term ) ) {
 			return;
@@ -68,6 +84,9 @@ final class TaxonomySensor extends AbstractSensor {
 	}
 
 	public function on_deleted( int $term_id, string $taxonomy ): void {
+		if ( ! self::is_tracked( $taxonomy ) ) {
+			return;
+		}
 		$term = get_term( $term_id, $taxonomy );
 		$name = ( $term && ! is_wp_error( $term ) ) ? (string) $term->name : '#' . $term_id;
 		$this->emit(
@@ -81,5 +100,14 @@ final class TaxonomySensor extends AbstractSensor {
 				],
 			]
 		);
+	}
+
+	/**
+	 * Whether terms of a taxonomy are logged by this sensor.
+	 *
+	 * @param string $taxonomy Taxonomy name.
+	 */
+	public static function is_tracked( string $taxonomy ): bool {
+		return ! in_array( $taxonomy, self::UNTRACKED, true );
 	}
 }
