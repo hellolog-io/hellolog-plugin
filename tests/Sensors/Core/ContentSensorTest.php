@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Sensors\Core;
 
+use HelloLog\Events\EventDispatcher;
 use HelloLog\Sensors\Core\ContentSensor;
 use PHPUnit\Framework\TestCase;
 
@@ -47,7 +48,15 @@ final class ContentSensorTest extends TestCase {
 			'trash to trash'            => [ 'trash', 'trash', 0 ],
 			'draft to pending'          => [ 'pending', 'draft', 0 ],
 			'pending to draft'          => [ 'draft', 'pending', 0 ],
-			'new to draft'              => [ 'draft', 'new', 0 ],
+			'new to draft'              => [ 'draft', 'new', 2000 ],
+			'new to pending'            => [ 'pending', 'new', 2000 ],
+			'new to future'             => [ 'future', 'new', 2000 ],
+			'new to private'            => [ 'private', 'new', 2000 ],
+			'new to trash'              => [ 'trash', 'new', 2003 ],
+			'new to inherit'            => [ 'inherit', 'new', 0 ],
+			'trash to publish'          => [ 'publish', 'trash', 2001 ],
+			'private to publish'        => [ 'publish', 'private', 2001 ],
+			'trash to draft'            => [ 'draft', 'trash', 0 ],
 			'auto-draft to inherit'     => [ 'inherit', 'auto-draft', 0 ],
 		];
 	}
@@ -231,6 +240,163 @@ final class ContentSensorTest extends TestCase {
 		$after  = array_merge( $before, [ 'post_modified' => '2026-10-26 12:00:00' ] );
 
 		$this->assertSame( [], ContentSensor::field_changes( $before, $after ) );
+	}
+
+	/**
+	 * @return array<string, array{0: string, 1: bool}> post status, expected.
+	 */
+	public static function delete_statuses(): array {
+		return [
+			'auto-draft' => [ 'auto-draft', false ],
+			'draft'      => [ 'draft', true ],
+			'publish'    => [ 'publish', true ],
+			'pending'    => [ 'pending', true ],
+			'future'     => [ 'future', true ],
+			'private'    => [ 'private', true ],
+			'trash'      => [ 'trash', true ],
+			'inherit'    => [ 'inherit', true ],
+		];
+	}
+
+	/**
+	 * @dataProvider delete_statuses
+	 */
+	public function test_is_loggable_delete( string $status, bool $expected ): void {
+		$this->assertSame( $expected, ContentSensor::is_loggable_delete( $status ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_permanent_delete_carries_no_links(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_delete( 7, $post( [ 'post_status' => 'publish' ] ) );
+			}
+		);
+
+		$this->assertCount( 1, $calls );
+		$this->assertSame( 2005, $calls[0][0] );
+		$this->assertArrayNotHasKey( 'links', $calls[0][1] );
+		$this->assertSame(
+			[
+				'type'  => 'post',
+				'id'    => '7',
+				'label' => 'Hello',
+			],
+			$calls[0][1]['target']
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_deleting_an_auto_draft_emits_nothing(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_delete( 7, $post( [ 'post_status' => 'auto-draft' ] ) );
+			}
+		);
+
+		$this->assertSame( [], $calls );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_other_post_events_still_carry_links(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_status( 'publish', 'draft', $post( [ 'post_status' => 'publish' ] ) );
+				$sensor->on_status( 'trash', 'publish', $post( [ 'post_status' => 'trash' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2001, 2003 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				'edit' => 'https://example.test/wp-admin/post.php?post=7&action=edit',
+				'view' => 'https://example.test/p/7/',
+			],
+			$calls[0][1]['links']
+		);
+		$this->assertSame(
+			[ 'edit' => 'https://example.test/wp-admin/post.php?post=7&action=edit' ],
+			$calls[1][1]['links']
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_direct_insert_as_draft_is_a_creation(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_status( 'draft', 'new', $post( [ 'post_status' => 'draft' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2000 ], array_column( $calls, 0 ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_owned_elsewhere_and_ui_less_types_emit_nothing(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_status( 'publish', 'draft', $post( [ 'post_type' => 'product' ] ) );
+				$sensor->on_status( 'publish', 'draft', $post( [ 'post_type' => 'custom_css' ] ) );
+				$sensor->on_status( 'publish', 'draft', $post( [ 'post_type' => 'not_registered' ] ) );
+				$sensor->on_delete( 7, $post( [ 'post_type' => 'product' ] ) );
+			}
+		);
+
+		$this->assertSame( [], $calls );
+	}
+
+	/**
+	 * Run hook calls against a recording dispatcher, with the WordPress
+	 * stand-ins loaded. Only call this from a test of its own process.
+	 *
+	 * @param callable(ContentSensor, callable(array<string, mixed>): \WP_Post): void $hooks What to call.
+	 * @return array<int, array{0: int, 1: array<string, mixed>}> Every dispatch as `[ code, fields ]`.
+	 */
+	private function run_hook( callable $hooks ): array {
+		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
+
+		$dispatcher = new class() implements EventDispatcher {
+
+			/** @var array<int, array{0: int, 1: array<string, mixed>}> */
+			public array $calls = [];
+
+			public function dispatch( int $code, array $fields = [] ): void {
+				$this->calls[] = [ $code, $fields ];
+			}
+		};
+
+		$post = static fn( array $over = [] ): \WP_Post => new \WP_Post(
+			array_merge(
+				[
+					'ID'          => 7,
+					'post_title'  => 'Hello',
+					'post_type'   => 'post',
+					'post_status' => 'publish',
+					'post_name'   => 'hello',
+					'post_author' => '1',
+				],
+				$over
+			)
+		);
+
+		$hooks( new ContentSensor( $dispatcher ), $post );
+
+		return $dispatcher->calls;
 	}
 
 	/**

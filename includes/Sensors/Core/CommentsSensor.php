@@ -134,35 +134,49 @@ final class CommentsSensor extends AbstractSensor {
 		$title = $post ? (string) $post->post_title : '#' . $comment->comment_post_ID;
 		$id    = (int) $comment->comment_ID;
 
+		$fields = [
+			'post'       => $post
+				? [
+					'id'   => (int) $post->ID,
+					'type' => (string) $post->post_type,
+				]
+				: null,
+			'target'     => self::comment_target( $id, $title ),
+			'post_title' => $title,
+			'author'     => (string) $comment->comment_author,
+			'metadata'   => array_merge(
+				[
+					'comment_id'      => $id,
+					'comment_author'  => (string) $comment->comment_author,
+					'comment_post_id' => (int) $comment->comment_post_ID,
+				],
+				$extra
+			),
+		];
+
+		// A permanently deleted comment is gone, so there is nothing to open.
+		if ( 2204 !== $code ) {
+			$fields['links'] = $this->links( $comment );
+		}
+
+		$this->emit( $code, $fields );
+	}
+
+	/**
+	 * Links to open a comment.
+	 *
+	 * @return array<string, string>
+	 */
+	private function links( WP_Comment $comment ): array {
 		$approved = (string) $comment->comment_approved;
 		$view     = '1' === $approved ? get_comment_link( $comment ) : null;
 
-		$this->emit(
-			$code,
-			[
-				'post'       => $post
-					? [
-						'id'   => (int) $post->ID,
-						'type' => (string) $post->post_type,
-					]
-					: null,
-				'target'     => self::comment_target( $id, $title ),
-				'links'      => self::comment_links(
-					admin_url( 'comment.php?action=editcomment&c=' . $id ),
-					is_string( $view ) ? $view : null,
-					$approved
-				),
-				'post_title' => $title,
-				'author'     => (string) $comment->comment_author,
-				'metadata'   => array_merge(
-					[
-						'comment_id'      => $id,
-						'comment_author'  => (string) $comment->comment_author,
-						'comment_post_id' => (int) $comment->comment_post_ID,
-					],
-					$extra
-				),
-			]
+		// Built here rather than with get_edit_comment_link(), which answers
+		// nothing unless the current user may edit comments (visitors cannot).
+		return self::comment_links(
+			admin_url( 'comment.php?action=editcomment&c=' . (int) $comment->comment_ID ),
+			is_string( $view ) ? $view : null,
+			$approved
 		);
 	}
 }

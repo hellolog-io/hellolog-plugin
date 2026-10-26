@@ -28,10 +28,11 @@ defined( 'ABSPATH' ) || exit;
 final class ContentSensor extends AbstractSensor {
 
 	/**
-	 * Post types that never produce a post event here: either another sensor
-	 * reports them in its own words (store products, orders and coupons,
-	 * attachments) or they are internal records nobody edits (revisions,
-	 * menu items, customizer drafts, embed caches, privacy requests).
+	 * Post types that never produce a post event here: store products,
+	 * orders and coupons are reported by the store sensors in their own
+	 * words, attachments are excluded, and the rest are internal records
+	 * nobody edits (revisions, menu items, customizer drafts, embed caches,
+	 * privacy requests).
 	 *
 	 * @var array<int, string>
 	 */
@@ -94,7 +95,7 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	public function on_delete( int $post_id, WP_Post $post ): void {
-		if ( ! $this->should_track( $post ) ) {
+		if ( ! $this->should_track( $post ) || ! self::is_loggable_delete( (string) $post->post_status ) ) {
 			return;
 		}
 		// `before_delete_post` only fires for permanent deletes — trash uses
@@ -130,12 +131,13 @@ final class ContentSensor extends AbstractSensor {
 	 * The event a status change is, or 0 when it is none.
 	 *
 	 * A post that goes live is "published" even when it was never saved as a
-	 * draft first (`auto-draft` or `new`), otherwise a direct publish would be
-	 * logged as a plain creation. A post that leaves `auto-draft` for any
-	 * other visible state is "created". Moving to trash is "trashed" from
-	 * every state, and going from published to anything else but trash is
-	 * "unpublished". Everything else (including no change) is not an event
-	 * of its own.
+	 * draft first, otherwise a direct publish would be logged as a plain
+	 * creation. A post that comes into being as anything else visible, either
+	 * from `auto-draft` (the editor's placeholder) or from `new` (inserted
+	 * directly, by the REST API or an importer), is "created". Moving to
+	 * trash is "trashed" from every state, and going from published to
+	 * anything else but trash is "unpublished". Everything else (including
+	 * no change) is not an event of its own.
 	 *
 	 * @param string $new New post status.
 	 * @param string $old Previous post status.
@@ -150,7 +152,7 @@ final class ContentSensor extends AbstractSensor {
 		if ( 'publish' === $new ) {
 			return 2001;
 		}
-		if ( 'auto-draft' === $old && in_array( $new, [ 'draft', 'pending', 'future', 'private' ], true ) ) {
+		if ( in_array( $old, [ 'auto-draft', 'new' ], true ) && in_array( $new, [ 'draft', 'pending', 'future', 'private' ], true ) ) {
 			return 2000;
 		}
 		if ( 'publish' === $old ) {
@@ -172,6 +174,17 @@ final class ContentSensor extends AbstractSensor {
 		}
 
 		return $show_ui;
+	}
+
+	/**
+	 * Whether the permanent delete of a post is worth an event. WordPress
+	 * clears out stale `auto-draft` placeholders by itself in cron, so those
+	 * are housekeeping, not something anyone deleted.
+	 *
+	 * @param string $status Status of the post being deleted.
+	 */
+	public static function is_loggable_delete( string $status ): bool {
+		return 'auto-draft' !== $status;
 	}
 
 	/**
@@ -234,14 +247,6 @@ final class ContentSensor extends AbstractSensor {
 	private function emit_post_event( int $code, WP_Post $post, array $extra = [], array $changes = [] ): void {
 		$id = (int) $post->ID;
 
-		// Core answers null for the edit link when nobody who may edit the post is
-		// logged in (a scheduled post going live in cron, a visitor), so build it.
-		$edit = get_edit_post_link( $id, 'raw' );
-		if ( ! is_string( $edit ) || '' === $edit ) {
-			$edit = admin_url( 'post.php?post=' . $id . '&action=edit' );
-		}
-		$view = 'publish' === $post->post_status ? get_permalink( $post ) : null;
-
 		$fields = [
 			'post'      => [
 				'id'     => $id,
@@ -249,7 +254,6 @@ final class ContentSensor extends AbstractSensor {
 				'status' => (string) $post->post_status,
 			],
 			'target'    => self::post_target( $id, (string) $post->post_title ),
-			'links'     => self::post_links( $edit, is_string( $view ) ? $view : null, (string) $post->post_status ),
 			'title'     => (string) $post->post_title,
 			'post_type' => ucfirst( str_replace( [ '_', '-' ], ' ', (string) $post->post_type ) ),
 			'metadata'  => array_merge(
@@ -262,6 +266,11 @@ final class ContentSensor extends AbstractSensor {
 		];
 		if ( 2006 === $code ) {
 			$fields['changes'] = $changes;
+		}
+
+		// A permanently deleted post is gone, so there is nothing to open.
+		if ( 2005 !== $code ) {
+			$fields['links'] = $this->links( $post );
 		}
 
 		$this->emit( $code, $fields );
@@ -279,5 +288,24 @@ final class ContentSensor extends AbstractSensor {
 		}
 
 		return $values;
+	}
+
+	/**
+	 * Links to open a post.
+	 *
+	 * @return array<string, string>
+	 */
+	private function links( WP_Post $post ): array {
+		$id = (int) $post->ID;
+
+		// Core answers null for the edit link when nobody who may edit the post is
+		// logged in (a scheduled post going live in cron, a visitor), so build it.
+		$edit = get_edit_post_link( $id, 'raw' );
+		if ( ! is_string( $edit ) || '' === $edit ) {
+			$edit = admin_url( 'post.php?post=' . $id . '&action=edit' );
+		}
+		$view = 'publish' === $post->post_status ? get_permalink( $post ) : null;
+
+		return self::post_links( $edit, is_string( $view ) ? $view : null, (string) $post->post_status );
 	}
 }
