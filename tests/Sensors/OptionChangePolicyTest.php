@@ -19,24 +19,24 @@ final class OptionChangePolicyTest extends TestCase {
 	/**
 	 * @dataProvider decisions
 	 */
-	public function test_only_a_person_saving_a_real_setting_is_logged( string $option, string $source, bool $has_actor, string $method, bool $expected ): void {
-		$this->assertSame( $expected, OptionChangePolicy::should_log( $option, $source, $has_actor, $method ) );
+	public function test_only_a_person_changing_a_real_setting_is_logged( string $option, string $source, bool $has_actor, bool $expected ): void {
+		$this->assertSame( $expected, OptionChangePolicy::should_log( $option, $source, $has_actor ) );
 	}
 
 	/**
-	 * @return array<string, array{0: string, 1: string, 2: bool, 3: string, 4: bool}> Option, source, has actor, HTTP method, logged.
+	 * @return array<string, array{0: string, 1: string, 2: bool, 3: bool}> Option, source, has actor, logged.
 	 */
 	public static function decisions(): array {
 		return [
-			'woo tracks queue bookkeeping in admin'   => [ 'woocommerce_clear_ces_tracks_queue_for_page', 'admin', true, 'POST', false ],
-			'rank math notifications in admin'        => [ 'rank_math_notifications', 'admin', true, 'POST', false ],
-			'woo currency saved in admin'             => [ 'woocommerce_currency', 'admin', true, 'POST', true ],
-			'woo guest checkout saved over ajax'      => [ 'woocommerce_enable_guest_checkout', 'ajax', true, 'POST', true ],
-			'rank math modules saved in admin'        => [ 'rank_math_modules', 'admin', true, 'POST', true ],
-			'woo currency from cron without actor'    => [ 'woocommerce_currency', 'cron', false, 'GET', false ],
-			'woo currency from the frontend'          => [ 'woocommerce_currency', 'frontend', true, 'POST', false ],
-			'yoast titles saved over rest'            => [ 'wpseo_titles', 'rest', true, 'POST', true ],
-			'woo db version bumped by cli'            => [ 'woocommerce_db_version', 'cli', true, '', false ],
+			'woo tracks queue bookkeeping in admin'   => [ 'woocommerce_clear_ces_tracks_queue_for_page', 'admin', true, false ],
+			'rank math notifications in admin'        => [ 'rank_math_notifications', 'admin', true, false ],
+			'woo currency saved in admin'             => [ 'woocommerce_currency', 'admin', true, true ],
+			'woo guest checkout saved over ajax'      => [ 'woocommerce_enable_guest_checkout', 'ajax', true, true ],
+			'rank math modules saved in admin'        => [ 'rank_math_modules', 'admin', true, true ],
+			'woo currency from cron without actor'    => [ 'woocommerce_currency', 'cron', false, false ],
+			'woo currency from the frontend'          => [ 'woocommerce_currency', 'frontend', true, false ],
+			'yoast titles saved over rest'            => [ 'wpseo_titles', 'rest', true, true ],
+			'woo db version bumped by cli'            => [ 'woocommerce_db_version', 'cli', true, false ],
 		];
 	}
 
@@ -47,10 +47,24 @@ final class OptionChangePolicyTest extends TestCase {
 	}
 
 	/**
+	 * A request can change its own method (`_method`, `X-HTTP-Method-Override`)
+	 * and plugins save settings from GET links, so the method is recorded
+	 * with the event but never decides whether it is logged.
+	 */
+	public function test_the_rule_does_not_depend_on_the_http_method(): void {
+		$names = array_map(
+			static fn( \ReflectionParameter $parameter ): string => $parameter->getName(),
+			( new \ReflectionMethod( OptionChangePolicy::class, 'should_log' ) )->getParameters()
+		);
+
+		$this->assertSame( [ 'option', 'source', 'has_actor', 'background' ], $names );
+	}
+
+	/**
 	 * @dataProvider sources
 	 */
 	public function test_a_real_setting_is_logged_for_interactive_sources_only( string $source, bool $expected ): void {
-		$this->assertSame( $expected, OptionChangePolicy::should_log( 'woocommerce_currency', $source, true, 'POST' ) );
+		$this->assertSame( $expected, OptionChangePolicy::should_log( 'woocommerce_currency', $source, true ) );
 	}
 
 	/**
@@ -81,7 +95,7 @@ final class OptionChangePolicyTest extends TestCase {
 	public function test_only_the_command_line_is_logged_without_a_signed_in_person( string $source ): void {
 		$this->assertSame(
 			RequestSource::CLI === $source,
-			OptionChangePolicy::should_log( 'woocommerce_currency', $source, false, 'POST' )
+			OptionChangePolicy::should_log( 'woocommerce_currency', $source, false )
 		);
 	}
 
@@ -90,45 +104,13 @@ final class OptionChangePolicyTest extends TestCase {
 	 */
 	public function test_background_work_is_never_logged_whatever_the_source( string $source ): void {
 		foreach ( [ true, false ] as $has_actor ) {
-			$this->assertFalse( OptionChangePolicy::should_log( 'woocommerce_currency', $source, $has_actor, 'POST', true ) );
+			$this->assertFalse( OptionChangePolicy::should_log( 'woocommerce_currency', $source, $has_actor, true ) );
 		}
 	}
 
 	public function test_a_cron_event_run_from_the_command_line_is_background_work(): void {
-		$this->assertTrue( OptionChangePolicy::should_log( 'woocommerce_currency', RequestSource::CLI, false, '', false ) );
-		$this->assertFalse( OptionChangePolicy::should_log( 'woocommerce_currency', RequestSource::CLI, false, '', true ) );
-	}
-
-	/**
-	 * @dataProvider methods
-	 */
-	public function test_only_a_save_counts_not_a_page_view( string $source, string $method, bool $expected ): void {
-		$this->assertSame( $expected, OptionChangePolicy::should_log( 'woocommerce_currency', $source, true, $method ) );
-	}
-
-	/**
-	 * @return array<string, array{0: string, 1: string, 2: bool}> Source, HTTP method, logged.
-	 */
-	public static function methods(): array {
-		return [
-			'admin POST'              => [ RequestSource::ADMIN, 'POST', true ],
-			'admin POST lower case'   => [ RequestSource::ADMIN, 'post', true ],
-			'admin GET'               => [ RequestSource::ADMIN, 'GET', false ],
-			'admin HEAD'              => [ RequestSource::ADMIN, 'HEAD', false ],
-			'admin unknown method'    => [ RequestSource::ADMIN, '', false ],
-			'ajax POST'               => [ RequestSource::AJAX, 'POST', true ],
-			'ajax GET'                => [ RequestSource::AJAX, 'GET', false ],
-			'rest POST'               => [ RequestSource::REST, 'POST', true ],
-			'rest PUT'                => [ RequestSource::REST, 'PUT', true ],
-			'rest PATCH'              => [ RequestSource::REST, 'PATCH', true ],
-			'rest DELETE'             => [ RequestSource::REST, 'DELETE', true ],
-			'rest GET'                => [ RequestSource::REST, 'GET', false ],
-			'rest HEAD'               => [ RequestSource::REST, 'HEAD', false ],
-			'rest OPTIONS'            => [ RequestSource::REST, 'OPTIONS', false ],
-			'rest unknown method'     => [ RequestSource::REST, '', false ],
-			'cli without a method'    => [ RequestSource::CLI, '', true ],
-			'cli with a stray method' => [ RequestSource::CLI, 'GET', true ],
-		];
+		$this->assertTrue( OptionChangePolicy::should_log( 'woocommerce_currency', RequestSource::CLI, false, false ) );
+		$this->assertFalse( OptionChangePolicy::should_log( 'woocommerce_currency', RequestSource::CLI, false, true ) );
 	}
 
 	/**
@@ -140,7 +122,7 @@ final class OptionChangePolicyTest extends TestCase {
 	 */
 	public function test_bookkeeping_options_are_never_logged( string $option ): void {
 		$this->assertTrue( OptionChangePolicy::is_internal( $option ) );
-		$this->assertFalse( OptionChangePolicy::should_log( $option, 'admin', true, 'POST' ) );
+		$this->assertFalse( OptionChangePolicy::should_log( $option, 'admin', true ) );
 	}
 
 	/**
@@ -194,7 +176,7 @@ final class OptionChangePolicyTest extends TestCase {
 	 */
 	public function test_ordinary_setting_names_are_not_internal( string $option ): void {
 		$this->assertFalse( OptionChangePolicy::is_internal( $option ) );
-		$this->assertTrue( OptionChangePolicy::should_log( $option, 'admin', true, 'POST' ) );
+		$this->assertTrue( OptionChangePolicy::should_log( $option, 'admin', true ) );
 	}
 
 	/**

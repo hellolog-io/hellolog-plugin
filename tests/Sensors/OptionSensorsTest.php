@@ -94,6 +94,7 @@ final class OptionSensorsTest extends TestCase {
 			$fields['changes']
 		);
 		$this->assertSame( $option, $fields['metadata']['option'] );
+		$this->assertSame( 'POST', $fields['metadata']['http_method'] );
 	}
 
 	/**
@@ -244,8 +245,9 @@ final class OptionSensorsTest extends TestCase {
 	}
 
 	/**
-	 * An admin page view that happens to write an option (a plugin's queue or
-	 * counter) is bookkeeping, not a save.
+	 * Plugins change settings from signed-in GET links (admin-post, nonce
+	 * links), and a REST GET can act as a write through `_method`. So the
+	 * method never keeps a write out of the log; it is recorded instead.
 	 *
 	 * @dataProvider sensors
 	 * @runInSeparateProcess
@@ -255,13 +257,15 @@ final class OptionSensorsTest extends TestCase {
 	 * @param string                       $method Method `updated_option` calls.
 	 * @param string                       $option A setting of the sensor's own.
 	 */
-	public function test_a_write_during_a_dashboard_page_view_logs_nothing( string $class, string $method, string $option ): void {
+	public function test_a_signed_in_write_on_a_get_request_is_logged_with_its_method( string $class, string $method, string $option ): void {
 		$_SERVER['REQUEST_METHOD'] = 'GET';
 
 		$recorder = $this->recorder();
 		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after' );
 
-		$this->assertSame( [], $recorder->calls );
+		$this->assertCount( 1, $recorder->calls );
+		$this->assertSame( 'GET', $recorder->calls[0][1]['metadata']['http_method'] );
+		$this->assertSame( $option, $recorder->calls[0][1]['metadata']['option'] );
 	}
 
 	/**
@@ -273,18 +277,64 @@ final class OptionSensorsTest extends TestCase {
 	 * @param string                       $method Method `updated_option` calls.
 	 * @param string                       $option A setting of the sensor's own.
 	 */
-	public function test_a_rest_write_is_logged_but_a_rest_read_is_not( string $class, string $method, string $option ): void {
+	public function test_a_rest_call_is_logged_whatever_its_method( string $class, string $method, string $option ): void {
 		define( 'REST_REQUEST', true );
 		RequestState::$admin = false;
 
-		$_SERVER['REQUEST_METHOD'] = 'PUT';
-		$recorder                  = $this->recorder();
-		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after' );
-		$this->assertCount( 1, $recorder->calls );
+		$recorder = $this->recorder();
+		$sensor   = $this->sensor( $class, $recorder );
+		foreach ( [ 'PUT', 'POST', 'DELETE', 'GET', 'HEAD', 'OPTIONS' ] as $http_method ) {
+			$_SERVER['REQUEST_METHOD'] = $http_method;
+			$sensor->$method( $option, 'before', 'after' );
+		}
 
-		$_SERVER['REQUEST_METHOD'] = 'GET';
-		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after again' );
+		$this->assertSame(
+			[ 'PUT', 'POST', 'DELETE', 'GET', 'HEAD', 'OPTIONS' ],
+			array_column( array_column( array_column( $recorder->calls, 1 ), 'metadata' ), 'http_method' )
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_method_is_recorded_in_upper_case(): void {
+		$_SERVER['REQUEST_METHOD'] = 'post';
+
+		$recorder = $this->recorder();
+		( new TermlySensor( $recorder ) )->on_update( 'termly_banner_position', 'before', 'after' );
+
+		$this->assertSame( 'POST', $recorder->calls[0][1]['metadata']['http_method'] );
+	}
+
+	/**
+	 * @dataProvider unusable_methods
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param string $http_method What the server reports as the method.
+	 */
+	public function test_a_method_that_is_not_a_plain_word_is_not_recorded_but_the_write_is( string $http_method ): void {
+		$_SERVER['REQUEST_METHOD'] = $http_method;
+
+		$recorder = $this->recorder();
+		( new TermlySensor( $recorder ) )->on_update( 'termly_banner_position', 'before', 'after' );
+
 		$this->assertCount( 1, $recorder->calls );
+		$this->assertSame( [ 'option' => 'termly_banner_position' ], $recorder->calls[0][1]['metadata'] );
+	}
+
+	/**
+	 * @return array<string, array{0: string}>
+	 */
+	public static function unusable_methods(): array {
+		return [
+			'empty'              => [ '' ],
+			'a space'            => [ 'PO ST' ],
+			'punctuation'        => [ 'POST;x' ],
+			'a very long method' => [ str_repeat( 'A', 40 ) ],
+			'a number'           => [ '123' ],
+		];
 	}
 
 	/**
@@ -308,6 +358,7 @@ final class OptionSensorsTest extends TestCase {
 		$this->sensor( $class, $recorder )->$method( $option, 'before', 'after' );
 
 		$this->assertCount( 1, $recorder->calls );
+		$this->assertArrayNotHasKey( 'http_method', $recorder->calls[0][1]['metadata'], 'A command has no HTTP method.' );
 	}
 
 	/**
@@ -503,9 +554,10 @@ final class OptionSensorsTest extends TestCase {
 		$this->assertSame( 'woocommerce_currency', $fields['option'] );
 		$this->assertSame(
 			[
-				'option' => 'woocommerce_currency',
-				'old'    => 'USD',
-				'new'    => 'EUR',
+				'option'      => 'woocommerce_currency',
+				'old'         => 'USD',
+				'new'         => 'EUR',
+				'http_method' => 'POST',
 			],
 			$fields['metadata']
 		);

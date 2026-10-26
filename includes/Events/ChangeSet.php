@@ -41,6 +41,12 @@ final class ChangeSet {
 	private const ELLIPSIS = '…';
 
 	/**
+	 * The `user:password@` part of a URL (`scheme://` and the first `@` with
+	 * no `/`, `?`, `#` or space between), captured after the scheme.
+	 */
+	private const URL_USERINFO = '~([a-z][a-z0-9+.\-]*://)[^/?#\s@]+@~i';
+
+	/**
 	 * Deepest array level that is still written out; anything below becomes
 	 * `…`. Keeps a self-referencing array from recursing forever.
 	 */
@@ -50,6 +56,16 @@ final class ChangeSet {
 	 * Fields whose value is a password hash. Never sent, not even masked.
 	 */
 	private const PASSWORD_FIELDS = [ 'password', 'user_pass' ];
+
+	/**
+	 * A string with the secrets inside it masked, see {@see self::stringify()}
+	 * for the rules. For callers that report a scalar value on its own.
+	 *
+	 * @param string $text Any string.
+	 */
+	public static function redact_text( string $text ): string {
+		return self::text( $text, 0, true );
+	}
 
 	/**
 	 * Compare two snapshots field by field.
@@ -228,11 +244,11 @@ final class ChangeSet {
 			return (string) $v;
 		}
 		if ( is_string( $v ) ) {
-			return self::scrub( $v );
+			return self::text( $v, $depth, $mask );
 		}
 		if ( is_object( $v ) ) {
 			if ( $v instanceof \Stringable ) {
-				return self::scrub( (string) $v );
+				return self::text( (string) $v, $depth, $mask );
 			}
 			$v = get_object_vars( $v );
 		}
@@ -319,9 +335,12 @@ final class ChangeSet {
 				return self::ELLIPSIS;
 			}
 			if ( $v instanceof \Stringable ) {
-				return self::scrub( (string) $v );
+				return self::text( (string) $v, $depth, $mask );
 			}
 			$v = get_object_vars( $v );
+		}
+		if ( is_string( $v ) ) {
+			return $mask ? self::mask_text( $v, $depth ) : $v;
 		}
 		if ( ! is_array( $v ) ) {
 			return $v;
@@ -343,6 +362,65 @@ final class ChangeSet {
 		}
 
 		return $sorted;
+	}
+
+	/**
+	 * Text of a string value: valid UTF-8 and, with `$mask`, free of secrets.
+	 *
+	 * @param string $text  Any string.
+	 * @param int    $depth Array nesting level of the value.
+	 * @param bool   $mask  Whether to mask secrets inside the text.
+	 */
+	private static function text( string $text, int $depth, bool $mask ): string {
+		$text = self::scrub( $text );
+
+		return $mask ? self::mask_text( $text, $depth ) : $text;
+	}
+
+	/**
+	 * A string can carry secrets of its own, in two shapes.
+	 *
+	 * Text that is a JSON object or list is decoded, masked with the same
+	 * credential-like-key rule as an array and written out again, but only
+	 * when something was masked, so ordinary JSON keeps the spelling it was
+	 * saved with. Any other text only has the `user:password@` part of its
+	 * URLs masked. PHP-serialized text is NOT unserialized: that can
+	 * instantiate objects chosen by whoever wrote the value.
+	 *
+	 * @param string $text  Valid UTF-8 text.
+	 * @param int    $depth Array nesting level of the value.
+	 */
+	private static function mask_text( string $text, int $depth ): string {
+		$decoded = self::decode_json( $text );
+		if ( null === $decoded ) {
+			return preg_replace( self::URL_USERINFO, '$1' . SensitiveOption::REDACTED . '@', $text ) ?? SensitiveOption::REDACTED;
+		}
+
+		$plain  = self::json( self::sort_keys( $decoded, $depth + 1, false ) );
+		$masked = self::json( self::sort_keys( $decoded, $depth + 1, true ) );
+		if ( false === $masked ) {
+			return SensitiveOption::REDACTED;
+		}
+
+		return $plain === $masked ? $text : $masked;
+	}
+
+	/**
+	 * The array or object a text is the JSON of; null for anything else.
+	 *
+	 * @param string $text Any text.
+	 *
+	 * @return array<int|string, mixed>|null
+	 */
+	private static function decode_json( string $text ): ?array {
+		$first = ltrim( $text )[0] ?? '';
+		if ( '{' !== $first && '[' !== $first ) {
+			return null;
+		}
+
+		$decoded = json_decode( $text, true, 512, JSON_BIGINT_AS_STRING );
+
+		return is_array( $decoded ) ? $decoded : null;
 	}
 
 	/**

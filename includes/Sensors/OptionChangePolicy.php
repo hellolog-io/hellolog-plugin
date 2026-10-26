@@ -22,18 +22,19 @@ defined( 'ABSPATH' ) || exit;
  * alone that reads as "settings changed", twice per save (once in the admin
  * request, once from a background run).
  *
- * A write counts as a setting change only when somebody SAVED it: a signed-in
- * person's POST on an admin screen or admin-ajax, a signed-in write over the
- * REST API, or a WP-CLI command; and the option is not plugin housekeeping.
- * A page view that happens to write an option, or any unattended run (cron,
- * Action Scheduler, also when it runs inside WP-CLI), is bookkeeping.
- * {@see self::should_log()} is the pure rule; the sensors call
- * {@see self::saved_changes()}, which feeds it the live request.
+ * A write counts as a setting change when somebody made it: a signed-in
+ * person on an admin screen, admin-ajax or the REST API, or a WP-CLI command;
+ * and the option is not plugin housekeeping. Unattended runs (cron, Action
+ * Scheduler, also when they run inside WP-CLI) and visitors are not. The HTTP
+ * method plays no part: a request can change its own method (`_method`,
+ * `X-HTTP-Method-Override`) and plugins save settings from signed-in GET
+ * links, so a method rule would be an easy way to slip a change past the log.
+ * The method is recorded with the event instead, see
+ * {@see self::request_metadata()}. {@see self::should_log()} is the pure rule;
+ * the sensors call {@see self::saved_changes()}, which feeds it the live
+ * request.
  */
 final class OptionChangePolicy {
-
-	/** HTTP methods that only read; a REST call with one of them saves nothing. */
-	private const READ_METHODS = [ 'GET', 'HEAD', 'OPTIONS' ];
 
 	/**
 	 * Option names that are plugin housekeeping, not a setting somebody chose.
@@ -50,8 +51,7 @@ final class OptionChangePolicy {
 	 * Whether a write to an option should reach the log.
 	 *
 	 * By source:
-	 * - `admin`, `ajax`: a signed-in person's POST.
-	 * - `rest`: a signed-in person's write (any method but GET, HEAD, OPTIONS).
+	 * - `admin`, `ajax`, `rest`: a signed-in person's write.
 	 * - `cli`: always, with or without `--user`; a command is deliberate.
 	 * - everything else (frontend, cron, Action Scheduler, XML-RPC): never.
 	 * Unattended work (`$background`) is never logged, whatever the source;
@@ -60,23 +60,17 @@ final class OptionChangePolicy {
 	 * @param string $option     Option name.
 	 * @param string $source     Entry point of the request, see {@see RequestSource}.
 	 * @param bool   $has_actor  Whether a signed-in user made the request.
-	 * @param string $method     HTTP method of the request. Defaults to a save so a
-	 *                           caller that has no method to give gets the plain
-	 *                           source-and-actor rule.
 	 * @param bool   $background Whether the code runs unattended (cron or a queued job).
 	 */
-	public static function should_log( string $option, string $source, bool $has_actor, string $method = 'POST', bool $background = false ): bool {
+	public static function should_log( string $option, string $source, bool $has_actor, bool $background = false ): bool {
 		if ( $background || self::is_internal( $option ) ) {
 			return false;
 		}
 
-		$method = strtoupper( $method );
-
 		return match ( $source ) {
-			RequestSource::ADMIN, RequestSource::AJAX => $has_actor && 'POST' === $method,
-			RequestSource::REST                       => $has_actor && '' !== $method && ! in_array( $method, self::READ_METHODS, true ),
-			RequestSource::CLI                        => true,
-			default                                   => false,
+			RequestSource::ADMIN, RequestSource::AJAX, RequestSource::REST => $has_actor,
+			RequestSource::CLI                                             => true,
+			default                                                        => false,
 		};
 	}
 
@@ -94,10 +88,26 @@ final class OptionChangePolicy {
 		}
 
 		$has_actor  = function_exists( 'get_current_user_id' ) && get_current_user_id() > 0;
-		$method     = isset( $_SERVER['REQUEST_METHOD'] ) ? sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) : '';
 		$background = ( function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) || ActionSchedulerContext::is_running();
 
-		return self::should_log( $option, RequestSource::current(), $has_actor, $method, $background );
+		return self::should_log( $option, RequestSource::current(), $has_actor, $background );
+	}
+
+	/**
+	 * What the event should say about the request itself: its HTTP method,
+	 * upper-cased, when there is one (a WP-CLI command has none). A value that
+	 * is not a plain method word is left out rather than sent.
+	 *
+	 * @return array{http_method?: string}
+	 */
+	public static function request_metadata(): array {
+		if ( ! isset( $_SERVER['REQUEST_METHOD'] ) ) {
+			return [];
+		}
+
+		$method = strtoupper( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) );
+
+		return 1 === preg_match( '/^[A-Z][A-Z-]{0,19}$/', $method ) ? [ 'http_method' => $method ] : [];
 	}
 
 	/**

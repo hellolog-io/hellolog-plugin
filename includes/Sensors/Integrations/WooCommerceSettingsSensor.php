@@ -57,11 +57,14 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 				'option'   => $option,
 				'target'   => OptionChangePolicy::target( $option ),
 				'changes'  => $changes,
-				'metadata' => [
-					'option' => $option,
-					'old'    => SensitiveOption::value( $option, $old_value ),
-					'new'    => SensitiveOption::value( $option, $value ),
-				],
+				'metadata' => array_merge(
+					[
+						'option' => $option,
+						'old'    => SensitiveOption::value( $option, $old_value ),
+						'new'    => SensitiveOption::value( $option, $value ),
+					],
+					OptionChangePolicy::request_metadata()
+				),
 			]
 		);
 	}

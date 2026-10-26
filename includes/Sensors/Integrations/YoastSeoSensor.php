@@ -54,7 +54,7 @@ final class YoastSeoSensor extends AbstractSensor {
 				'option'   => $option,
 				'target'   => OptionChangePolicy::target( $option ),
 				'changes'  => $changes,
-				'metadata' => [ 'option' => $option ],
+				'metadata' => array_merge( [ 'option' => $option ], OptionChangePolicy::request_metadata() ),
 			]
 		);
 	}

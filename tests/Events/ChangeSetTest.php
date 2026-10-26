@@ -450,6 +450,178 @@ final class ChangeSetTest extends TestCase {
 		$this->assertStringNotContainsString( 'NEW', (string) json_encode( $changes ) );
 	}
 
+	// ---- secrets inside string values ---------------------------------
+
+	/**
+	 * @return array<string, array{0: string, 1: string}> Text, what is reported.
+	 */
+	public static function urls_with_userinfo(): array {
+		return [
+			'user and password'      => [ 'https://admin:hunter2@db.example.com/path', 'https://[redacted]@db.example.com/path' ],
+			'a token as the user'    => [ 'https://ghp_abc123@github.com/org/repo.git', 'https://[redacted]@github.com/org/repo.git' ],
+			'password only'          => [ 'redis://:hunter2@cache.example.com:6379', 'redis://[redacted]@cache.example.com:6379' ],
+			'a connection string'    => [ 'mysql://root:hunter2@127.0.0.1:3306/shop', 'mysql://[redacted]@127.0.0.1:3306/shop' ],
+			'inside a longer text'   => [ 'Backup to sftp://bob:hunter2@files.example.com now', 'Backup to sftp://[redacted]@files.example.com now' ],
+			'two urls'               => [ 'http://a:b@one.example http://c:d@two.example', 'http://[redacted]@one.example http://[redacted]@two.example' ],
+		];
+	}
+
+	/**
+	 * @dataProvider urls_with_userinfo
+	 *
+	 * @param string $text     A text with credentials in a URL.
+	 * @param string $reported What may be reported.
+	 */
+	public function test_url_credentials_in_a_value_are_masked( string $text, string $reported ): void {
+		$this->assertSame( $reported, ChangeSet::stringify( $text ) );
+	}
+
+	/**
+	 * @return array<string, array{0: string}>
+	 */
+	public static function urls_without_userinfo(): array {
+		return [
+			'plain url'             => [ 'https://example.com/path' ],
+			'an at sign in a query' => [ 'https://example.com/path?mail=bob@example.com' ],
+			'an at sign in a path'  => [ 'https://example.com/@bob/posts' ],
+			'a mail address'        => [ 'bob@example.com' ],
+			'a mailto link'         => [ 'mailto:bob@example.com' ],
+			'a port'                => [ 'http://localhost:8080/x' ],
+		];
+	}
+
+	/**
+	 * @dataProvider urls_without_userinfo
+	 *
+	 * @param string $text A text with nothing to mask.
+	 */
+	public function test_a_url_without_credentials_is_untouched( string $text ): void {
+		$this->assertSame( $text, ChangeSet::stringify( $text ) );
+	}
+
+	public function test_a_change_of_a_url_password_only_is_a_changed_flag(): void {
+		$changes = ChangeSet::diff(
+			[ 'backup_target' => 'sftp://bob:OLDPASS@files.example.com/backups' ],
+			[ 'backup_target' => 'sftp://bob:NEWPASS@files.example.com/backups' ],
+			[ 'backup_target' ]
+		);
+
+		$this->assertSame( [ self::item( 'backup_target', null, null ) ], $changes );
+	}
+
+	public function test_a_url_changed_next_to_its_credentials_shows_the_host_not_the_password(): void {
+		$changes = ChangeSet::diff(
+			[ 'backup_target' => 'sftp://bob:OLDPASS@old.example.com/backups' ],
+			[ 'backup_target' => 'sftp://bob:NEWPASS@new.example.com/backups' ],
+			[ 'backup_target' ]
+		);
+
+		$this->assertSame(
+			[ self::item( 'backup_target', 'sftp://[redacted]@old.example.com/backups', 'sftp://[redacted]@new.example.com/backups' ) ],
+			$changes
+		);
+		$this->assertStringNotContainsString( 'PASS', (string) json_encode( $changes ) );
+	}
+
+	public function test_a_url_with_credentials_inside_an_array_is_masked(): void {
+		$this->assertSame(
+			'{"name":"main","url":"mysql://[redacted]@db.example.com/shop"}',
+			ChangeSet::stringify(
+				[
+					'name' => 'main',
+					'url'  => 'mysql://root:hunter2@db.example.com/shop',
+				]
+			)
+		);
+	}
+
+	public function test_a_json_string_has_its_secrets_masked(): void {
+		$this->assertSame(
+			'{"enabled":"yes","secret_key":"[redacted]"}',
+			ChangeSet::stringify( '{"secret_key":"sk_live_abc","enabled":"yes"}' )
+		);
+	}
+
+	public function test_a_json_list_string_has_its_secrets_masked(): void {
+		$this->assertSame(
+			'[{"name":"a","token":"[redacted]"},{"name":"b","token":"[redacted]"}]',
+			ChangeSet::stringify( '[{"name":"a","token":"t1"},{"name":"b","token":"t2"}]' )
+		);
+	}
+
+	public function test_json_inside_json_is_masked_at_every_level(): void {
+		$inner = (string) json_encode( [ 'client_secret' => 'deep', 'id' => 'abc' ] );
+		$text  = (string) json_encode( [ 'upstream' => $inner, 'mode' => 'live' ] );
+
+		$reported = (string) ChangeSet::stringify( $text );
+
+		$this->assertStringNotContainsString( 'deep', $reported );
+		$this->assertStringContainsString( 'client_secret', $reported );
+		$this->assertStringContainsString( '[redacted]', $reported );
+	}
+
+	public function test_a_json_string_with_a_credential_url_inside_is_masked(): void {
+		$this->assertSame(
+			'{"endpoint":"https://[redacted]@api.example.com/v1"}',
+			ChangeSet::stringify( '{"endpoint":"https://bob:hunter2@api.example.com/v1"}' )
+		);
+	}
+
+	public function test_a_json_string_without_secrets_is_reported_as_it_was_written(): void {
+		$text = '{ "title": "Card",  "enabled": true }';
+
+		$this->assertSame( $text, ChangeSet::stringify( $text ) );
+		$this->assertSame( '[1, 2, 3]', ChangeSet::stringify( '[1, 2, 3]' ) );
+	}
+
+	public function test_text_that_only_looks_like_json_is_untouched(): void {
+		foreach ( [ '{not json}', '[draft] Hello', '{"a":', '{}x', '"quoted"', '123', 'true' ] as $text ) {
+			$this->assertSame( $text, ChangeSet::stringify( $text ) );
+		}
+	}
+
+	public function test_a_json_string_that_only_changed_in_a_secret_is_a_changed_flag(): void {
+		$changes = ChangeSet::diff(
+			[ 'gateway_json' => '{"secret_key":"OLD","enabled":"yes"}' ],
+			[ 'gateway_json' => '{"secret_key":"NEW","enabled":"yes"}' ],
+			[ 'gateway_json' ]
+		);
+
+		$this->assertSame( [ self::item( 'gateway_json', null, null ) ], $changes );
+	}
+
+	public function test_a_json_string_changed_next_to_its_secrets_masks_them(): void {
+		$changes = ChangeSet::diff(
+			[ 'gateway_json' => '{"secret_key":"OLD","enabled":"no"}' ],
+			[ 'gateway_json' => '{"secret_key":"NEW","enabled":"yes"}' ],
+			[ 'gateway_json' ]
+		);
+
+		$this->assertSame(
+			[
+				self::item(
+					'gateway_json',
+					'{"enabled":"no","secret_key":"[redacted]"}',
+					'{"enabled":"yes","secret_key":"[redacted]"}'
+				),
+			],
+			$changes
+		);
+	}
+
+	/**
+	 * A PHP-serialized string is never unserialized: that can instantiate
+	 * objects chosen by whoever wrote the option.
+	 */
+	public function test_a_serialized_string_is_never_unserialized(): void {
+		$probe = serialize( new UnserializeProbe() );
+
+		ChangeSet::stringify( $probe );
+		ChangeSet::diff( [ 'x' => $probe . ' ' ], [ 'x' => $probe ], [ 'x' ] );
+
+		$this->assertFalse( UnserializeProbe::$woken );
+	}
+
 	public function test_a_key_that_is_not_a_credential_keeps_its_value(): void {
 		$changes = ChangeSet::diff(
 			[ 'gateway' => [ 'title' => 'Card', 'authors' => 'Ann' ] ],
@@ -800,5 +972,17 @@ final class ChangeSetTest extends TestCase {
 		);
 
 		$this->assertSame( [ 'field', 'old', 'new' ], array_keys( $merged[0] ) );
+	}
+}
+
+/**
+ * An object that records being unserialized.
+ */
+final class UnserializeProbe {
+
+	public static bool $woken = false;
+
+	public function __wakeup(): void {
+		self::$woken = true;
 	}
 }
