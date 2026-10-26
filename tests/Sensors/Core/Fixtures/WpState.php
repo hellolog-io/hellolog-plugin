@@ -23,11 +23,23 @@ final class WpState {
 	 * @var array<string, bool>
 	 */
 	public static array $post_types = [
-		'post'       => true,
-		'page'       => true,
-		'product'    => true,
-		'custom_css' => false,
+		'post'        => true,
+		'page'        => true,
+		'product'     => true,
+		'shop_coupon' => true,
+		'shop_order'  => true,
+		'attachment'  => true,
+		'revision'    => false,
+		'custom_css'  => false,
 	];
+
+	/**
+	 * Post id => the post `get_post()` finds. An id that is not listed is a
+	 * plain post titled "Parent post".
+	 *
+	 * @var array<int, \WP_Post>
+	 */
+	public static array $posts = [];
 
 	/** Whether the current user may edit posts (core's edit link needs it). */
 	public static bool $can_edit = true;

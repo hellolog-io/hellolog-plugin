@@ -28,11 +28,12 @@ defined( 'ABSPATH' ) || exit;
 final class ContentSensor extends AbstractSensor {
 
 	/**
-	 * Post types that never produce a post event here: store products,
-	 * orders and coupons are reported by the store sensors in their own
-	 * words, attachments are excluded, and the rest are internal records
+	 * Post types that produce no post event here but trash and restore: store
+	 * products, orders and coupons are reported by the store sensors in their
+	 * own words, attachments are excluded, and the rest are internal records
 	 * nobody edits (revisions, menu items, customizer drafts, embed caches,
-	 * privacy requests).
+	 * privacy requests). See {@see self::OWNED_ELSEWHERE_CODES}. A `product`
+	 * type is only the shop's while WooCommerce is active.
 	 *
 	 * @var array<int, string>
 	 */
@@ -52,11 +53,33 @@ final class ContentSensor extends AbstractSensor {
 	];
 
 	/**
+	 * The events of {@see self::OWNED_ELSEWHERE} types this sensor leaves to
+	 * their owners. Trash (2003) and restore (2004) are not among them: no
+	 * store sensor reports those, so they are logged here for every type.
+	 *
+	 * @var array<int, int>
+	 */
+	private const OWNED_ELSEWHERE_CODES = [ 2000, 2001, 2002, 2005, 2006, 2013 ];
+
+	/**
 	 * Post fields compared by an in-place update, in the order they are reported.
 	 *
 	 * @var array<int, string>
 	 */
-	private const DIFF_FIELDS = [ 'post_title', 'post_content', 'post_excerpt', 'post_name', 'post_parent', 'post_author', 'comment_status', 'ping_status' ];
+	private const DIFF_FIELDS = [ 'post_title', 'post_content', 'post_excerpt', 'post_name', 'post_parent', 'post_author', 'post_date', 'menu_order', 'comment_status', 'ping_status' ];
+
+	/**
+	 * Whether a password protects the post: compared after
+	 * {@see self::DIFF_FIELDS} and reported as `yes`/`no`. The password itself
+	 * is never read into a snapshot.
+	 */
+	private const PROTECTED_FIELD = 'password_protected';
+
+	/**
+	 * The `post_date_gmt` of a draft that has no date of its own: WordPress
+	 * gives such a post the time of every save, which is no date anybody set.
+	 */
+	private const FLOATING_DATE = '0000-00-00 00:00:00';
 
 	/**
 	 * Fields reported as "changed" without their values.
@@ -77,19 +100,15 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	public function on_status( string $new_status, string $old_status, WP_Post $post ): void {
-		if ( ! $this->should_track( $post ) ) {
-			return;
-		}
-
 		$code = self::status_event_code( $new_status, $old_status );
-		if ( 0 !== $code ) {
+		if ( 0 !== $code && $this->should_track( $post, $code ) ) {
 			$this->emit_post_event( $code, $post );
 		}
 	}
 
 	public function on_untrashed( int $post_id, string $previous_status ): void {
 		$post = get_post( $post_id );
-		if ( $post instanceof WP_Post && $this->should_track( $post ) ) {
+		if ( $post instanceof WP_Post && $this->should_track( $post, 2004 ) ) {
 			$this->emit_post_event( 2004, $post, [ 'previous_status' => $previous_status ] );
 		}
 	}
@@ -97,7 +116,7 @@ final class ContentSensor extends AbstractSensor {
 	public function on_delete( int $post_id, WP_Post $post ): void {
 		// Core's only caller of `wp_delete_auto_drafts()` is this cron action.
 		$cleanup = function_exists( 'doing_action' ) && doing_action( 'wp_scheduled_auto_draft_delete' );
-		if ( ! $this->should_track( $post ) || ! self::is_loggable_delete( (string) $post->post_status, $cleanup ) ) {
+		if ( ! $this->should_track( $post, 2005 ) || ! self::is_loggable_delete( (string) $post->post_status, $cleanup ) ) {
 			return;
 		}
 		// `before_delete_post` only fires for permanent deletes — trash uses
@@ -106,7 +125,7 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	public function on_updated( int $post_id, WP_Post $after, WP_Post $before ): void {
-		if ( ! $this->should_track( $after ) ) {
+		if ( ! $this->should_track( $after, 2006 ) ) {
 			return;
 		}
 		if ( $after->post_status !== $before->post_status ) {
@@ -171,17 +190,27 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Whether posts of a type are logged by this sensor.
+	 * Whether an event about a post of a type is logged by this sensor.
 	 *
-	 * @param string $post_type Post type name.
-	 * @param bool   $show_ui   Whether the type has an admin screen; internal types without one are not logged.
+	 * Internal types without an admin screen never are. Of the
+	 * {@see self::OWNED_ELSEWHERE} types only trash and restore are, see
+	 * {@see self::OWNED_ELSEWHERE_CODES}. Without WooCommerce a `product`
+	 * type belongs to some other plugin and is logged like any other.
+	 *
+	 * @param string $post_type          Post type name.
+	 * @param bool   $show_ui            Whether the type has an admin screen.
+	 * @param int    $code               Code of the event.
+	 * @param bool   $woocommerce_active Whether WooCommerce is active.
 	 */
-	public static function is_tracked_type( string $post_type, bool $show_ui ): bool {
-		if ( in_array( $post_type, self::OWNED_ELSEWHERE, true ) ) {
+	public static function is_tracked_type( string $post_type, bool $show_ui, int $code, bool $woocommerce_active ): bool {
+		if ( ! $show_ui ) {
 			return false;
 		}
+		if ( 'product' === $post_type && ! $woocommerce_active ) {
+			return true;
+		}
 
-		return $show_ui;
+		return ! in_array( $post_type, self::OWNED_ELSEWHERE, true ) || ! in_array( $code, self::OWNED_ELSEWHERE_CODES, true );
 	}
 
 	/**
@@ -238,18 +267,46 @@ final class ContentSensor extends AbstractSensor {
 	/**
 	 * What changed between two post snapshots, as a change list.
 	 *
+	 * After the fields of {@see self::DIFF_FIELDS} comes `password_protected`
+	 * (a bool in the snapshot), reported as `yes`/`no`. It is compared here,
+	 * not by {@see ChangeSet::diff()}, whose masking would take the name for a
+	 * credential and hide the yes or no.
+	 *
 	 * @param array<string, mixed> $before Post fields before the update.
 	 * @param array<string, mixed> $after  Post fields after the update.
 	 * @return array<int, array{field: string, old: ?string, new: ?string}>
 	 */
 	public static function field_changes( array $before, array $after ): array {
-		return ChangeSet::diff( $before, $after, self::DIFF_FIELDS, self::CONTENT_FIELDS );
+		$changes = ChangeSet::diff( $before, $after, self::DIFF_FIELDS, self::CONTENT_FIELDS );
+
+		$was = ! empty( $before[ self::PROTECTED_FIELD ] );
+		$is  = ! empty( $after[ self::PROTECTED_FIELD ] );
+		if ( $was !== $is ) {
+			$changes[] = [
+				'field' => self::PROTECTED_FIELD,
+				'old'   => ChangeSet::stringify( $was ),
+				'new'   => ChangeSet::stringify( $is ),
+			];
+		}
+
+		return $changes;
 	}
 
-	private function should_track( WP_Post $post ): bool {
+	/**
+	 * Whether an event about this post is logged, see {@see self::is_tracked_type()}.
+	 *
+	 * @param WP_Post $post Post the event is about.
+	 * @param int     $code Code of the event.
+	 */
+	private function should_track( WP_Post $post, int $code ): bool {
 		$type_object = get_post_type_object( $post->post_type );
 
-		return self::is_tracked_type( (string) $post->post_type, (bool) ( $type_object->show_ui ?? false ) );
+		return self::is_tracked_type(
+			(string) $post->post_type,
+			(bool) ( $type_object->show_ui ?? false ),
+			$code,
+			class_exists( 'WooCommerce', false )
+		);
 	}
 
 	/**
@@ -289,7 +346,8 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	/**
-	 * The compared fields of a post, by name.
+	 * The compared fields of a post, by name, and whether a password
+	 * protects it (never the password).
 	 *
 	 * @return array<string, mixed>
 	 */
@@ -298,6 +356,12 @@ final class ContentSensor extends AbstractSensor {
 		foreach ( self::DIFF_FIELDS as $field ) {
 			$values[ $field ] = $post->$field;
 		}
+
+		// A floating date is no date anybody set; one set on the draft is.
+		if ( self::FLOATING_DATE === (string) $post->post_date_gmt ) {
+			$values['post_date'] = null;
+		}
+		$values[ self::PROTECTED_FIELD ] = '' !== (string) $post->post_password;
 
 		return $values;
 	}

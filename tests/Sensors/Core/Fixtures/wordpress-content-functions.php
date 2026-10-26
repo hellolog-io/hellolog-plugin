@@ -61,6 +61,10 @@ namespace {
 	}
 
 	function get_post( int $id ): WP_Post {
+		if ( isset( WpState::$posts[ $id ] ) ) {
+			return WpState::$posts[ $id ];
+		}
+
 		return new WP_Post(
 			[
 				'ID'         => $id,
