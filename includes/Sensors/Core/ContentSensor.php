@@ -28,7 +28,8 @@ defined( 'ABSPATH' ) || exit;
 final class ContentSensor extends AbstractSensor {
 
 	/**
-	 * Post types that produce no post event here but trash and restore: store
+	 * Post types that produce no post event here but trash, restore and
+	 * revert to `auto-draft`: store
 	 * products, orders and coupons are reported by the store sensors in their
 	 * own words, attachments are excluded, and the rest are internal records
 	 * nobody edits (revisions, menu items, customizer drafts, embed caches,
@@ -54,12 +55,14 @@ final class ContentSensor extends AbstractSensor {
 
 	/**
 	 * The events of {@see self::OWNED_ELSEWHERE} types this sensor leaves to
-	 * their owners. Trash (2003) and restore (2004) are not among them: no
-	 * store sensor reports those, so they are logged here for every type.
+	 * their owners. Trash (2003), restore (2004) and revert to `auto-draft`
+	 * (2013, after which WordPress deletes the post unseen) are not among
+	 * them: no store sensor reports those, so they are logged here for every
+	 * type.
 	 *
 	 * @var array<int, int>
 	 */
-	private const OWNED_ELSEWHERE_CODES = [ 2000, 2001, 2002, 2005, 2006, 2013 ];
+	private const OWNED_ELSEWHERE_CODES = [ 2000, 2001, 2002, 2005, 2006 ];
 
 	/**
 	 * Post fields compared by an in-place update, in the order they are reported.
@@ -214,14 +217,15 @@ final class ContentSensor extends AbstractSensor {
 	 * draft first, otherwise a direct publish would be logged as a plain
 	 * creation. A post that comes into being as anything else visible, either
 	 * from `auto-draft` (the editor's placeholder) or from `new` (inserted
-	 * directly, by the REST API or an importer), is "created". Moving to
-	 * trash is "trashed" from every state, and moving out of the trash, to
-	 * any state but `auto-draft`, is "restored" (the block editor restores a
-	 * post with a plain status update). Going from published to anything else
-	 * but trash is "unpublished". A post that was
-	 * already saved and is sent back to `auto-draft` (and was not published),
-	 * also from the trash, is "reverted": WordPress deletes stale auto-drafts
-	 * on its own, so the move is what has to be on record.
+	 * directly, by the REST API or an importer), is "created". A post that
+	 * already existed and is sent to `auto-draft`, from any state (published
+	 * or trashed included), is "reverted": WordPress deletes stale
+	 * auto-drafts on its own, so the move is what has to be on record; a new
+	 * placeholder (`new` to `auto-draft`) is not an event. Moving to trash is
+	 * "trashed" from every state, and moving out of the trash, to any other
+	 * state, is "restored" (the block editor restores a post with a plain
+	 * status update). Going from published to anything else but trash or
+	 * `auto-draft` is "unpublished".
 	 * Everything else (including no change) is not an event of its own.
 	 *
 	 * @param string $new New post status.
@@ -231,10 +235,13 @@ final class ContentSensor extends AbstractSensor {
 		if ( $new === $old ) {
 			return 0;
 		}
+		if ( 'auto-draft' === $new ) {
+			return 'new' === $old ? 0 : 2013;
+		}
 		if ( 'trash' === $new ) {
 			return 2003;
 		}
-		if ( 'trash' === $old && 'auto-draft' !== $new ) {
+		if ( 'trash' === $old ) {
 			return 2004;
 		}
 		if ( 'publish' === $new ) {
@@ -246,9 +253,6 @@ final class ContentSensor extends AbstractSensor {
 		if ( 'publish' === $old ) {
 			return 2002;
 		}
-		if ( 'auto-draft' === $new && 'new' !== $old ) {
-			return 2013;
-		}
 
 		return 0;
 	}
@@ -257,7 +261,7 @@ final class ContentSensor extends AbstractSensor {
 	 * Whether an event about a post of a type is logged by this sensor.
 	 *
 	 * Internal types without an admin screen never are. Of the
-	 * {@see self::OWNED_ELSEWHERE} types only trash and restore are, see
+	 * {@see self::OWNED_ELSEWHERE} types only trash, restore and revert are, see
 	 * {@see self::OWNED_ELSEWHERE_CODES}. Without WooCommerce a `product`
 	 * type belongs to some other plugin and is logged like any other.
 	 *

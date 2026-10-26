@@ -64,7 +64,7 @@ final class ContentSensorTest extends TestCase {
 			// own: that is the silent deletion "reverted" exists to flag.
 			'trash to auto-draft'       => [ 'auto-draft', 'trash', 2013 ],
 			'custom to auto-draft'      => [ 'auto-draft', 'acf-disabled', 2013 ],
-			'publish to auto-draft'     => [ 'auto-draft', 'publish', 2002 ],
+			'publish to auto-draft'     => [ 'auto-draft', 'publish', 2013 ],
 			'trash to publish'          => [ 'publish', 'trash', 2004 ],
 			'private to publish'        => [ 'publish', 'private', 2001 ],
 			'trash to draft'            => [ 'draft', 'trash', 2004 ],
@@ -147,10 +147,10 @@ final class ContentSensorTest extends TestCase {
 	public static function owned_type_codes(): array {
 		$cases = [];
 		foreach ( ContentSensor::OWNED_ELSEWHERE as $type ) {
-			foreach ( [ 2003, 2004 ] as $code ) {
+			foreach ( [ 2003, 2004, 2013 ] as $code ) {
 				$cases[ $type . ' ' . $code ] = [ $type, $code, true ];
 			}
-			foreach ( [ 2000, 2001, 2002, 2005, 2006, 2013 ] as $code ) {
+			foreach ( [ 2000, 2001, 2002, 2005, 2006 ] as $code ) {
 				$cases[ $type . ' ' . $code ] = [ $type, $code, false ];
 			}
 		}
@@ -160,11 +160,12 @@ final class ContentSensorTest extends TestCase {
 
 	/**
 	 * The store sensors report products, coupons and orders in their own
-	 * words, but not their trash and restore: those stay with this sensor.
+	 * words, but not their trash, restore or revert to auto-draft: those
+	 * stay with this sensor.
 	 *
 	 * @dataProvider owned_type_codes
 	 */
-	public function test_types_owned_elsewhere_keep_only_trash_and_restore( string $post_type, int $code, bool $expected ): void {
+	public function test_types_owned_elsewhere_keep_only_trash_restore_and_revert( string $post_type, int $code, bool $expected ): void {
 		$this->assertSame( $expected, ContentSensor::is_tracked_type( $post_type, true, $code, true ) );
 	}
 
@@ -685,6 +686,34 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
+	 * No store sensor reports a product or an order sent to `auto-draft`,
+	 * where WordPress's cleanup deletes it unseen, so this one does.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_product_or_order_sent_to_auto_draft_is_logged_once_as_reverted(): void {
+		require_once __DIR__ . '/Fixtures/woocommerce-class.php';
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				foreach ( [ 'product' => 7, 'shop_order' => 9 ] as $type => $id ) {
+					foreach ( [ 'trash', 'publish' ] as $old ) {
+						$sensor->on_status( 'auto-draft', $old, $post( [ 'ID' => $id, 'post_type' => $type, 'post_status' => 'auto-draft' ] ) );
+					}
+				}
+			}
+		);
+
+		$this->assertSame( [ 2013, 2013, 2013, 2013 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[ 'post:7', 'post:7', 'post:9', 'post:9' ],
+			array_map( static fn( array $call ): string => $call[1]['target']['type'] . ':' . $call[1]['target']['id'], $calls )
+		);
+		$this->assertSame( [ 'product', 'product', 'shop_order', 'shop_order' ], array_map( static fn( array $call ): string => $call[1]['post']['type'], $calls ) );
+	}
+
+	/**
 	 * A product or coupon restored through the shop's REST API is a status
 	 * update too.
 	 *
@@ -872,7 +901,7 @@ final class ContentSensorTest extends TestCase {
 			}
 		);
 
-		$this->assertSame( [ 2013, 2002 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 2013, 2013 ], array_column( $calls, 0 ) );
 		$this->assertSame(
 			[
 				'type'  => 'post',
