@@ -1181,5 +1181,29 @@ final class SuppressionRulesTest extends TestCase {
 		$this->assertSame( [ 4000 ], self::codes( $rules->apply( [ self::event( 4000, self::user( 1 ) ), self::event( 4001, self::user( 1 ), [ self::change( 'a', 'b', 'c' ) ] ) ] ) ) );
 		$this->assertSame( [ 4000 ], self::codes( $rules->apply( [ self::registration( 1, 'subscriber' ), self::role_change( 1, '', 'subscriber' ) ] ) ) );
 		$this->assertSame( [ 9300 ], self::codes( $rules->apply( [ self::event( 9300, self::user( 1 ) ), self::registration( 1, 'customer' ) ] ) ) );
+
+		// A password or e-mail set right after the user was created is part of the creation.
+		foreach ( [ 4004, 4005 ] as $code ) {
+			foreach ( [ 4000, 9300 ] as $creation ) {
+				$result = $rules->apply(
+					[
+						self::event( $creation, self::user( 1 ) ),
+						self::event( $code, self::user( 1 ), [ self::change( 'a', 'b', 'c' ) ] ),
+					]
+				);
+				$this->assertSame( [ $creation ], self::codes( $result ), "$code must yield to $creation" );
+			}
+		}
+
+		// The profile event only carries the profile fields: nothing of it is
+		// said by a password or e-mail change.
+		$result = $rules->apply(
+			[
+				self::event( 4005, self::user( 1 ), [ self::change( 'user_email', 'a@example.com', 'b@example.com' ) ] ),
+				self::event( 4004, self::user( 1 ), [ self::change( 'password', null, null ) ] ),
+				self::event( 4001, self::user( 1 ), [ self::change( 'display_name', 'A', 'B' ) ] ),
+			]
+		);
+		$this->assertSame( [ 4005, 4004, 4001 ], self::codes( $result ) );
 	}
 }

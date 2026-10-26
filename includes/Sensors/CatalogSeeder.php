@@ -50,6 +50,7 @@ final class CatalogSeeder {
 		$c->register( new EventDefinition( 1001, ObjectType::USER, EventType::LOGOUT, Severity::INFO, 'User {username} logged out.' ) );
 		$c->register( new EventDefinition( 1002, ObjectType::USER, EventType::FAILED_LOGIN, Severity::MEDIUM, 'Failed login attempt for {username}.' ) );
 		$c->register( new EventDefinition( 1003, ObjectType::USER, EventType::PASSWORD_RESET, Severity::MEDIUM, 'Password reset requested for {username}.' ) );
+		$c->register( new EventDefinition( 1004, ObjectType::USER, EventType::PASSWORD_RESET, Severity::MEDIUM, 'Password reset completed for {username}.' ) );
 	}
 
 	private static function users( EventCatalog $c ): void {
@@ -57,6 +58,8 @@ final class CatalogSeeder {
 		$c->register( new EventDefinition( 4001, ObjectType::USER, EventType::PROFILE_UPDATED, Severity::INFO, 'Profile updated for {username}.' ) );
 		$c->register( new EventDefinition( 4002, ObjectType::USER, EventType::ROLE_CHANGED, Severity::HIGH, 'Role for {username} changed from {old_role} to {new_role}.' ) );
 		$c->register( new EventDefinition( 4003, ObjectType::USER, EventType::DELETED, Severity::HIGH, 'User {username} deleted.' ) );
+		$c->register( new EventDefinition( 4004, ObjectType::USER, EventType::UPDATED, Severity::HIGH, 'Password changed for {username}.' ) );
+		$c->register( new EventDefinition( 4005, ObjectType::USER, EventType::UPDATED, Severity::HIGH, 'E-mail address changed for {username}.' ) );
 	}
 
 	private static function content( EventCatalog $c ): void {

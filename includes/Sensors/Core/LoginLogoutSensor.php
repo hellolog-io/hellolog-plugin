@@ -10,15 +10,16 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Core;
 
 use HelloLog\Sensors\AbstractSensor;
+use Throwable;
 use WP_User;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
  * Wraps the *successful* auth hooks: login, logout, password-reset
- * requests. Failed login attempts moved to {@see FailedLoginSensor}
- * because they're noisy on internet-exposed sites and operators often
- * want them off by default.
+ * requests and completed resets. Failed login attempts moved to
+ * {@see FailedLoginSensor} because they're noisy on internet-exposed sites
+ * and operators often want them off by default.
  */
 final class LoginLogoutSensor extends AbstractSensor {
 
@@ -30,6 +31,8 @@ final class LoginLogoutSensor extends AbstractSensor {
 		add_action( 'wp_login', [ $this, 'on_login' ], 10, 2 );
 		add_action( 'wp_logout', [ $this, 'on_logout' ], 10, 1 );
 		add_action( 'retrieve_password_key', [ $this, 'on_password_reset_request' ], 10, 1 );
+		// One argument on purpose: the second one is the new password, in plain text.
+		add_action( 'after_password_reset', [ $this, 'on_password_reset' ], 10, 1 );
 	}
 
 	/**
@@ -83,5 +86,31 @@ final class LoginLogoutSensor extends AbstractSensor {
 		}
 
 		$this->emit( 1003, $fields );
+	}
+
+	/**
+	 * The user who set a new password through a reset link is the target.
+	 * They are not signed in while they do it, so there is no actor.
+	 *
+	 * @param mixed $user The user whose password was reset (a WP_User).
+	 */
+	public function on_password_reset( $user ): void {
+		if ( ! $user instanceof WP_User ) {
+			return;
+		}
+
+		// Reading the user can fail; that must never reach the reset itself.
+		try {
+			$login = (string) $user->user_login;
+			$this->emit(
+				1004,
+				[
+					'target'   => UserProfileSensor::user_target( (int) $user->ID, $login ),
+					'username' => $login,
+				]
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 1004, [ 'user_id' => (int) $user->ID ] );
+		}
 	}
 }

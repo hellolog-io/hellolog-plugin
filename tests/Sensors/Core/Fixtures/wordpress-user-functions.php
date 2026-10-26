@@ -1,7 +1,7 @@
 <?php
 /**
- * Stand-ins for the WordPress user class and lookups the user sensors call
- * from their hooks.
+ * Stand-ins for the WordPress user class, lookups and site switching the user
+ * sensors call from their hooks.
  *
  * Loaded only by tests that run in a separate process: defining these makes
  * `function_exists()` and `class_exists()` true for the rest of the process.
@@ -71,6 +71,36 @@ namespace {
 	 */
 	function get_userdata( int $user_id ) {
 		return WpState::$users[ $user_id ] ?? false;
+	}
+
+	/**
+	 * @param int    $user_id User id.
+	 * @param string $key     Meta key.
+	 * @param bool   $single  Only the single read is stubbed.
+	 * @return mixed
+	 */
+	function get_user_meta( int $user_id, string $key = '', bool $single = false ) {
+		return WpState::$user_meta[ $user_id ][ $key ] ?? '';
+	}
+
+	function get_current_blog_id(): int {
+		return WpState::$blog_id;
+	}
+
+	function switch_to_blog( int $blog_id ): bool {
+		WpState::$blog_stack[] = WpState::$blog_id;
+		WpState::$blog_id      = $blog_id;
+
+		return true;
+	}
+
+	function restore_current_blog(): bool {
+		if ( [] === WpState::$blog_stack ) {
+			return false;
+		}
+		WpState::$blog_id = array_pop( WpState::$blog_stack );
+
+		return true;
 	}
 
 	/**

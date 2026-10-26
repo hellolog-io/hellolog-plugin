@@ -65,6 +65,31 @@ final class ExportCatalogTest extends TestCase {
 		$this->assertSame( 'medium', $by_code[2013]['severity'] );
 	}
 
+	/**
+	 * @return array<string, array{0: int, 1: string, 2: string, 3: string}> Code, label, event type, severity.
+	 */
+	public static function user_account_codes(): array {
+		return [
+			'password reset completed' => [ 1004, 'Password reset completed for {username}.', 'password-reset', 'medium' ],
+			'password changed'         => [ 4004, 'Password changed for {username}.', 'updated', 'high' ],
+			'e-mail changed'           => [ 4005, 'E-mail address changed for {username}.', 'updated', 'high' ],
+		];
+	}
+
+	/**
+	 * @dataProvider user_account_codes
+	 */
+	public function test_user_account_codes_are_seeded( int $code, string $label, string $event_type, string $severity ): void {
+		$by_code = array_column( $this->seeded_export(), null, 'code' );
+
+		$this->assertArrayHasKey( $code, $by_code );
+		$this->assertSame( $label, $by_code[ $code ]['label'] );
+		$this->assertSame( [ 'username' ], $by_code[ $code ]['vars'] );
+		$this->assertSame( 'user', $by_code[ $code ]['object'] );
+		$this->assertSame( $event_type, $by_code[ $code ]['event_type'] );
+		$this->assertSame( $severity, $by_code[ $code ]['severity'] );
+	}
+
 	public function test_vars_keep_first_appearance_order_without_duplicates(): void {
 		$catalog = new EventCatalog();
 		// Registered out of order on purpose: the export sorts by code.

@@ -21,6 +21,7 @@ use HelloLog\Sensors\Core\LoginLogoutSensor;
 use HelloLog\Sensors\Core\TwoFactorSensor;
 use HelloLog\Sensors\Core\UserProfileSensor;
 use HelloLog\Sensors\Integrations\WooCommerceCustomerSensor;
+use HelloLog\Tests\Events\Fixtures\WpCalls;
 use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
 use PHPUnit\Framework\TestCase;
 
@@ -148,6 +149,77 @@ final class UserTargetTest extends TestCase {
 		);
 	}
 
+	public function test_profile_events_puts_an_email_change_on_its_own(): void {
+		$events = UserProfileSensor::profile_events(
+			UserProfileSensor::profile_changes(
+				$this->profile( [ 'user_email' => 'bob@example.com' ] ),
+				$this->profile( [ 'user_email' => 'robert@example.com' ] )
+			)
+		);
+
+		$this->assertSame(
+			[
+				'email'    => [
+					'field' => 'user_email',
+					'old'   => 'bob@example.com',
+					'new'   => 'robert@example.com',
+				],
+				'password' => false,
+				'profile'  => [],
+			],
+			$events
+		);
+	}
+
+	public function test_profile_events_says_a_password_changed_without_any_hash(): void {
+		$events = UserProfileSensor::profile_events(
+			UserProfileSensor::profile_changes(
+				$this->profile( [ 'user_pass' => '$P$Bold-hash-value' ] ),
+				$this->profile( [ 'user_pass' => '$P$Bnew-hash-value' ] )
+			)
+		);
+
+		$this->assertTrue( $events['password'] );
+		$this->assertNull( $events['email'] );
+		$this->assertSame( [], $events['profile'] );
+		$json = (string) json_encode( $events );
+		$this->assertStringNotContainsString( 'hash-value', $json );
+		$this->assertStringNotContainsString( '$P$B', $json );
+	}
+
+	public function test_profile_events_keeps_a_display_name_change_as_a_profile_change(): void {
+		$events = UserProfileSensor::profile_events(
+			UserProfileSensor::profile_changes(
+				$this->profile( [ 'display_name' => 'Bob' ] ),
+				$this->profile( [ 'display_name' => 'Robert' ] )
+			)
+		);
+
+		$this->assertNull( $events['email'] );
+		$this->assertFalse( $events['password'] );
+		$this->assertSame(
+			[
+				[
+					'field' => 'display_name',
+					'old'   => 'Bob',
+					'new'   => 'Robert',
+				],
+			],
+			$events['profile']
+		);
+	}
+
+	public function test_profile_events_of_no_changes_is_empty(): void {
+		$this->assertSame(
+			[
+				'email'    => null,
+				'password' => false,
+				'profile'  => [],
+			],
+			UserProfileSensor::profile_events( [] )
+		);
+	}
+
 	/**
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
@@ -169,6 +241,9 @@ final class UserTargetTest extends TestCase {
 	}
 
 	/**
+	 * The change lists the old roles sorted, as every `role` item does; the
+	 * message names the first of them.
+	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
@@ -183,7 +258,7 @@ final class UserTargetTest extends TestCase {
 			[
 				[
 					'field' => 'role',
-					'old'   => 'subscriber, author',
+					'old'   => 'author, subscriber',
 					'new'   => 'editor',
 				],
 			],
@@ -226,6 +301,23 @@ final class UserTargetTest extends TestCase {
 	}
 
 	/**
+	 * The template names the first role; a user can be given more than one.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_registration_lists_every_role_of_the_new_user(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber', 'shop_manager' ] );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_register( 7 );
+
+		$fields = $recorder->calls[0][1];
+		$this->assertSame( 'subscriber', $fields['role'] );
+		$this->assertSame( [ 'subscriber', 'shop_manager' ], $fields['metadata']['roles'] );
+	}
+
+	/**
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
@@ -248,9 +340,9 @@ final class UserTargetTest extends TestCase {
 			'bob',
 			[ 'subscriber' ],
 			[
-				'user_email'    => 'robert@example.com',
-				'display_name'  => 'Bob',
-				'user_url'      => '',
+				'user_email'    => 'bob@example.com',
+				'display_name'  => 'Robert',
+				'user_url'      => 'https://bob.example.com',
 				'user_nicename' => 'bob',
 				'user_pass'     => '$P$Bsame',
 			]
@@ -268,9 +360,14 @@ final class UserTargetTest extends TestCase {
 		$this->assertSame(
 			[
 				[
-					'field' => 'user_email',
-					'old'   => 'bob@example.com',
-					'new'   => 'robert@example.com',
+					'field' => 'display_name',
+					'old'   => 'Bob',
+					'new'   => 'Robert',
+				],
+				[
+					'field' => 'user_url',
+					'old'   => '',
+					'new'   => 'https://bob.example.com',
 				],
 			],
 			$fields['changes']
@@ -281,14 +378,51 @@ final class UserTargetTest extends TestCase {
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_a_profile_update_flags_a_password_change_without_the_hash(): void {
+	public function test_an_email_change_is_an_event_of_its_own_with_the_old_and_the_new_address(): void {
+		$old = $this->wp_user( 7, 'bob', [ 'subscriber' ], [ 'user_email' => 'bob@example.com' ], false );
+		$this->wp_user( 7, 'bob', [ 'subscriber' ], [ 'user_email' => 'robert@example.com' ] );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_profile_update( 7, $old, [] );
+
+		$this->assertSame( [ 4005, 4001 ], array_column( $recorder->calls, 0 ) );
+		$fields = $recorder->calls[0][1];
+		$this->assertSame( UserProfileSensor::user_target( 7, 'bob' ), $fields['target'] );
+		$this->assertSame( 'bob', $fields['username'] );
+		$this->assertArrayNotHasKey( 'actor', $fields );
+		$this->assertSame(
+			[
+				[
+					'field' => 'user_email',
+					'old'   => 'bob@example.com',
+					'new'   => 'robert@example.com',
+				],
+			],
+			$fields['changes']
+		);
+		$this->assertSame( [], $recorder->calls[1][1]['changes'] );
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 4005 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'E-mail address changed for bob.', $survivors[0]['message'] );
+		$this->assertSame( 'high', $survivors[0]['severity'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_password_change_is_an_event_of_its_own_without_the_hash(): void {
 		$old = $this->wp_user( 7, 'bob', [ 'subscriber' ], [ 'user_pass' => '$P$Bold-hash-value' ], false );
 		$this->wp_user( 7, 'bob', [ 'subscriber' ], [ 'user_pass' => '$P$Bnew-hash-value' ] );
 
 		$recorder = $this->recorder();
 		( new UserProfileSensor( $recorder ) )->on_profile_update( 7, $old, [] );
 
+		$this->assertSame( [ 4004, 4001 ], array_column( $recorder->calls, 0 ) );
 		$fields = $recorder->calls[0][1];
+		$this->assertSame( UserProfileSensor::user_target( 7, 'bob' ), $fields['target'] );
+		$this->assertArrayNotHasKey( 'actor', $fields );
 		$this->assertSame(
 			[
 				[
@@ -299,7 +433,119 @@ final class UserTargetTest extends TestCase {
 			],
 			$fields['changes']
 		);
-		$this->assertStringNotContainsString( 'hash-value', serialize( $fields ) );
+		$this->assertStringNotContainsString( 'hash-value', serialize( $recorder->calls ) );
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 4004 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'Password changed for bob.', $survivors[0]['message'] );
+		$this->assertStringNotContainsString( 'hash-value', (string) json_encode( $survivors ) );
+	}
+
+	/**
+	 * An edit that changes the e-mail, the password and the display name at
+	 * once keeps all three: the profile event only carries the profile
+	 * fields, so nothing of it overlaps the other two.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_edit_of_email_password_and_name_keeps_three_events(): void {
+		$old = $this->wp_user(
+			7,
+			'bob',
+			[ 'subscriber' ],
+			[
+				'user_email'   => 'bob@example.com',
+				'display_name' => 'Bob',
+				'user_pass'    => '$P$Bold-hash-value',
+			],
+			false
+		);
+		$this->wp_user(
+			7,
+			'bob',
+			[ 'subscriber' ],
+			[
+				'user_email'   => 'robert@example.com',
+				'display_name' => 'Robert',
+				'user_pass'    => '$P$Bnew-hash-value',
+			]
+		);
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_profile_update( 7, $old, [] );
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 4005, 4004, 4001 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( [ 'display_name' ], array_column( $survivors[2]['changes'], 'field' ) );
+	}
+
+	/**
+	 * Registration flows set the e-mail and the password of the user they
+	 * just created; the registration says that already.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_email_and_password_change_right_after_a_registration_leave_the_registration(): void {
+		$old = $this->wp_user(
+			7,
+			'bob',
+			[ 'subscriber' ],
+			[
+				'user_email' => 'bob@example.com',
+				'user_pass'  => '$P$Bold-hash-value',
+			],
+			false
+		);
+		$this->wp_user(
+			7,
+			'bob',
+			[ 'subscriber' ],
+			[
+				'user_email' => 'robert@example.com',
+				'user_pass'  => '$P$Bnew-hash-value',
+			]
+		);
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_register( 7 );
+		$sensor->on_profile_update( 7, $old, [] );
+
+		$this->assertSame( [ 4000 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_email_and_password_change_right_after_a_shop_sign_up_leave_the_sign_up(): void {
+		$old = $this->wp_user(
+			7,
+			'bob',
+			[ 'customer' ],
+			[
+				'user_email' => 'bob@example.com',
+				'user_pass'  => '$P$Bold-hash-value',
+			],
+			false
+		);
+		$this->wp_user(
+			7,
+			'bob',
+			[ 'customer' ],
+			[
+				'user_email' => 'robert@example.com',
+				'user_pass'  => '$P$Bnew-hash-value',
+			]
+		);
+
+		$recorder = $this->recorder();
+		( new WooCommerceCustomerSensor( $recorder ) )->on_created( 7, [], false );
+		( new UserProfileSensor( $recorder ) )->on_profile_update( 7, $old, [] );
+
+		$this->assertSame( [ 9300 ], array_column( $this->survive( $recorder ), 'code' ) );
 	}
 
 	/**
@@ -316,6 +562,7 @@ final class UserTargetTest extends TestCase {
 		$recorder = $this->recorder();
 		( new UserProfileSensor( $recorder ) )->on_profile_update( 7, $old, [] );
 
+		$this->assertSame( [ 4001 ], array_column( $recorder->calls, 0 ) );
 		$this->assertSame( [], $recorder->calls[0][1]['changes'] );
 	}
 
@@ -365,6 +612,136 @@ final class UserTargetTest extends TestCase {
 		$this->assertSame( '99', $fields['target']['id'] );
 		$this->assertSame( 'user', $fields['target']['type'] );
 		$this->assertSame( '#99', $fields['username'] );
+	}
+
+	/**
+	 * The user core hands to the hook names the target, even when a lookup
+	 * would no longer find it.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_deletion_with_reassignment_names_who_gets_the_content(): void {
+		$this->wp_user( 8, 'alice', [ 'editor' ] );
+		$user = $this->wp_user( 7, 'bob', [ 'subscriber' ], [], false );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_delete( 7, 8, $user );
+
+		$fields = $recorder->calls[0][1];
+		$this->assertSame( UserProfileSensor::user_target( 7, 'bob' ), $fields['target'] );
+		$this->assertSame( 'bob', $fields['username'] );
+		$this->assertSame(
+			[
+				'deleted_user_id' => 7,
+				'reassign_to'     => 'alice',
+			],
+			$fields['metadata']
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_deletion_without_reassignment_says_nobody_gets_the_content(): void {
+		$user = $this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_delete( 7, null, $user );
+
+		$this->assertArrayHasKey( 'reassign_to', $recorder->calls[0][1]['metadata'] );
+		$this->assertNull( $recorder->calls[0][1]['metadata']['reassign_to'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_reassignment_to_a_user_that_cannot_be_loaded_keeps_its_id(): void {
+		$user = $this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_delete( 7, 42, $user );
+
+		$this->assertSame( '#42', $recorder->calls[0][1]['metadata']['reassign_to'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_deletion_hook_accepts_the_reassignment_and_the_user(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		( new UserProfileSensor( $this->recorder() ) )->boot();
+
+		$this->assertSame( 3, WpState::$actions['delete_user']['accepted_args'] );
+	}
+
+	/**
+	 * The new password is the hook's second argument: the sensor never takes
+	 * it.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_completed_password_reset_names_the_user_as_target_and_passes_no_actor(): void {
+		$user = $this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		( new LoginLogoutSensor( $recorder ) )->on_password_reset( $user );
+
+		$this->assertSame( [ 1004 ], array_column( $recorder->calls, 0 ) );
+		$fields = $recorder->calls[0][1];
+		$this->assertSame( UserProfileSensor::user_target( 7, 'bob' ), $fields['target'] );
+		$this->assertSame( 'bob', $fields['username'] );
+		$this->assertArrayNotHasKey( 'actor', $fields );
+		$this->assertArrayNotHasKey( 'user', $fields );
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( 'Password reset completed for bob.', $survivors[0]['message'] );
+		$this->assertSame( 'medium', $survivors[0]['severity'] );
+		$this->assertSame( 'password-reset', $survivors[0]['event_type'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_password_reset_hook_never_accepts_the_new_password(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		( new LoginLogoutSensor( $this->recorder() ) )->boot();
+
+		$this->assertSame( 1, WpState::$actions['after_password_reset']['accepted_args'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_password_reset_of_something_that_is_not_a_user_emits_nothing(): void {
+		$recorder = $this->recorder();
+		( new LoginLogoutSensor( $recorder ) )->on_password_reset( null );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_password_reset_of_a_user_that_cannot_be_read_is_reported_and_never_thrown(): void {
+		$recorder = $this->recorder();
+		$this->failure_listener();
+
+		( new LoginLogoutSensor( $recorder ) )->on_password_reset( $this->unreadable_user( 7 ) );
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertSame( 'hellolog_dispatch_failed', WpCalls::$actions[0][0] );
+		$this->assertSame( 1004, WpCalls::$actions[0][1][1] );
+		$this->assertSame( [ 'user_id' => 7 ], WpCalls::$actions[0][1][2] );
 	}
 
 	/**
@@ -809,10 +1186,610 @@ final class UserTargetTest extends TestCase {
 
 		$recorder = $this->recorder();
 		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_removed( 7, 'subscriber' );
+		$sensor->on_role_added( 7, 'editor' );
 		$sensor->on_role_change( 7, 'editor', [ 'subscriber' ] );
 		$sensor->on_profile_update( 7, $old, [] );
+		$sensor->emit_pending_role_changes();
 
-		$this->assertSame( [ 4002, 4001 ], array_column( $this->survive( $recorder ), 'code' ) );
+		$this->assertSame( [ 4002, 4005 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	// ---- roles given or taken one by one ------------------------------------
+
+	/**
+	 * `WP_User::set_role()` fires `remove_user_role` for every old role,
+	 * `add_user_role` for the new one, and then `set_user_role`. The last one
+	 * says it all: the change is logged once.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_setting_a_role_logs_one_role_change(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_removed( 7, 'subscriber' );
+		$sensor->on_role_added( 7, 'editor' );
+		$sensor->on_role_change( 7, 'editor', [ 'subscriber' ] );
+		$sensor->emit_pending_role_changes();
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 4002 ], array_column( $survivors, 'code' ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'role',
+					'old'   => 'subscriber',
+					'new'   => 'editor',
+				],
+			],
+			$survivors[0]['changes']
+		);
+	}
+
+	/**
+	 * `set_role()` strips every old role, one `remove_user_role` each.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_setting_a_role_over_several_old_ones_logs_one_role_change(): void {
+		$this->wp_user( 7, 'bob', [ 'administrator' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_removed( 7, 'subscriber' );
+		$sensor->on_role_removed( 7, 'author' );
+		$sensor->on_role_added( 7, 'administrator' );
+		$sensor->on_role_change( 7, 'administrator', [ 'subscriber', 'author' ] );
+		$sensor->emit_pending_role_changes();
+
+		$this->assertSame( [ 4002 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	/**
+	 * Setting a role the user already has among others only strips the
+	 * others: there is no `add_user_role`.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_narrowing_down_to_a_role_the_user_already_has_logs_one_role_change(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_removed( 7, 'subscriber' );
+		$sensor->on_role_change( 7, 'editor', [ 'subscriber', 'editor' ] );
+		$sensor->emit_pending_role_changes();
+
+		$this->assertSame( [ 4002 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_added_on_its_own_is_a_role_change_listing_every_role(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber', 'administrator' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_added( 7, 'administrator' );
+
+		$this->assertSame( [], $recorder->calls, 'Nothing goes out before shutdown.' );
+
+		$sensor->emit_pending_role_changes();
+
+		$this->assertSame( [ 4002 ], array_column( $recorder->calls, 0 ) );
+		$fields = $recorder->calls[0][1];
+		$this->assertSame( UserProfileSensor::user_target( 7, 'bob' ), $fields['target'] );
+		$this->assertSame( 'bob', $fields['username'] );
+		$this->assertArrayNotHasKey( 'actor', $fields );
+		$this->assertSame(
+			[
+				[
+					'field' => 'role',
+					'old'   => 'subscriber',
+					'new'   => 'administrator, subscriber',
+				],
+			],
+			$fields['changes']
+		);
+
+		$this->assertSame( [ 'added_role' => 'administrator' ], $fields['metadata'] );
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 4002 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'Role for bob changed from subscriber to administrator, subscriber.', $survivors[0]['message'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_removed_on_its_own_is_a_role_change_listing_every_role(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_removed( 7, 'editor' );
+		$sensor->emit_pending_role_changes();
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 4002 ], array_column( $survivors, 'code' ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'role',
+					'old'   => 'editor, subscriber',
+					'new'   => 'subscriber',
+				],
+			],
+			$survivors[0]['changes']
+		);
+		$this->assertSame( [ 'removed_role' => 'editor' ], $survivors[0]['metadata'] );
+	}
+
+	/**
+	 * Role names are array keys in WordPress, so a role named by digits comes
+	 * to `set_user_role` as a number.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_setting_a_role_over_a_role_named_by_digits_logs_one_role_change(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_removed( 7, '2024' );
+		$sensor->on_role_added( 7, 'editor' );
+		$sensor->on_role_change( 7, 'editor', [ 2024 ] );
+		$sensor->emit_pending_role_changes();
+
+		$this->assertSame( [ 4002 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	/**
+	 * Each role given or taken is its own step, read when it happens.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_roles_added_one_after_the_other_are_separate_steps(): void {
+		$this->wp_user( 7, 'bob', [ 'editor', 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_added( 7, 'editor' );
+		$this->wp_user( 7, 'bob', [ 'editor', 'subscriber', 'shop_manager' ] );
+		$sensor->on_role_added( 7, 'shop_manager' );
+		$sensor->emit_pending_role_changes();
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 4002, 4002 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'subscriber', $survivors[0]['changes'][0]['old'] );
+		$this->assertSame( 'editor, subscriber', $survivors[0]['changes'][0]['new'] );
+		$this->assertSame( 'editor, subscriber', $survivors[1]['changes'][0]['old'] );
+		$this->assertSame( 'editor, shop_manager, subscriber', $survivors[1]['changes'][0]['new'] );
+	}
+
+	/**
+	 * A role a plugin adds on its own stays logged when `set_role()` runs
+	 * later in the same request: only what `set_role()` itself fired is
+	 * covered by its role change.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_added_on_its_own_is_kept_next_to_a_later_set_role(): void {
+		$this->wp_user( 7, 'bob', [ 'shop_manager', 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_added( 7, 'shop_manager' );
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+		$sensor->on_role_removed( 7, 'subscriber' );
+		$sensor->on_role_removed( 7, 'shop_manager' );
+		$sensor->on_role_added( 7, 'editor' );
+		$sensor->on_role_change( 7, 'editor', [ 'shop_manager', 'subscriber' ] );
+		$sensor->emit_pending_role_changes();
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 4002, 4002 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'editor', $survivors[0]['changes'][0]['new'], 'The set_role() change, dispatched at once.' );
+		$this->assertSame( 'shop_manager, subscriber', $survivors[1]['changes'][0]['new'], 'The earlier grant, at shutdown.' );
+	}
+
+	/**
+	 * Core sets the first role of a new user with `set_role()`: the
+	 * registration still leaves only the registration.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_registration_with_the_role_hooks_core_fires_leaves_the_registration(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_added( 7, 'subscriber' );
+		$sensor->on_role_change( 7, 'subscriber', [] );
+		$sensor->on_register( 7 );
+		$sensor->emit_pending_role_changes();
+
+		$this->assertSame( [ 4000 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	/**
+	 * A role change on one site of a network does not cover a role given on
+	 * another, and the role given there is logged on that site.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_given_on_another_site_is_logged_on_that_site(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		switch_to_blog( 2 );
+		$sensor->on_role_added( 7, 'editor' );
+		restore_current_blog();
+		$sensor->on_role_change( 7, 'editor', [ 'subscriber' ] );
+		$sensor->emit_pending_role_changes();
+
+		$this->assertSame( [ 4002, 4002 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ 1, 2 ], $recorder->blogs );
+		$this->assertSame( 1, WpState::$blog_id, 'Back on the site of the request.' );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_pending_role_changes_go_out_once(): void {
+		$this->wp_user( 7, 'bob', [ 'editor', 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_added( 7, 'editor' );
+		$sensor->emit_pending_role_changes();
+		$sensor->emit_pending_role_changes();
+
+		$this->assertCount( 1, $recorder->calls );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_given_to_an_unknown_user_emits_nothing(): void {
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_added( 99, 'editor' );
+		$sensor->emit_pending_role_changes();
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_given_to_a_user_that_cannot_be_read_is_reported_and_never_thrown(): void {
+		$user              = $this->unreadable_user( 7 );
+		WpState::$users[7] = $user;
+		$recorder          = $this->recorder();
+		$this->failure_listener();
+
+		$sensor = new UserProfileSensor( $recorder );
+		$sensor->on_role_added( 7, 'subscriber' );
+		$sensor->emit_pending_role_changes();
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertSame( 'hellolog_dispatch_failed', WpCalls::$actions[0][0] );
+		$this->assertSame( 4002, WpCalls::$actions[0][1][1] );
+		$this->assertSame(
+			[
+				'user_id' => 7,
+				'role'    => 'subscriber',
+			],
+			WpCalls::$actions[0][1][2]
+		);
+	}
+
+	/**
+	 * WordPress only lists the roles it knows among a user's roles: giving a
+	 * role it does not know changes none of them.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_wordpress_does_not_know_is_no_role_change(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_added( 7, 'no_such_role' );
+		$sensor->emit_pending_role_changes();
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_role_hooks_and_the_shutdown_emission_are_registered(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		( new UserProfileSensor( $this->recorder() ) )->boot();
+
+		$this->assertSame( 2, WpState::$actions['add_user_role']['accepted_args'] );
+		$this->assertSame( 2, WpState::$actions['remove_user_role']['accepted_args'] );
+		$this->assertSame( 3, WpState::$actions['set_user_role']['accepted_args'] );
+		// Before the buffer is written at priority 1.
+		$this->assertSame( 0, WpState::$actions['shutdown']['priority'] );
+	}
+
+	// ---- profile fields kept in user meta -----------------------------------
+
+	/**
+	 * `update_user_meta` fires before the write, so the stored value is still
+	 * the one before.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_first_name_edit_is_a_profile_change_from_the_stored_value(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+		WpState::$user_meta[7]['first_name'] = 'Bob';
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_meta_updated( 11, 7, 'first_name', 'Robert' );
+
+		$this->assertSame( [ 4001 ], array_column( $recorder->calls, 0 ) );
+		$fields = $recorder->calls[0][1];
+		$this->assertSame( UserProfileSensor::user_target( 7, 'bob' ), $fields['target'] );
+		$this->assertSame( 'bob', $fields['username'] );
+		$this->assertArrayNotHasKey( 'actor', $fields );
+		$this->assertSame(
+			[
+				[
+					'field' => 'first_name',
+					'old'   => 'Bob',
+					'new'   => 'Robert',
+				],
+			],
+			$fields['changes']
+		);
+	}
+
+	/**
+	 * @return array<string, array{0: string}>
+	 */
+	public static function profile_meta_keys(): array {
+		return [
+			'first name' => [ 'first_name' ],
+			'last name'  => [ 'last_name' ],
+			'nickname'   => [ 'nickname' ],
+		];
+	}
+
+	/**
+	 * @dataProvider profile_meta_keys
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_every_name_field_in_user_meta_is_a_profile_change( string $key ): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+		WpState::$user_meta[7][ $key ] = 'before';
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_meta_updated( 11, 7, $key, 'after' );
+
+		$this->assertSame( $key, $recorder->calls[0][1]['changes'][0]['field'] );
+	}
+
+	/**
+	 * The biography is text somebody wrote: only that it changed is told.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_biography_edit_is_flagged_without_its_text(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+		WpState::$user_meta[7]['description'] = 'Old bio.';
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_meta_updated( 11, 7, 'description', 'New bio.' );
+
+		$this->assertSame(
+			[
+				[
+					'field' => 'description',
+					'old'   => null,
+					'new'   => null,
+				],
+			],
+			$recorder->calls[0][1]['changes']
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_other_user_meta_is_not_a_profile_change(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_meta_updated( 11, 7, 'rich_editing', 'false' );
+		$sensor->on_meta_updated( 12, 7, '_two_factor_enabled_providers', [ 'Two_Factor_Totp' ] );
+		$sensor->on_meta_added( 13, 7, 'session_tokens', [ 'abc' => [] ] );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_name_saved_unchanged_is_not_a_profile_change(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+		WpState::$user_meta[7]['last_name'] = 'Smith';
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_meta_updated( 11, 7, 'last_name', 'Smith' );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * A user created without the row (an import, a registration plugin) gets
+	 * it added on the first save, through `added_user_meta`.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_first_name_added_to_a_user_without_one_has_no_value_before(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_meta_added( 11, 7, 'first_name', 'Bob' );
+
+		$this->assertSame( [ 4001 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'first_name',
+					'old'   => null,
+					'new'   => 'Bob',
+				],
+			],
+			$recorder->calls[0][1]['changes']
+		);
+	}
+
+	/**
+	 * The first save writes every row, empty ones included; an empty name
+	 * that was missing before is no change.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_empty_name_added_to_a_user_without_one_is_not_a_change(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_meta_added( 11, 7, 'last_name', '' );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_name_edit_of_an_unknown_user_emits_nothing(): void {
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_meta_updated( 11, 99, 'first_name', 'Robert' );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * A profile save writes the meta first and fires `profile_update` last;
+	 * the request leaves one profile event with every change.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_name_edits_and_the_profile_update_fold_into_one_profile_event(): void {
+		$old = $this->wp_user( 7, 'bob', [ 'subscriber' ], [ 'display_name' => 'Bob' ], false );
+		$this->wp_user( 7, 'bob', [ 'subscriber' ], [ 'display_name' => 'Robert Smith' ] );
+		WpState::$user_meta[7] = [
+			'first_name' => 'Bob',
+			'last_name'  => '',
+		];
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_meta_updated( 11, 7, 'first_name', 'Robert' );
+		$sensor->on_meta_updated( 12, 7, 'last_name', 'Smith' );
+		$sensor->on_profile_update( 7, $old, [] );
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 4001 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( [ 'first_name', 'last_name', 'display_name' ], array_column( $survivors[0]['changes'], 'field' ) );
+		$this->assertSame( UserProfileSensor::user_target( 7, 'bob' ), $survivors[0]['target'] );
+	}
+
+	/**
+	 * Core writes the meta of a new user before `user_register`.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_names_of_a_new_user_leave_the_registration(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_meta_added( 11, 7, 'nickname', 'bob' );
+		$sensor->on_meta_added( 12, 7, 'first_name', 'Bob' );
+		$sensor->on_role_added( 7, 'subscriber' );
+		$sensor->on_role_change( 7, 'subscriber', [] );
+		$sensor->on_register( 7 );
+		$sensor->emit_pending_role_changes();
+
+		$this->assertSame( [ 4000 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_name_that_cannot_be_read_is_reported_and_never_thrown(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+		$recorder = $this->recorder();
+		$this->failure_listener();
+
+		$unreadable = new class() implements \Stringable {
+			public function __toString(): string {
+				throw new \RuntimeException( 'unreadable' );
+			}
+		};
+		( new UserProfileSensor( $recorder ) )->on_meta_updated( 11, 7, 'first_name', $unreadable );
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertSame( 'hellolog_dispatch_failed', WpCalls::$actions[0][0] );
+		$this->assertSame( 4001, WpCalls::$actions[0][1][1] );
+		$this->assertSame(
+			[
+				'user_id' => 7,
+				'field'   => 'first_name',
+			],
+			WpCalls::$actions[0][1][2]
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_user_meta_hooks_accept_the_key_and_the_value(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		( new UserProfileSensor( $this->recorder() ) )->boot();
+
+		$this->assertSame( 4, WpState::$actions['update_user_meta']['accepted_args'] );
+		$this->assertSame( 4, WpState::$actions['added_user_meta']['accepted_args'] );
 	}
 
 	/**
@@ -864,7 +1841,39 @@ final class UserTargetTest extends TestCase {
 	}
 
 	/**
-	 * A dispatcher that records every call as `[ code, fields ]`.
+	 * A user whose login can not be read: turning it into text throws. Only
+	 * call this from a test of its own process.
+	 *
+	 * @param int $id User id.
+	 */
+	private function unreadable_user( int $id ): \WP_User {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+
+		return new \WP_User(
+			[
+				'ID'         => $id,
+				'user_login' => new class() implements \Stringable {
+					public function __toString(): string {
+						throw new \RuntimeException( 'unreadable' );
+					}
+				},
+				'roles'      => [ 'subscriber' ],
+			]
+		);
+	}
+
+	/**
+	 * Load the `do_action()` stand-in, which records the failure reports.
+	 * Only call this from a test of its own process.
+	 */
+	private function failure_listener(): void {
+		require_once __DIR__ . '/../../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../../Events/Fixtures/wordpress-functions.php';
+	}
+
+	/**
+	 * A dispatcher that records every call as `[ code, fields ]`, and the
+	 * site each one was dispatched on in `blogs`.
 	 */
 	private function recorder(): EventDispatcher {
 		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
@@ -874,8 +1883,12 @@ final class UserTargetTest extends TestCase {
 			/** @var array<int, array{0: int, 1: array<string, mixed>}> */
 			public array $calls = [];
 
+			/** @var array<int, int> */
+			public array $blogs = [];
+
 			public function dispatch( int $code, array $fields = [] ): void {
 				$this->calls[] = [ $code, $fields ];
+				$this->blogs[] = get_current_blog_id();
 			}
 		};
 	}

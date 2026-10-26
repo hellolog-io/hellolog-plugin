@@ -59,6 +59,24 @@ final class WpState {
 	public static array $users = [];
 
 	/**
+	 * User id => meta key => the value `get_user_meta()` finds. A key that is
+	 * not listed reads as an empty string, as core's single read does.
+	 *
+	 * @var array<int, array<string, mixed>>
+	 */
+	public static array $user_meta = [];
+
+	/** The site `get_current_blog_id()` reports as current. */
+	public static int $blog_id = 1;
+
+	/**
+	 * Sites `switch_to_blog()` left, the last one on top.
+	 *
+	 * @var array<int, int>
+	 */
+	public static array $blog_stack = [];
+
+	/**
 	 * Hook name => how it was registered with `add_action()`.
 	 *
 	 * @var array<string, array{priority: int, accepted_args: int}>
