@@ -161,6 +161,7 @@ final class OptionChangePolicyTest extends TestCase {
 			'firewall log (real)'                    => [ 'lw_firewall_log' ],
 			'firewall user locks (real)'             => [ 'lw_firewall_user_locks' ],
 			'seo cleanup done flag (real)'           => [ 'lw_seo_cleanup_v1314_done' ],
+			'woo orders table created flag (real)'   => [ 'woocommerce_custom_orders_table_created' ],
 			// One synthetic name per alternative of the pattern.
 			'leading underscore (synthetic)'         => [ '_woocommerce_helper_data' ],
 			'transient (synthetic)'                  => [ 'woocommerce_admin_transient_x' ],
@@ -189,6 +190,7 @@ final class OptionChangePolicyTest extends TestCase {
 			'flush rewrite (synthetic)'              => [ 'wpseo_flush_rewrite' ],
 			'schema version (synthetic)'             => [ 'wpseo_schema_version' ],
 			'usage tracking (synthetic)'             => [ 'woocommerce_allow_tracking_usage_tracking' ],
+			'table created (synthetic)'              => [ 'rank_math_redirections_table_created' ],
 		];
 	}
 
