@@ -28,6 +28,9 @@ final class NetworkState {
 	/** The site the request is on. */
 	public static int $current_blog = 1;
 
+	/** Calls of `switch_to_blog()`. */
+	public static int $switch_count = 0;
+
 	/**
 	 * Sites `switch_to_blog()` left, innermost last.
 	 *

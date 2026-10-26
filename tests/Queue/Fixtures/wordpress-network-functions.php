@@ -62,6 +62,7 @@ namespace {
 	function switch_to_blog( int $blog_id ): bool {
 		global $wpdb;
 
+		++NetworkState::$switch_count;
 		NetworkState::$switched[]   = NetworkState::$current_blog;
 		NetworkState::$current_blog = $blog_id;
 		$wpdb->prefix               = $wpdb->get_blog_prefix( $blog_id );
@@ -109,6 +110,12 @@ namespace {
 	 */
 	function update_option( string $option, $value, $autoload = null ): bool {
 		NetworkState::$options[ NetworkState::$current_blog ][ $option ] = $value;
+
+		return true;
+	}
+
+	function delete_option( string $option ): bool {
+		unset( NetworkState::$options[ NetworkState::$current_blog ][ $option ] );
 
 		return true;
 	}
