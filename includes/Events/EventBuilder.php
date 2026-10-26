@@ -66,18 +66,22 @@ class EventBuilder {
 	 *
 	 * @param int                  $code     Catalog code for the event kind.
 	 * @param array<string, mixed> $fields   Optional extras:
-	 *                                       - actor (assoc id, username, roles): who did it; used as given and
-	 *                                         replaces the current user entirely. A null or empty actor
+	 *                                       - actor (assoc id int, username string, roles list of strings): who
+	 *                                         did it; replaces the current user entirely. Other keys and
+	 *                                         values of another type are dropped. A null or empty actor
 	 *                                         counts as not passed.
 	 *                                       - user (assoc): deprecated alias of `actor`.
 	 *                                       - target (assoc type, id, label): the object it was done to; dropped
-	 *                                         when `type` is over 32 or `id` over 64 characters.
+	 *                                         when `type` is over 32 or `id` over 64 characters. The label is
+	 *                                         masked like a var.
 	 *                                       - changes (list of field, old, new): what changed.
 	 *                                       - links (assoc edit, view, revision): absolute http(s) URLs.
 	 *                                       - vars (assoc): template values; wins over the scanned fields. Keys
 	 *                                         over 64 characters are dropped.
-	 *                                       - post (assoc), title, message (string), metadata (assoc),
-	 *                                         client_event_id (string).
+	 *                                       - post (assoc id int, type string, status string): other keys and
+	 *                                         values of another type are dropped.
+	 *                                       - title (string): the `post_title` of the metadata, masked like a var.
+	 *                                       - message (string), metadata (assoc), client_event_id (string).
 	 *                                       Every other scalar whose key is a `{placeholder}` of the
 	 *                                       code's message template becomes a template var, and the
 	 *                                       English message is rendered from those vars.
@@ -116,8 +120,9 @@ class EventBuilder {
 		if ( null !== $ctx->session_id ) {
 			$payload['session_id'] = $ctx->session_id;
 		}
-		if ( isset( $fields['post'] ) && is_array( $fields['post'] ) ) {
-			$payload['post'] = $fields['post'];
+		$post = $this->clean_post( $fields['post'] ?? null );
+		if ( null !== $post ) {
+			$payload['post'] = $post;
 		}
 
 		$target = $this->clean_target( $fields['target'] ?? null );
@@ -155,6 +160,10 @@ class EventBuilder {
 		if ( isset( $fields['title'] ) && '' !== $fields['title'] && ! isset( $metadata['post_title'] ) ) {
 			$metadata['post_title'] = (string) $fields['title'];
 		}
+		// A title is text somebody typed: it is masked the way vars are.
+		if ( isset( $metadata['post_title'] ) && is_string( $metadata['post_title'] ) ) {
+			$metadata['post_title'] = ChangeSet::redact_text( $metadata['post_title'] );
+		}
 
 		// A background run has no actor of its own; keep who set it in motion.
 		if ( $background && null !== $ctx->username && '' !== $ctx->username && ! isset( $metadata['initiated_by'] ) ) {
@@ -181,9 +190,9 @@ class EventBuilder {
 
 	/**
 	 * The actor a sensor passed explicitly: `actor`, or its deprecated alias
-	 * `user`, without its empty entries. An actor that is null, not an array
-	 * or holds nothing but blanks counts as not passed, so the next alias, or
-	 * the normal policy, applies.
+	 * `user`, cleaned by {@see self::clean_actor()}. An actor that is null,
+	 * not an array or holds nothing usable counts as not passed, so the next
+	 * alias, or the normal policy, applies.
 	 *
 	 * @param array<string, mixed> $fields Sensor-supplied fields.
 	 * @return array<string, mixed>|null
@@ -191,7 +200,7 @@ class EventBuilder {
 	private function explicit_actor( array $fields ): ?array {
 		foreach ( [ 'actor', 'user' ] as $key ) {
 			if ( isset( $fields[ $key ] ) && is_array( $fields[ $key ] ) ) {
-				$actor = $this->compact_actor( $fields[ $key ] );
+				$actor = $this->clean_actor( $fields[ $key ] );
 				if ( null !== $actor ) {
 					return $actor;
 				}
@@ -221,7 +230,7 @@ class EventBuilder {
 			return null;
 		}
 
-		return $this->compact_actor(
+		return $this->clean_actor(
 			[
 				'id'       => $ctx->user_id,
 				'username' => $ctx->username,
@@ -231,15 +240,100 @@ class EventBuilder {
 	}
 
 	/**
-	 * Drop empty entries to keep the payload compact; null when nothing is left.
+	 * The `user` as sent: `id` (an integer), `username` (a string) and
+	 * `roles` (a list of strings), each only when it holds a value of its
+	 * type; null when nothing is left. The receiving end refuses a whole
+	 * batch over one key it does not know, so every other key is dropped.
 	 *
-	 * @param array<string, mixed> $user
-	 * @return array<string, mixed>|null
+	 * @param array<string, mixed> $user Actor as given.
+	 * @return array{id?: int, username?: string, roles?: array<int, string>}|null
 	 */
-	private function compact_actor( array $user ): ?array {
-		$user = array_filter( $user, static fn( $v ) => null !== $v && '' !== $v && [] !== $v );
+	private function clean_actor( array $user ): ?array {
+		$clean = [];
 
-		return [] === $user ? null : $user;
+		$id = $this->int_value( $user['id'] ?? null );
+		if ( null !== $id ) {
+			$clean['id'] = $id;
+		}
+		$username = $this->text_value( $user['username'] ?? null );
+		if ( '' !== $username ) {
+			$clean['username'] = $username;
+		}
+		$roles = $this->string_list( $user['roles'] ?? null );
+		if ( [] !== $roles ) {
+			$clean['roles'] = $roles;
+		}
+
+		return [] === $clean ? null : $clean;
+	}
+
+	/**
+	 * The `post` as sent: `id` (an integer), `type` and `status` (strings),
+	 * each only when it holds a value of its type; null when nothing is
+	 * left. Every other key is dropped, as for the actor.
+	 *
+	 * @param mixed $post Sensor-supplied `post`.
+	 * @return array{id?: int, type?: string, status?: string}|null
+	 */
+	private function clean_post( $post ): ?array {
+		if ( ! is_array( $post ) ) {
+			return null;
+		}
+
+		$clean = [];
+
+		$id = $this->int_value( $post['id'] ?? null );
+		if ( null !== $id ) {
+			$clean['id'] = $id;
+		}
+		foreach ( [ 'type', 'status' ] as $key ) {
+			if ( isset( $post[ $key ] ) && is_string( $post[ $key ] ) && '' !== $post[ $key ] ) {
+				$clean[ $key ] = $post[ $key ];
+			}
+		}
+
+		return [] === $clean ? null : $clean;
+	}
+
+	/**
+	 * An integer, or a string of digits read as one; null for anything else.
+	 *
+	 * @param mixed $value Any value.
+	 */
+	private function int_value( $value ): ?int {
+		if ( is_int( $value ) ) {
+			return $value;
+		}
+
+		return is_string( $value ) && ctype_digit( $value ) ? (int) $value : null;
+	}
+
+	/**
+	 * A string, or an integer as text; an empty string for anything else.
+	 *
+	 * @param mixed $value Any value.
+	 */
+	private function text_value( $value ): string {
+		if ( is_string( $value ) ) {
+			return $value;
+		}
+
+		return is_int( $value ) ? (string) $value : '';
+	}
+
+	/**
+	 * The non-empty strings of an array, as a list; an empty list for
+	 * anything that is not an array.
+	 *
+	 * @param mixed $value Any value.
+	 * @return array<int, string>
+	 */
+	private function string_list( $value ): array {
+		if ( ! is_array( $value ) ) {
+			return [];
+		}
+
+		return array_values( array_filter( $value, static fn( $item ): bool => is_string( $item ) && '' !== $item ) );
 	}
 
 	/**
@@ -248,7 +342,8 @@ class EventBuilder {
 	 *
 	 * A type over 32 or an id over 64 characters cannot be cut without
 	 * pointing at another object, so the whole target is dropped. Only the
-	 * label is shortened.
+	 * label is shortened, after it is masked the way vars are (a label is
+	 * often a name somebody typed, or a setting's value).
 	 *
 	 * @param mixed $target Sensor-supplied `target`.
 	 * @return array{type: string, id: string, label?: string}|null
@@ -275,7 +370,7 @@ class EventBuilder {
 
 		$label = $this->scalar_text( $target['label'] ?? null );
 		if ( '' !== $label ) {
-			$clean['label'] = $this->clamp( $label, self::MAX_TARGET_LABEL );
+			$clean['label'] = $this->clamp( ChangeSet::redact_text( $label ), self::MAX_TARGET_LABEL );
 		}
 
 		return $clean;

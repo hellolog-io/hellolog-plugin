@@ -245,6 +245,150 @@ final class EventBuilderV2Test extends TestCase {
 		$this->assertSame( 'new', $payload['user']['username'] );
 	}
 
+	/**
+	 * The receiving end refuses a whole batch over one unknown key in the
+	 * actor, so only the three known keys, of the right type, are sent.
+	 */
+	public function test_an_explicit_actor_keeps_only_its_id_username_and_roles(): void {
+		$payload = $this->build(
+			$this->builder( RequestSource::ADMIN ),
+			[
+				'actor' => [
+					'email'        => 'bob@example.com',
+					'roles'        => [ 'role' => 'editor', 7, '', 'author' ],
+					'display_name' => 'Bob',
+					'username'     => 'bob',
+					'caps'         => [ 'edit_posts' => true ],
+					'id'           => '9',
+				],
+			]
+		);
+
+		$this->assertSame(
+			[
+				'id'       => 9,
+				'username' => 'bob',
+				'roles'    => [ 'editor', 'author' ],
+			],
+			$payload['user']
+		);
+	}
+
+	public function test_actor_values_of_the_wrong_type_are_dropped(): void {
+		$payload = $this->build(
+			$this->builder( RequestSource::CRON ),
+			[
+				'actor' => [
+					'id'       => 'bob',
+					'username' => [ 'bob' ],
+					'roles'    => 'editor',
+				],
+				'user'  => [
+					'id'       => true,
+					'username' => 'old',
+				],
+			]
+		);
+
+		$this->assertSame( [ 'username' => 'old' ], $payload['user'], 'An actor with nothing usable counts as not passed.' );
+	}
+
+	public function test_an_actor_of_unknown_keys_only_falls_back_to_the_normal_policy(): void {
+		$payload = $this->build( $this->builder( RequestSource::ADMIN ), [ 'actor' => [ 'email' => 'bob@example.com' ] ] );
+
+		$this->assertSame(
+			[
+				'id'       => 1,
+				'username' => 'admin',
+				'roles'    => [ 'administrator' ],
+			],
+			$payload['user']
+		);
+	}
+
+	public function test_post_keeps_only_its_id_type_and_status(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'post' => [
+					'title'  => 'Hello',
+					'status' => 'publish',
+					'id'     => '5',
+					'parent' => 3,
+					'type'   => 'page',
+				],
+			]
+		);
+
+		$this->assertSame(
+			[
+				'id'     => 5,
+				'type'   => 'page',
+				'status' => 'publish',
+			],
+			$payload['post']
+		);
+	}
+
+	public function test_a_post_with_nothing_usable_is_left_out(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'post' => [
+					'id'    => 'five',
+					'type'  => [ 'page' ],
+					'title' => 'Hello',
+				],
+			]
+		);
+
+		$this->assertArrayNotHasKey( 'post', $payload );
+		$this->assertArrayNotHasKey( 'metadata', $payload );
+	}
+
+	// ---- masking of labels and titles --------------------------------------
+
+	public function test_the_target_label_is_masked_like_a_var(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'target' => [
+					'type'  => 'setting',
+					'id'    => 'lw_backup',
+					'label' => 'Backup to sftp://bob:hunter2@files.example.com',
+				],
+			]
+		);
+
+		$this->assertSame( 'Backup to sftp://[redacted]@files.example.com', $payload['target']['label'] );
+	}
+
+	public function test_the_target_label_is_masked_before_it_is_cut(): void {
+		// Cut first, the 254 characters would end inside the password, leaving
+		// a piece of it with no URL around it to be recognised by.
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'target' => [
+					'type'  => 'setting',
+					'id'    => 'lw_backup',
+					'label' => str_repeat( 'x', 234 ) . ' https://admin:' . str_repeat( 'hunter2-', 5 ) . '@h/x',
+				],
+			]
+		);
+
+		$this->assertStringNotContainsString( 'hunt', $payload['target']['label'] );
+		$this->assertSame( 255, mb_strlen( $payload['target']['label'], 'UTF-8' ) );
+	}
+
+	public function test_the_post_title_is_masked_like_a_var(): void {
+		$from_title = $this->build( $this->builder(), [ 'title' => '{"api_key":"S3CRET","name":"Form"}' ] );
+		$from_meta  = $this->build( $this->builder(), [ 'metadata' => [ 'post_title' => 'see https://u:S3CRET@h/x' ] ] );
+
+		$this->assertSame( '{"api_key":"[redacted]","name":"Form"}', $from_title['metadata']['post_title'] );
+		$this->assertSame( 'see https://[redacted]@h/x', $from_meta['metadata']['post_title'] );
+	}
+
 	public function test_vars_filled_from_template_fields(): void {
 		$payload = $this->build(
 			$this->builder(),
