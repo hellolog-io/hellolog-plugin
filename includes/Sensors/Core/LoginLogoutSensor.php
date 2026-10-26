@@ -69,10 +69,19 @@ final class LoginLogoutSensor extends AbstractSensor {
 		);
 	}
 
+	/**
+	 * The user whose reset was requested is the target. Whoever asked is not
+	 * signed in, so there is no actor; the request's own context says where
+	 * it came from.
+	 */
 	public function on_password_reset_request( string $username ): void {
-		$this->emit(
-			1003,
-			[ 'username' => $username ]
-		);
+		$fields = [ 'username' => $username ];
+
+		$user = get_user_by( 'login', $username );
+		if ( $user instanceof WP_User ) {
+			$fields['target'] = UserProfileSensor::user_target( (int) $user->ID, (string) $user->user_login );
+		}
+
+		$this->emit( 1003, $fields );
 	}
 }

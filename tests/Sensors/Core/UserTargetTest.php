@@ -459,20 +459,80 @@ final class UserTargetTest extends TestCase {
 	 * @preserveGlobalState disabled
 	 */
 	public function test_two_factor_events_name_the_user_as_target_only(): void {
-		$user = $this->wp_user( 7, 'bob', [ 'editor' ] );
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
 
 		$recorder = $this->recorder();
 		$sensor   = new TwoFactorSensor( $recorder );
-		$sensor->on_authenticated( $user, 'Two_Factor_Totp' );
 		$sensor->detect_profile_toggle( 1, 7, '_two_factor_enabled_providers', [ 'Two_Factor_Totp' ] );
 		$sensor->detect_profile_toggle( 2, 7, '_two_factor_enabled_providers', [] );
 
-		$this->assertSame( [ 4400, 4400, 4401 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ 4400, 4401 ], array_column( $recorder->calls, 0 ) );
 		foreach ( $recorder->calls as $call ) {
 			$this->assertSame( UserProfileSensor::user_target( 7, 'bob' ), $call[1]['target'] );
 			$this->assertArrayNotHasKey( 'user', $call[1] );
 			$this->assertArrayNotHasKey( 'actor', $call[1] );
 		}
+	}
+
+	/**
+	 * A two-factor LOGIN is a login (`wp_login`, 1000), not "2FA enabled".
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_two_factor_only_listens_for_the_enable_disable_toggle(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		( new TwoFactorSensor( $this->recorder() ) )->boot();
+
+		$this->assertSame( [ 'update_user_meta' ], array_keys( WpState::$actions ) );
+		$this->assertFalse( method_exists( TwoFactorSensor::class, 'on_authenticated' ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_profile_update_hook_accepts_the_user_before_and_the_input(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		( new UserProfileSensor( $this->recorder() ) )->boot();
+
+		$this->assertSame( 3, WpState::$actions['profile_update']['accepted_args'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_password_reset_request_names_the_user_as_target_and_passes_no_actor(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		( new LoginLogoutSensor( $recorder ) )->on_password_reset_request( 'bob' );
+
+		$this->assertCount( 1, $recorder->calls );
+		$this->assertSame( 1003, $recorder->calls[0][0] );
+		$fields = $recorder->calls[0][1];
+		$this->assertSame( UserProfileSensor::user_target( 7, 'bob' ), $fields['target'] );
+		$this->assertSame( 'bob', $fields['username'] );
+		$this->assertArrayNotHasKey( 'user', $fields );
+		$this->assertArrayNotHasKey( 'actor', $fields );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_password_reset_request_for_an_unknown_login_has_no_target(): void {
+		$recorder = $this->recorder();
+		( new LoginLogoutSensor( $recorder ) )->on_password_reset_request( 'nobody' );
+
+		$this->assertSame( 1003, $recorder->calls[0][0] );
+		$fields = $recorder->calls[0][1];
+		$this->assertArrayNotHasKey( 'target', $fields );
+		$this->assertArrayNotHasKey( 'actor', $fields );
+		$this->assertSame( 'nobody', $fields['username'] );
 	}
 
 	/**
@@ -496,25 +556,89 @@ final class UserTargetTest extends TestCase {
 	}
 
 	/**
-	 * WordPress sets the role (`set_user_role`) BEFORE it fires `user_register`.
-	 * The role change of a new user must still not reach the log.
+	 * WordPress sets the role (`set_user_role`) BEFORE it fires `user_register`;
+	 * the first role of a new user must not reach the log as a role change,
+	 * whichever order the two hooks arrive in.
 	 *
+	 * @return array<string, array{0: bool}> Whether the role is set first.
+	 */
+	public static function hook_orders(): array {
+		return [
+			'role first, as core does' => [ true ],
+			'registration first'       => [ false ],
+		];
+	}
+
+	/**
+	 * @dataProvider hook_orders
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_a_registration_leaves_one_event_whatever_the_hooks_order(): void {
+	public function test_the_first_role_of_a_new_user_is_not_logged_as_a_role_change( bool $role_first ): void {
 		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
 
 		$recorder = $this->recorder();
 		$sensor   = new UserProfileSensor( $recorder );
-		$sensor->on_role_change( 7, 'subscriber', [] );
-		$sensor->on_register( 7 );
+		if ( $role_first ) {
+			$sensor->on_role_change( 7, 'subscriber', [] );
+			$sensor->on_register( 7 );
+		} else {
+			$sensor->on_register( 7 );
+			$sensor->on_role_change( 7, 'subscriber', [] );
+		}
 
 		$survivors = $this->survive( $recorder );
 
 		$this->assertSame( [ 4000 ], array_column( $survivors, 'code' ) );
 		$this->assertSame( '7', $survivors[0]['target']['id'] );
 		$this->assertSame( 1, $survivors[0]['user']['id'], 'The signed-in admin who added the user is the actor.' );
+	}
+
+	/**
+	 * A privileged first role must stay on record: the registration event
+	 * carries it.
+	 *
+	 * @dataProvider hook_orders
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_registration_as_administrator_keeps_the_registration_with_its_role( bool $role_first ): void {
+		$this->wp_user( 7, 'bob', [ 'administrator' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		if ( $role_first ) {
+			$sensor->on_role_change( 7, 'administrator', [] );
+			$sensor->on_register( 7 );
+		} else {
+			$sensor->on_register( 7 );
+			$sensor->on_role_change( 7, 'administrator', [] );
+		}
+
+		$survivors = $this->survive( $recorder );
+
+		$this->assertSame( [ 4000 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'administrator', $survivors[0]['vars']['role'] );
+		$this->assertStringContainsString( 'administrator', $survivors[0]['message'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_shop_registration_as_administrator_keeps_both_the_registration_and_the_customer_event(): void {
+		$this->wp_user( 7, 'bob', [ 'administrator' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_change( 7, 'administrator', [] );
+		$sensor->on_register( 7 );
+		( new WooCommerceCustomerSensor( $recorder ) )->on_created( 7, [], false );
+
+		$survivors = $this->survive( $recorder );
+
+		$this->assertSame( [ 4000, 9300 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'administrator', $survivors[0]['vars']['role'] );
 	}
 
 	/**
@@ -531,6 +655,54 @@ final class UserTargetTest extends TestCase {
 		( new WooCommerceCustomerSensor( $recorder ) )->on_created( 7, [], false );
 
 		$this->assertSame( [ 9300 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_change_after_a_shop_registration_in_the_same_request_is_kept(): void {
+		$this->wp_user( 7, 'bob', [ 'customer' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_change( 7, 'customer', [] );
+		$sensor->on_register( 7 );
+		( new WooCommerceCustomerSensor( $recorder ) )->on_created( 7, [], false );
+		$sensor->on_role_change( 7, 'administrator', [ 'customer' ] );
+
+		$survivors = $this->survive( $recorder );
+
+		$this->assertSame( [ 9300, 4002 ], array_column( $survivors, 'code' ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'role',
+					'old'   => 'customer',
+					'new'   => 'administrator',
+				],
+			],
+			$survivors[1]['changes']
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_change_after_a_registration_in_the_same_request_is_kept(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_change( 7, 'subscriber', [] );
+		$sensor->on_register( 7 );
+		$sensor->on_role_change( 7, 'administrator', [ 'subscriber' ] );
+
+		$survivors = $this->survive( $recorder );
+
+		$this->assertSame( [ 4000, 4002 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'administrator', $survivors[1]['vars']['new_role'] );
 	}
 
 	/**

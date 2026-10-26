@@ -46,12 +46,23 @@ namespace {
 	}
 
 	/**
-	 * @param string     $field Only `id` is supported.
-	 * @param int|string $value User id.
+	 * @param string     $field `id` or `login`.
+	 * @param int|string $value User id or login name.
 	 * @return WP_User|false
 	 */
 	function get_user_by( string $field, $value ) {
-		return 'id' === $field ? ( WpState::$users[ (int) $value ] ?? false ) : false;
+		if ( 'id' === $field ) {
+			return WpState::$users[ (int) $value ] ?? false;
+		}
+		if ( 'login' === $field ) {
+			foreach ( WpState::$users as $user ) {
+				if ( $user->user_login === $value ) {
+					return $user;
+				}
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -60,6 +71,23 @@ namespace {
 	 */
 	function get_userdata( int $user_id ) {
 		return WpState::$users[ $user_id ] ?? false;
+	}
+
+	/**
+	 * Records the registration; nothing is ever fired.
+	 *
+	 * @param string   $hook_name     Hook name.
+	 * @param callable $callback      Callback.
+	 * @param int      $priority      Priority.
+	 * @param int      $accepted_args Number of arguments the callback accepts.
+	 */
+	function add_action( string $hook_name, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
+		WpState::$actions[ $hook_name ] = [
+			'priority'      => $priority,
+			'accepted_args' => $accepted_args,
+		];
+
+		return true;
 	}
 
 	/**

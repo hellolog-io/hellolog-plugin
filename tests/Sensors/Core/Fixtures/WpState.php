@@ -45,4 +45,11 @@ final class WpState {
 	 * @var array<int, \WP_User>
 	 */
 	public static array $users = [];
+
+	/**
+	 * Hook name => how it was registered with `add_action()`.
+	 *
+	 * @var array<string, array{priority: int, accepted_args: int}>
+	 */
+	public static array $actions = [];
 }

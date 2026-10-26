@@ -20,14 +20,17 @@ defined( 'ABSPATH' ) || exit;
  * and deletion.
  *
  * Every event names the affected user as its `target` and leaves the actor to
- * the request's current user (an admin editing a profile, the visitor who
- * registers, nobody in cron). The other user sensors build the same target
- * with {@see self::user_target()}.
+ * the request's current user: an admin editing a profile or adding a user, for
+ * instance. Nobody is the actor when nobody is signed in: a visitor who
+ * registers themselves is not the current user during `user_register`, and
+ * cron has no user at all. The other user sensors build the same target with
+ * {@see self::user_target()}.
  *
  * WordPress fires `set_user_role` for the first role of a new user BEFORE
  * `user_register`, so a registration also produces a role change. This
  * sensor does not try to tell them apart: both events share the target, and
- * the per-request rules keep only the registration.
+ * the per-request rules drop that first role change, since the registration
+ * names the role. A role change from a role the user already had stays.
  */
 final class UserProfileSensor extends AbstractSensor {
 

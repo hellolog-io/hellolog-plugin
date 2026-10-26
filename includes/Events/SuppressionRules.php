@@ -113,6 +113,16 @@ final class SuppressionRules {
 				// Only the notes WooCommerce writes itself repeat a status change;
 				// a note a person added must stay.
 				9103 => static fn( array $p ): bool => 'system' === ( $p['metadata']['note_type'] ?? '' ),
+
+				// A shop sign-up says it all only for the role the shop gives
+				// its customers. Any other role is a privilege handed out during
+				// the sign-up and must stay on record with the registration.
+				4000 => static fn( array $p ): bool => 'customer' === ( $p['vars']['role'] ?? null ),
+
+				// Only the role a new user starts with is part of the registration.
+				// A later change, from a role the user already had, is its own
+				// event even in the same request.
+				4002 => static fn( array $p ): bool => self::is_initial_role( $p ),
 			]
 		);
 	}
@@ -297,6 +307,24 @@ final class SuppressionRules {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Whether a role change is the first role a user gets: its `role` item has
+	 * no previous role. A payload with no `role` item is not one.
+	 *
+	 * @param array<string, mixed> $payload Payload.
+	 */
+	private static function is_initial_role( array $payload ): bool {
+		foreach ( self::changes_of( $payload ) as $item ) {
+			if ( 'role' === ( $item['field'] ?? null ) ) {
+				$old = $item['old'] ?? null;
+
+				return null === $old || '' === $old;
+			}
+		}
+
+		return false;
 	}
 
 	/**

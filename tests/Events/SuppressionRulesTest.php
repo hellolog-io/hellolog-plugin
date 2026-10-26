@@ -83,6 +83,30 @@ final class SuppressionRulesTest extends TestCase {
 	}
 
 	/**
+	 * A registration event (4000) of the given role, with the `role` template
+	 * var the builder renders it from.
+	 *
+	 * @param string $role Role the new user got.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private static function registration( int $user, string $role ): array {
+		return self::event( 4000, self::user( $user ), null, [ 'vars' => [ 'role' => $role ] ] );
+	}
+
+	/**
+	 * A role change (4002) of a user.
+	 *
+	 * @param ?string $old Previous roles as the sensor reports them; '' or null for none.
+	 * @param string  $new New role.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private static function role_change( int $user, ?string $old, string $new ): array {
+		return self::event( 4002, self::user( $user ), [ self::change( 'role', $old, $new ) ] );
+	}
+
+	/**
 	 * The codes of a result, in order.
 	 *
 	 * @param array<int, array<string, mixed>> $payloads Payloads.
@@ -113,13 +137,142 @@ final class SuppressionRulesTest extends TestCase {
 		$result = SuppressionRules::defaults()->apply(
 			[
 				self::event( 9300, self::user( 7 ) ),
-				self::event( 4000, self::user( 7 ) ),
-				self::event( 4002, self::user( 7 ), [ self::change( 'role', 'subscriber', 'customer' ) ] ),
+				self::registration( 7, 'customer' ),
+				self::role_change( 7, '', 'customer' ),
 				self::event( 4001, self::user( 7 ), [ self::change( 'display_name', 'a', 'b' ) ] ),
 			]
 		);
 
 		$this->assertSame( [ 9300 ], self::codes( $result ) );
+	}
+
+	public function test_a_registration_with_a_role_other_than_customer_survives_the_shop_event(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::role_change( 7, '', 'administrator' ),
+				self::registration( 7, 'administrator' ),
+				self::event( 9300, self::user( 7 ) ),
+			]
+		);
+
+		$this->assertSame( [ 4000, 9300 ], self::codes( $result ) );
+		$this->assertSame( 'administrator', $result[0]['vars']['role'] );
+	}
+
+	/**
+	 * @return array<string, array{0: array<string, mixed>}>
+	 */
+	public static function registrations_that_are_not_plainly_customers(): array {
+		return [
+			'editor'            => [ self::registration( 7, 'editor' ) ],
+			'wrong case'        => [ self::registration( 7, 'Customer' ) ],
+			'padded'            => [ self::registration( 7, 'customer ' ) ],
+			'empty role'        => [ self::registration( 7, '' ) ],
+			'no vars'           => [ self::event( 4000, self::user( 7 ) ) ],
+			'vars without role' => [ self::event( 4000, self::user( 7 ), null, [ 'vars' => [ 'username' => 'bob' ] ] ) ],
+			'role not a string' => [ self::event( 4000, self::user( 7 ), null, [ 'vars' => [ 'role' => [ 'customer' ] ] ] ) ],
+		];
+	}
+
+	/**
+	 * @dataProvider registrations_that_are_not_plainly_customers
+	 *
+	 * @param array<string, mixed> $registration A registration that is not for the customer role.
+	 */
+	public function test_only_a_customer_registration_yields_to_the_shop_event( array $registration ): void {
+		$result = SuppressionRules::defaults()->apply( [ $registration, self::event( 9300, self::user( 7 ) ) ] );
+
+		$this->assertSame( [ 4000, 9300 ], self::codes( $result ) );
+	}
+
+	public function test_a_role_change_from_a_previous_role_survives_a_registration(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::registration( 7, 'subscriber' ),
+				self::role_change( 7, 'subscriber', 'administrator' ),
+			]
+		);
+
+		$this->assertSame( [ 4000, 4002 ], self::codes( $result ) );
+	}
+
+	public function test_a_role_change_from_a_previous_role_survives_the_shop_event(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 9300, self::user( 7 ) ),
+				self::role_change( 7, 'customer', 'administrator' ),
+			]
+		);
+
+		$this->assertSame( [ 9300, 4002 ], self::codes( $result ) );
+	}
+
+	/**
+	 * @return array<string, array{0: ?string}>
+	 */
+	public static function empty_previous_roles(): array {
+		return [
+			'empty string' => [ '' ],
+			'null'         => [ null ],
+		];
+	}
+
+	/**
+	 * @dataProvider empty_previous_roles
+	 */
+	public function test_the_first_role_assignment_yields_to_the_registration( ?string $old ): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::role_change( 7, $old, 'subscriber' ),
+				self::registration( 7, 'subscriber' ),
+			]
+		);
+
+		$this->assertSame( [ 4000 ], self::codes( $result ) );
+	}
+
+	/**
+	 * @dataProvider empty_previous_roles
+	 */
+	public function test_the_first_role_assignment_yields_to_the_shop_event( ?string $old ): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::role_change( 7, $old, 'customer' ),
+				self::event( 9300, self::user( 7 ) ),
+			]
+		);
+
+		$this->assertSame( [ 9300 ], self::codes( $result ) );
+	}
+
+	public function test_a_role_change_that_does_not_report_a_role_item_is_not_taken_for_the_first_assignment(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::registration( 7, 'subscriber' ),
+				self::event( 4002, self::user( 7 ), [ self::change( 'display_name', '', 'x' ) ] ),
+				self::event( 4002, self::user( 7 ) ),
+			]
+		);
+
+		$this->assertSame( [ 4000, 4002 ], self::codes( $result ) );
+	}
+
+	public function test_only_the_role_item_decides_whether_a_role_change_is_the_first_assignment(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::registration( 7, 'subscriber' ),
+				self::event(
+					4002,
+					self::user( 7 ),
+					[
+						self::change( 'display_name', '', 'x' ),
+						self::change( 'role', 'subscriber', 'editor' ),
+					]
+				),
+			]
+		);
+
+		$this->assertSame( [ 4000, 4002 ], self::codes( $result ) );
 	}
 
 	public function test_presence_is_computed_before_anything_is_dropped(): void {
@@ -128,7 +281,7 @@ final class SuppressionRulesTest extends TestCase {
 		$result = SuppressionRules::defaults()->apply(
 			[
 				self::event( 4001, self::user( 7 ), [ self::change( 'display_name', 'a', 'b' ) ] ),
-				self::event( 4000, self::user( 7 ) ),
+				self::registration( 7, 'customer' ),
 				self::event( 9300, self::user( 7 ) ),
 			]
 		);
@@ -714,7 +867,7 @@ final class SuppressionRulesTest extends TestCase {
 
 		$this->assertSame( [ 2001 ], self::codes( $rules->apply( [ self::event( 2000, self::post( 1 ) ), self::event( 2001, self::post( 1 ) ) ] ) ) );
 		$this->assertSame( [ 4000 ], self::codes( $rules->apply( [ self::event( 4000, self::user( 1 ) ), self::event( 4001, self::user( 1 ), [ self::change( 'a', 'b', 'c' ) ] ) ] ) ) );
-		$this->assertSame( [ 4000 ], self::codes( $rules->apply( [ self::event( 4000, self::user( 1 ) ), self::event( 4002, self::user( 1 ), [ self::change( 'a', 'b', 'c' ) ] ) ] ) ) );
-		$this->assertSame( [ 9300 ], self::codes( $rules->apply( [ self::event( 9300, self::user( 1 ) ), self::event( 4000, self::user( 1 ) ) ] ) ) );
+		$this->assertSame( [ 4000 ], self::codes( $rules->apply( [ self::registration( 1, 'subscriber' ), self::role_change( 1, '', 'subscriber' ) ] ) ) );
+		$this->assertSame( [ 9300 ], self::codes( $rules->apply( [ self::event( 9300, self::user( 1 ) ), self::registration( 1, 'customer' ) ] ) ) );
 	}
 }
