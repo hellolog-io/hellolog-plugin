@@ -31,13 +31,17 @@ defined( 'ABSPATH' ) || exit;
  *    position of the first, with their changes folded together.
  * 3. Drop empty. A payload of a drop-empty code that has no changes left is
  *    removed.
- * 4. Exact duplicates collapse to the first. Two payloads are the same when
- *    they match in everything but the moment they were built (`occurred_at`)
- *    and their `client_event_id`, so events that differ only in their
- *    metadata, vars, actor or links are both kept.
+ * 4. Repeats collapse. A payload is dropped when it is the same as the last
+ *    payload kept on its target (without a target: the last one kept of its
+ *    code). Two payloads are the same when they match in everything but the
+ *    moment they were built (`occurred_at`) and their `client_event_id`, so
+ *    events that differ only in their metadata, vars, actor or links are
+ *    both kept. Only the last kept one counts: a value that goes A to B, back
+ *    to A and to B again keeps all three steps, or the record would end on
+ *    the wrong value.
  *
- * A payload without a target takes part in nothing but exact-duplicate
- * removal.
+ * A payload without a target takes part in nothing but the removal of
+ * repeats.
  */
 final class SuppressionRules {
 
@@ -360,7 +364,8 @@ final class SuppressionRules {
 	}
 
 	/**
-	 * Keep the first of every group of identical payloads.
+	 * Drop every payload that is the same as the last payload kept on its
+	 * target, or, without a target, the last one kept of its code.
 	 *
 	 * @param array<int, array<string, mixed>> $payloads Payloads.
 	 *
@@ -368,13 +373,16 @@ final class SuppressionRules {
 	 */
 	private static function without_duplicates( array $payloads ): array {
 		$unique = [];
-		$seen   = [];
+		$last   = [];
 		foreach ( $payloads as $payload ) {
+			$key         = self::target_key( $payload );
+			$group       = null === $key ? 'code|' . self::code_of( $payload ) : 'target|' . $key;
 			$fingerprint = self::fingerprint( $payload );
-			if ( ! isset( $seen[ $fingerprint ] ) ) {
-				$seen[ $fingerprint ] = true;
-				$unique[]             = $payload;
+			if ( ( $last[ $group ] ?? null ) === $fingerprint ) {
+				continue;
 			}
+			$last[ $group ] = $fingerprint;
+			$unique[]       = $payload;
 		}
 
 		return $unique;

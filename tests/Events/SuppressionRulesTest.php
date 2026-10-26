@@ -794,6 +794,101 @@ final class SuppressionRulesTest extends TestCase {
 		$this->assertSame( [ self::change( 'post_title', 'A', 'B' ) ], $result[0]['changes'] );
 	}
 
+	/**
+	 * A setting saved three times in one request (a settings batch call, say).
+	 *
+	 * @param string $old Value before.
+	 * @param string $new Value after.
+	 *
+	 * @return array<string, mixed>
+	 */
+	private static function currency( string $old, string $new ): array {
+		return self::event(
+			9400,
+			[
+				'type' => 'setting',
+				'id'   => 'woocommerce_currency',
+			],
+			[ self::change( 'woocommerce_currency', $old, $new ) ],
+			[ 'message' => 'WooCommerce setting woocommerce_currency changed.' ]
+		);
+	}
+
+	public function test_a_setting_that_goes_back_and_forth_keeps_every_step_in_order(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::currency( 'USD', 'EUR' ),
+				self::currency( 'EUR', 'USD' ),
+				self::currency( 'USD', 'EUR' ),
+			]
+		);
+
+		// Dropping the third as a copy of the first would leave USD as the
+		// final state on record, while the shop ends up on EUR.
+		$this->assertSame(
+			[ [ 'USD', 'EUR' ], [ 'EUR', 'USD' ], [ 'USD', 'EUR' ] ],
+			array_map( static fn( array $p ): array => [ $p['changes'][0]['old'], $p['changes'][0]['new'] ], $result )
+		);
+	}
+
+	public function test_a_role_that_goes_back_and_forth_keeps_every_step_in_order(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::role_change( 7, 'subscriber', 'administrator' ),
+				self::role_change( 7, 'administrator', 'subscriber' ),
+				self::role_change( 7, 'subscriber', 'administrator' ),
+			]
+		);
+
+		$this->assertSame( [ 4002, 4002, 4002 ], self::codes( $result ) );
+		$this->assertSame( [ 'administrator', 'subscriber', 'administrator' ], array_map( static fn( array $p ): string => $p['changes'][0]['new'], $result ) );
+	}
+
+	public function test_a_duplicate_is_dropped_only_right_after_its_twin_on_the_same_target(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::currency( 'USD', 'EUR' ),
+				self::currency( 'USD', 'EUR' ),
+				self::currency( 'EUR', 'GBP' ),
+				self::currency( 'USD', 'EUR' ),
+			]
+		);
+
+		$this->assertSame(
+			[ [ 'USD', 'EUR' ], [ 'EUR', 'GBP' ], [ 'USD', 'EUR' ] ],
+			array_map( static fn( array $p ): array => [ $p['changes'][0]['old'], $p['changes'][0]['new'] ], $result )
+		);
+	}
+
+	public function test_events_on_other_targets_in_between_do_not_keep_a_duplicate(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 9101, self::order( 5 ), null, [ 'message' => 'Status changed' ] ),
+				self::event( 9101, self::order( 6 ), null, [ 'message' => 'Status changed' ] ),
+				self::event( 9101, self::order( 5 ), null, [ 'message' => 'Status changed' ] ),
+			]
+		);
+
+		$this->assertSame( [ '5', '6' ], array_map( static fn( array $p ): string => $p['target']['id'], $result ) );
+	}
+
+	public function test_a_targetless_duplicate_is_dropped_only_right_after_its_twin_of_the_same_code(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 1001, null, null, [ 'message' => 'Logged in' ] ),
+				self::event( 1002, null, null, [ 'message' => 'Logged out' ] ),
+				self::event( 1001, null, null, [ 'message' => 'Logged in' ] ),
+				self::event( 1001, null, null, [ 'message' => 'Logged in as bob' ] ),
+				self::event( 1001, null, null, [ 'message' => 'Logged in' ] ),
+			]
+		);
+
+		$this->assertSame(
+			[ 'Logged in', 'Logged out', 'Logged in as bob', 'Logged in' ],
+			array_column( $result, 'message' )
+		);
+	}
+
 	public function test_a_throwing_condition_leaves_only_that_payload_unsuppressed(): void {
 		$rules = new SuppressionRules(
 			[
