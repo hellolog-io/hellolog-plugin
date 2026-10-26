@@ -86,6 +86,28 @@ final class EventBuilderV2Test extends TestCase {
 		$this->assertSame( 'cli', $builder->build( self::CODE )['source'] );
 	}
 
+	/**
+	 * The events of one request are ordered by when they happened, which
+	 * whole seconds cannot tell.
+	 */
+	public function test_occurred_at_carries_real_milliseconds_in_utc(): void {
+		$builder = $this->builder();
+		$before  = microtime( true );
+		$first   = $this->build( $builder )['occurred_at'];
+		usleep( 3000 );
+		$second = $this->build( $builder )['occurred_at'];
+
+		$format = '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/D';
+		$this->assertMatchesRegularExpression( $format, $first );
+		$this->assertMatchesRegularExpression( $format, $second );
+		$this->assertNotSame( $first, $second, 'Two events 3 ms apart have different times.' );
+		$this->assertGreaterThan( $first, $second );
+
+		$read = \DateTimeImmutable::createFromFormat( 'Y-m-d\TH:i:s.v\Z', $first, new \DateTimeZone( 'UTC' ) );
+		$this->assertInstanceOf( \DateTimeImmutable::class, $read );
+		$this->assertEqualsWithDelta( $before, (float) $read->format( 'U.u' ), 1.0 );
+	}
+
 	public function test_unknown_code_returns_null(): void {
 		$this->assertNull( $this->builder()->build( 12345 ) );
 	}

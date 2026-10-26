@@ -109,7 +109,7 @@ class EventBuilder {
 		$payload = [
 			'schema'      => self::SCHEMA,
 			'code'        => $def->code,
-			'occurred_at' => gmdate( 'Y-m-d\TH:i:s.v\Z' ),
+			'occurred_at' => self::now(),
 			'severity'    => $def->severity,
 			'object'      => $def->object,
 			'event_type'  => $def->event_type,
@@ -187,6 +187,14 @@ class EventBuilder {
 		}
 
 		return $payload;
+	}
+
+	/**
+	 * The current time in UTC, to the millisecond: the events of one request
+	 * are only told apart in time by their milliseconds.
+	 */
+	private static function now(): string {
+		return ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->format( 'Y-m-d\TH:i:s.v\Z' );
 	}
 
 	/**
