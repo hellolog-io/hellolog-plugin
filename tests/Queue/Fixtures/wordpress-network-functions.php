@@ -72,6 +72,10 @@ namespace {
 		return true;
 	}
 
+	function get_current_blog_id(): int {
+		return NetworkState::$current_blog;
+	}
+
 	function get_current_network_id(): int {
 		return NetworkState::$sites[ NetworkState::$current_blog ] ?? 1;
 	}

@@ -17,11 +17,12 @@ use HelloLog\Events\SuppressionRules;
 use HelloLog\Queue\QueueRepository;
 use HelloLog\Tests\Events\Fixtures\WpCalls;
 use HelloLog\Tests\Queue\Fixtures\FakeWpdb;
+use HelloLog\Tests\Queue\Fixtures\NetworkState;
 use PHPUnit\Framework\TestCase;
 
 /**
  * Each test runs in its own process: it replaces the global `$wpdb` and
- * defines `current_time()` and `dbDelta()`.
+ * defines `current_time()`, `dbDelta()` and the network and option calls.
  *
  * @runTestsInSeparateProcesses
  * @preserveGlobalState disabled
@@ -33,11 +34,18 @@ final class QueueRepositoryTest extends TestCase {
 	protected function setUp(): void {
 		require_once __DIR__ . '/Fixtures/FakeWpdb.php';
 		require_once __DIR__ . '/Fixtures/wordpress-queue-functions.php';
+		require_once __DIR__ . '/Fixtures/wordpress-network-functions.php';
 
 		$this->wpdb = new FakeWpdb();
 		// The request is on site 2 when the queue is written.
-		$this->wpdb->prefix = 'wp_2_';
-		$GLOBALS['wpdb']    = $this->wpdb;
+		$this->wpdb->prefix         = 'wp_2_';
+		$GLOBALS['wpdb']            = $this->wpdb;
+		NetworkState::$sites        = [
+			1 => 1,
+			2 => 1,
+			3 => 1,
+		];
+		NetworkState::$current_blog = 2;
 	}
 
 	public function test_an_event_without_a_site_goes_to_the_current_sites_queue(): void {
@@ -75,6 +83,101 @@ final class QueueRepositoryTest extends TestCase {
 		$this->assertStringContainsString( 'DEFAULT CHARACTER SET utf8mb4', $this->wpdb->deltas[0] );
 		$this->assertSame( [ 'wp_3_hellolog_queue' ], array_column( $this->wpdb->inserts, 0 ) );
 		$this->assertSame( 1, $this->wpdb->insert_id, 'The event is in the new table.' );
+	}
+
+	/**
+	 * The site is set up the way activation sets it up, its default settings
+	 * included (the noisy sensors stay off there too), and the request is
+	 * back on its own site afterwards.
+	 */
+	public function test_a_site_set_up_on_its_first_event_gets_the_default_settings(): void {
+		$this->wpdb->tables = [ 'wp_hellolog_queue', 'wp_2_hellolog_queue' ];
+
+		( new QueueRepository() )->insert( '{"code":2001}', 3 );
+
+		$this->assertSame(
+			[
+				'core-request'      => true,
+				'core-failed-login' => true,
+			],
+			NetworkState::$options[3]['hellolog_sensor_filters'] ?? null
+		);
+		$this->assertSame( HELLOLOG_VERSION, NetworkState::$options[3]['hellolog_db_version'] ?? null );
+		$this->assertSame( 2, NetworkState::$current_blog );
+		$this->assertSame( 'wp_2_', $this->wpdb->prefix );
+		$this->assertArrayNotHasKey( 2, NetworkState::$options, 'The current site is left alone.' );
+	}
+
+	public function test_a_site_set_up_on_its_first_event_keeps_the_settings_it_has(): void {
+		$this->wpdb->tables         = [ 'wp_hellolog_queue', 'wp_2_hellolog_queue' ];
+		NetworkState::$options[3] = [ 'hellolog_token' => 'goal_live_example' ];
+
+		( new QueueRepository() )->insert( '{"code":2001}', 3 );
+
+		$this->assertSame( 'goal_live_example', NetworkState::$options[3]['hellolog_token'] );
+	}
+
+	public function test_the_current_site_is_set_up_without_switching_sites(): void {
+		$this->wpdb->tables = [];
+
+		( new QueueRepository() )->insert( '{"code":2001}' );
+
+		$this->assertSame( [ 'wp_2_hellolog_queue' ], $this->wpdb->tables );
+		$this->assertArrayHasKey( 'hellolog_sensor_filters', NetworkState::$options[2] );
+		$this->assertSame( 0, NetworkState::$switch_count );
+	}
+
+	public function test_a_single_site_is_set_up_without_switching(): void {
+		NetworkState::$multisite    = false;
+		NetworkState::$current_blog = 1;
+		$this->wpdb->prefix         = 'wp_';
+		$this->wpdb->tables         = [];
+
+		( new QueueRepository() )->insert( '{"code":2001}', 1 );
+
+		$this->assertSame( [ 'wp_hellolog_queue' ], $this->wpdb->tables );
+		$this->assertSame( 0, NetworkState::$switch_count );
+		$this->assertSame( [], $this->wpdb->errors );
+	}
+
+	/**
+	 * @return array<string, array{0: string, 1: array<int, mixed>}> Method, arguments.
+	 */
+	public static function queue_queries(): array {
+		return [
+			'pick a batch'           => [ 'pick_batch', [ 10 ] ],
+			'mark sending'           => [ 'mark_sending', [ [ 1, 2 ] ] ],
+			'purge everything'       => [ 'purge', [] ],
+			'purge one status'       => [ 'purge', [ QueueRepository::STATUS_DEAD ] ],
+			'purge old dead rows'    => [ 'purge_dead_before', [ '2026-10-01 00:00:00' ] ],
+			'delete the oldest'      => [ 'delete_oldest', [ 5 ] ],
+			'count all'              => [ 'count_all', [] ],
+			'requeue dead rows'      => [ 'requeue_dead', [] ],
+			'delete some'            => [ 'delete_many', [ [ 1, 2 ] ] ],
+			'mark for a retry'       => [ 'mark_retry', [ 1, 2, '2026-10-26 12:05:00', 'timeout' ] ],
+			'mark dead'              => [ 'mark_dead', [ 1, 'gone' ] ],
+			'count by status'        => [ 'counts_by_status', [] ],
+		];
+	}
+
+	/**
+	 * Draining, counting and pruning on a site that has no queue table yet
+	 * set it up first instead of querying a table that is not there.
+	 *
+	 * @dataProvider queue_queries
+	 *
+	 * @param string            $method Repository method.
+	 * @param array<int, mixed> $args   Its arguments.
+	 */
+	public function test_every_query_works_on_a_site_without_a_queue_table_yet( string $method, array $args ): void {
+		$this->wpdb->tables = [ 'wp_hellolog_queue' ];
+
+		( new QueueRepository() )->$method( ...$args );
+
+		$this->assertSame( [], $this->wpdb->errors );
+		$this->assertContains( 'wp_2_hellolog_queue', $this->wpdb->tables );
+		$this->assertArrayHasKey( 'hellolog_sensor_filters', NetworkState::$options[2] );
+		$this->assertNotSame( [], $this->wpdb->statements, 'The query itself still ran.' );
 	}
 
 	public function test_an_existing_queue_table_is_left_alone(): void {

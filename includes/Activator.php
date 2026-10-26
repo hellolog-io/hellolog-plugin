@@ -156,6 +156,27 @@ final class Activator {
 	}
 
 	/**
+	 * Set up one site the way activation does: the current site, or the
+	 * site named, switched to and back. The queue calls it for a site that
+	 * has no table yet.
+	 *
+	 * @param ?int $blog_id Site id; null for the current site.
+	 */
+	public static function set_up_site( ?int $blog_id = null ): void {
+		if ( null === $blog_id || ! is_multisite() || get_current_blog_id() === $blog_id ) {
+			self::activate_site();
+			return;
+		}
+
+		switch_to_blog( $blog_id );
+		try {
+			self::activate_site();
+		} finally {
+			restore_current_blog();
+		}
+	}
+
+	/**
 	 * Create the queue table and seed the defaults of the current site.
 	 */
 	private static function activate_site(): void {
@@ -178,19 +199,14 @@ final class Activator {
 		return is_array( $active ) && isset( $active[ plugin_basename( HELLOLOG_FILE ) ] );
 	}
 
-	/**
-	 * Create a queue table: the current site's, or the one named.
-	 *
-	 * @param ?string $table Table name; null for the current site's.
-	 */
-	public static function create_queue_table( ?string $table = null ): void {
+	private static function create_queue_table(): void {
 		global $wpdb;
 
 		if ( ! function_exists( 'dbDelta' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 		}
 
-		$table ??= self::table_name();
+		$table   = self::table_name();
 		$collate = $wpdb->get_charset_collate();
 
 		// The schema is intentionally narrow: one JSON payload per row plus

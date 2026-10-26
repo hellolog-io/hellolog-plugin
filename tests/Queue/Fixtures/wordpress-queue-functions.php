@@ -13,6 +13,8 @@ declare(strict_types=1);
 
 namespace {
 
+	defined( 'ARRAY_A' ) || define( 'ARRAY_A', 'ARRAY_A' );
+
 	/**
 	 * @param string   $type Format; the queue only asks for `mysql`.
 	 * @param bool|int $gmt  Whether to give UTC; the queue always does.
