@@ -13,6 +13,7 @@ use HelloLog\Admin\ActivityLogAjax;
 use HelloLog\Admin\AdminPage;
 use HelloLog\Admin\AssetsLoader;
 use HelloLog\Admin\TestConnectionHandler;
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
@@ -98,6 +99,12 @@ final class Plugin {
 		$this->booted = true;
 
 		$this->load_textdomain();
+
+		// Unconditional and ahead of every sensor: the request source of an
+		// event ("was this a queued job?") must be right even for sensors
+		// that attach later in this request, and hooking is cheap.
+		ActionSchedulerContext::register();
+
 		$this->assemble_services();
 
 		// ALWAYS register the flush scheduler — even when inactive. The bridge
