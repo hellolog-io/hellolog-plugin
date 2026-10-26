@@ -445,6 +445,18 @@ final class EventBuilderV2Test extends TestCase {
 		$this->assertSame( 'see https://[redacted]@h/x', $from_meta['metadata']['post_title'] );
 	}
 
+	/**
+	 * The title in the metadata reads like the label and the vars: plain
+	 * text, decoded before it is masked.
+	 */
+	public function test_the_metadata_title_has_its_html_entities_decoded_before_masking(): void {
+		$payload = $this->build( $this->builder(), [ 'title' => 'Order &ndash; Tom&#039;s &amp; co' ] );
+		$this->assertSame( 'Order – Tom\'s & co', $payload['metadata']['post_title'] );
+
+		$payload = $this->build( $this->builder(), [ 'metadata' => [ 'post_title' => 'see https://user:secretpw&#64;example.com/x' ] ] );
+		$this->assertSame( 'see https://[redacted]@example.com/x', $payload['metadata']['post_title'] );
+	}
+
 	public function test_vars_filled_from_template_fields(): void {
 		$payload = $this->build(
 			$this->builder(),

@@ -169,9 +169,10 @@ class EventBuilder {
 		if ( isset( $fields['title'] ) && '' !== $fields['title'] && ! isset( $metadata['post_title'] ) ) {
 			$metadata['post_title'] = (string) $fields['title'];
 		}
-		// A title is text somebody typed: it is masked the way vars are.
+		// A title is text somebody typed: it is decoded and masked the way
+		// vars are.
 		if ( isset( $metadata['post_title'] ) && is_string( $metadata['post_title'] ) ) {
-			$metadata['post_title'] = ChangeSet::redact_text( $metadata['post_title'] );
+			$metadata['post_title'] = ChangeSet::redact_text( self::decode_entities( $metadata['post_title'] ) );
 		}
 
 		// A background run has no actor of its own; keep who set it in motion.
