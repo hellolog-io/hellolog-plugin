@@ -423,6 +423,7 @@ final class UserTargetTest extends TestCase {
 	 */
 	public function test_an_application_password_sign_in_has_the_user_as_actor_and_as_target(): void {
 		$user = $this->wp_user( 7, 'bob', [ 'editor' ] );
+		require_once __DIR__ . '/Fixtures/wordpress-transient-functions.php';
 
 		$recorder = $this->recorder();
 		( new AppPasswordsSensor( $recorder ) )->on_authenticate( $user, [ 'name' => 'Sync', 'uuid' => 'abc' ] );

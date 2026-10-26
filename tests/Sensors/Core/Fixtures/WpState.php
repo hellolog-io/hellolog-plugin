@@ -59,6 +59,13 @@ final class WpState {
 	public static array $users = [];
 
 	/**
+	 * Transient name => `[ value, expiration ]`, as `set_transient()` stored it.
+	 *
+	 * @var array<string, array{0: mixed, 1: int}>
+	 */
+	public static array $transients = [];
+
+	/**
 	 * Hook name => how it was registered with `add_action()`.
 	 *
 	 * @var array<string, array{priority: int, accepted_args: int}>

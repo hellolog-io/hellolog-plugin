@@ -82,6 +82,15 @@ final class RequestContext {
 		return '' === $token ? null : hash( 'sha256', $token );
 	}
 
+	/**
+	 * The IP the request comes from, as {@see self::capture()} reads it
+	 * (never anonymized here); null when there is none. Reads only the
+	 * request, so it is safe while the current user is being determined.
+	 */
+	public static function client_ip(): ?string {
+		return self::detect_ip();
+	}
+
 	private static function detect_ip(): ?string {
 		// Trust the request-time IP only; reverse-proxy headers are
 		// out of scope for this capture path — operators that need

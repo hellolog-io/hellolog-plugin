@@ -96,4 +96,11 @@ namespace {
 	function wp_unslash( $value ): string {
 		return stripslashes( (string) $value );
 	}
+
+	/**
+	 * @param string $value A string; the request IP is read through it.
+	 */
+	function sanitize_text_field( $value ): string {
+		return trim( strip_tags( (string) $value ) );
+	}
 }
