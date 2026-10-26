@@ -44,9 +44,17 @@ final class ChangeSet {
 	 * The `user:password@` part of a URL: everything after `scheme://` up to
 	 * the LAST `@` before the first `/`, `?`, `#` or space (the authority
 	 * ends there). Greedy on purpose: a password may hold `@` itself
-	 * (`mysql://root:p@ss@host/db`), and the host never does.
+	 * (`mysql://root:p@ss@host/db`), and the host never does. The slashes may
+	 * be escaped the way JSON writes them (`https:\/\/`), with any number of
+	 * backslashes for text that was escaped more than once.
 	 */
-	private const URL_USERINFO = '~([a-z][a-z0-9+.\-]*://)[^\s/?#]*@~i';
+	private const URL_USERINFO = '~([a-z][a-z0-9+.\-]*:(?:\\\\*/){2})[^\s/?#]*@~i';
+
+	/**
+	 * Whitespace and UTF-8 byte order marks in front of a text. A JSON
+	 * decoder refuses a byte order mark, so it is dropped before decoding.
+	 */
+	private const LEADING_JSON_NOISE = '/\A(?:\s|\xEF\xBB\xBF)++/';
 
 	/**
 	 * Deepest array level that is still written out; anything below becomes
@@ -380,67 +388,118 @@ final class ChangeSet {
 	}
 
 	/**
-	 * A string can carry secrets of its own, in two shapes.
+	 * A string can carry secrets of its own, in three shapes.
 	 *
-	 * Text that is a JSON object or list (also one written as a JSON string
-	 * literal, once or several times over) is decoded, masked with the same
+	 * Text that is a JSON string literal is unwrapped first, as many times
+	 * over as it was encoded, and the two rules below apply to what is
+	 * inside. Only {@see self::MAX_DEPTH} literals are unwrapped: text still
+	 * wrapped past that cannot be looked into and becomes `…`, like a
+	 * structure nested too deep, never the raw text.
+	 *
+	 * Text that is a JSON object or list is decoded, masked with the same
 	 * credential-like-key rule as an array and ALWAYS written out again as
-	 * compact JSON with sorted keys. It is never passed through as written,
-	 * not even when nothing was masked: below the depth limit the structure
-	 * is cut to `…` before any key could be seen, so only the rewrite keeps
-	 * the raw text out. Any other text only has the `user:password@` part of
-	 * its URLs masked. PHP-serialized text is NOT unserialized: that can
-	 * instantiate objects chosen by whoever wrote the value.
+	 * compact JSON with sorted keys (the string literals it came in are
+	 * dropped). It is never passed through as written, not even when nothing
+	 * was masked: below the depth limit the structure is cut to `…` before
+	 * any key could be seen, so only the rewrite keeps the raw text out.
+	 *
+	 * Any other text has the `user:password@` part of its URLs masked. When
+	 * it came out of string literals it is wrapped in the same number of
+	 * literals again, written compact (`https://…`, not `https:\/\/…`), so an
+	 * escaped URL is masked like a plain one.
+	 *
+	 * Whitespace and a byte order mark in front of a text do not hide its
+	 * JSON. PHP-serialized text is NOT unserialized: that can instantiate
+	 * objects chosen by whoever wrote the value.
 	 *
 	 * @param string $text  Valid UTF-8 text.
 	 * @param int    $depth Array nesting level of the value.
 	 */
 	private static function mask_text( string $text, int $depth ): string {
+		$layers = 0;
+		$inner  = self::decode_literal( $text );
+		while ( null !== $inner ) {
+			if ( $layers >= self::MAX_DEPTH ) {
+				return self::ELLIPSIS;
+			}
+			$text  = $inner;
+			$inner = self::decode_literal( $text );
+			++$layers;
+		}
+
 		$too_deep = false;
 		$decoded  = self::decode_json( $text, $too_deep );
 		if ( $too_deep ) {
 			return self::ELLIPSIS;
 		}
-		if ( null === $decoded ) {
-			return preg_replace( self::URL_USERINFO, '$1' . SensitiveOption::REDACTED . '@', $text ) ?? SensitiveOption::REDACTED;
+		if ( null !== $decoded ) {
+			$masked = self::json( self::sort_keys( $decoded, $depth + 1, true ) );
+
+			return false === $masked ? SensitiveOption::REDACTED : $masked;
 		}
 
-		$masked = self::json( self::sort_keys( $decoded, $depth + 1, true ) );
+		$masked = preg_replace( self::URL_USERINFO, '$1' . SensitiveOption::REDACTED . '@', $text );
+		for ( $i = 0; $i < $layers && null !== $masked; $i++ ) {
+			$masked = self::json( $masked );
+			if ( false === $masked ) {
+				$masked = null;
+			}
+		}
 
-		return false === $masked ? SensitiveOption::REDACTED : $masked;
+		return $masked ?? SensitiveOption::REDACTED;
 	}
 
 	/**
-	 * The array or object a text is the JSON of; null for anything else. A
-	 * JSON string literal whose value is such a text counts too (a value
-	 * that was JSON-encoded twice), up to {@see self::MAX_DEPTH} times over.
+	 * The value of a JSON string literal; null when the text is not one.
+	 *
+	 * @param string $text Any text.
+	 */
+	private static function decode_literal( string $text ): ?string {
+		$body = self::json_body( $text );
+		if ( '"' !== ( $body[0] ?? '' ) ) {
+			return null;
+		}
+
+		$value = json_decode( $body );
+
+		return is_string( $value ) ? $value : null;
+	}
+
+	/**
+	 * The array or object a text is the JSON of; null for anything else.
 	 *
 	 * Text nested deeper than the decoder allows cannot be read at all; that
 	 * is reported through `$too_deep` and the caller must not pass it on.
 	 *
 	 * @param string $text     Any text.
 	 * @param bool   $too_deep Set to true when the text is JSON the decoder refused for its depth.
-	 * @param int    $level    How many string literals were already unwrapped.
 	 *
 	 * @return array<int|string, mixed>|null
 	 */
-	private static function decode_json( string $text, bool &$too_deep, int $level = 0 ): ?array {
-		$first = ltrim( $text )[0] ?? '';
-		if ( '"' === $first && $level < self::MAX_DEPTH ) {
-			$inner = json_decode( $text, true, 512, JSON_BIGINT_AS_STRING );
-
-			return is_string( $inner ) ? self::decode_json( $inner, $too_deep, $level + 1 ) : null;
-		}
+	private static function decode_json( string $text, bool &$too_deep ): ?array {
+		$body  = self::json_body( $text );
+		$first = $body[0] ?? '';
 		if ( '{' !== $first && '[' !== $first ) {
 			return null;
 		}
 
-		$decoded = json_decode( $text, true, 512, JSON_BIGINT_AS_STRING );
+		$decoded = json_decode( $body, true, 512, JSON_BIGINT_AS_STRING );
 		if ( null === $decoded && JSON_ERROR_DEPTH === json_last_error() ) {
 			$too_deep = true;
 		}
 
 		return is_array( $decoded ) ? $decoded : null;
+	}
+
+	/**
+	 * The text as a JSON decoder must see it: without the whitespace and
+	 * byte order marks in front of it. Used for decoding only; plain text is
+	 * reported with its own leading characters.
+	 *
+	 * @param string $text Any text.
+	 */
+	private static function json_body( string $text ): string {
+		return preg_replace( self::LEADING_JSON_NOISE, '', $text ) ?? $text;
 	}
 
 	/**

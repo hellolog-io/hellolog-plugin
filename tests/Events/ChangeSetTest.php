@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Tests\Events;
 
 use HelloLog\Events\ChangeSet;
+use HelloLog\Sensors\SensitiveOption;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -32,6 +33,30 @@ final class ChangeSetTest extends TestCase {
 			'old'   => $old,
 			'new'   => $new,
 		];
+	}
+
+	/**
+	 * The text JSON-encoded `$times` times over, slashes escaped the way
+	 * `json_encode()` writes them by default.
+	 *
+	 * @param string $text  Any text.
+	 * @param int    $times How many string literals to wrap it in.
+	 */
+	private static function encode_times( string $text, int $times ): string {
+		for ( $i = 0; $i < $times; $i++ ) {
+			$text = json_encode( $text, JSON_THROW_ON_ERROR );
+		}
+
+		return $text;
+	}
+
+	/**
+	 * The JSON escape of one character: a backslash, `u` and four hex digits.
+	 *
+	 * @param string $char One UTF-8 character.
+	 */
+	private static function json_escape( string $char ): string {
+		return sprintf( '%su%04x', chr( 92 ), mb_ord( $char, 'UTF-8' ) );
 	}
 
 	// ---- diff ----------------------------------------------------------
@@ -469,6 +494,10 @@ final class ChangeSetTest extends TestCase {
 			'an at sign, no path'               => [ 'redis://:p@ss@cache.example.com', 'redis://[redacted]@cache.example.com' ],
 			'an at sign, the query follows'     => [ 'https://bob:p@ss@api.example.com?x=1', 'https://[redacted]@api.example.com?x=1' ],
 			'an at sign, then a text'           => [ 'Restore from sftp://bob:p@ss@files.example.com now, please', 'Restore from sftp://[redacted]@files.example.com now, please' ],
+			'escaped slashes'                   => [ 'https:\/\/admin:hunter2@db.example.com\/path', 'https:\/\/[redacted]@db.example.com\/path' ],
+			'escaped slashes, at sign in it'    => [ 'see mysql:\/\/root:p@ss@host\/db', 'see mysql:\/\/[redacted]@host\/db' ],
+			// Three backslashes before each slash: a twice-encoded JSON text.
+			'slashes escaped twice'             => [ 'x https:\\\\\\/\\\\\\/u:hunter2@host\\\\\\/db', 'x https:\\\\\\/\\\\\\/[redacted]@host\\\\\\/db' ],
 		];
 	}
 
@@ -493,6 +522,8 @@ final class ChangeSetTest extends TestCase {
 			'a mail address'        => [ 'bob@example.com' ],
 			'a mailto link'         => [ 'mailto:bob@example.com' ],
 			'a port'                => [ 'http://localhost:8080/x' ],
+			'escaped, query at'     => [ 'https:\/\/example.com\/path?mail=bob@example.com' ],
+			'escaped, path at'      => [ 'https:\/\/example.com\/@bob\/posts' ],
 		];
 	}
 
@@ -766,6 +797,160 @@ final class ChangeSetTest extends TestCase {
 
 	public function test_a_string_literal_holding_a_credential_url_is_masked(): void {
 		$this->assertSame( '"https://[redacted]@api.example.com/v1"', ChangeSet::stringify( '"https://bob:hunter2@api.example.com/v1"' ) );
+	}
+
+	/**
+	 * Secrets that a look at the raw text would miss: a URL whose slashes are
+	 * escaped, a value JSON-encoded more often than the decoder unwraps, a
+	 * byte order mark in front of the JSON.
+	 *
+	 * @return array<string, array{0: string, 1: string}> Text, the secret inside it.
+	 */
+	public static function hidden_secrets(): array {
+		$bom    = "\xEF\xBB\xBF";
+		$object = '{"apiKey":"SEC","enabled":"yes"}';
+		$url    = 'https://user:p@ss@host/db';
+
+		return [
+			'escaped url in a string literal'       => [ '"https:\/\/user:p@ss@host\/db"', 'p@ss' ],
+			'the same, spaces around it'            => [ " \"https:\\/\\/user:p@ss@host\\/db\"\n", 'p@ss' ],
+			'escaped url in plain text'             => [ 'Restore from https:\/\/user:p@ss@host\/db now', 'p@ss' ],
+			'escaped url in broken json'            => [ '{"target":"mysql:\/\/root:p@ss@host\/db",', 'p@ss' ],
+			'unicode-escaped slashes in a literal'  => [ str_replace( '/', self::json_escape( '/' ), '"https://user:p@ss@host/db"' ), 'p@ss' ],
+			'unicode-escaped at sign in a literal'  => [ '"https:\/\/user:p@ss' . self::json_escape( '@' ) . 'host\/db"', 'p@ss' ],
+			'a url encoded twice'                   => [ self::encode_times( $url, 2 ), 'p@ss' ],
+			'a url encoded 5 times'                 => [ self::encode_times( $url, 5 ), 'p@ss' ],
+			'a url encoded 10 times'                => [ self::encode_times( $url, 10 ), 'p@ss' ],
+			'a url encoded 11 times'                => [ self::encode_times( $url, 11 ), 'p@ss' ],
+			'a url encoded 14 times'                => [ self::encode_times( $url, 14 ), 'p@ss' ],
+			'a literal of a json object, 11 times'  => [ self::encode_times( $object, 11 ), 'SEC' ],
+			'a literal of a json object, 12 times'  => [ self::encode_times( $object, 12 ), 'SEC' ],
+			'a literal of a json object, 13 times'  => [ self::encode_times( $object, 13 ), 'SEC' ],
+			'a literal of a json object, 14 times'  => [ self::encode_times( $object, 14 ), 'SEC' ],
+			'a bom before a json object'            => [ $bom . $object, 'SEC' ],
+			'a bom between spaces before an object' => [ " \n" . $bom . '  ' . $object, 'SEC' ],
+			'two boms before a json object'         => [ $bom . $bom . $object, 'SEC' ],
+			'a bom before a json list'              => [ $bom . '[' . $object . ']', 'SEC' ],
+			'a bom before a string literal'         => [ $bom . self::encode_times( $object, 1 ), 'SEC' ],
+			'a bom inside a string literal'         => [ self::encode_times( $bom . $object, 1 ), 'SEC' ],
+			'a bom before a literal with a url'     => [ $bom . '"https:\/\/user:p@ss@host\/db"', 'p@ss' ],
+		];
+	}
+
+	/**
+	 * Every way a value leaves: a single text, either side of a diff, both
+	 * sides at once, a value inside an array, an option value on its own.
+	 *
+	 * @dataProvider hidden_secrets
+	 *
+	 * @param string $text   A text with a secret hidden in it.
+	 * @param string $secret The secret.
+	 */
+	public function test_a_hidden_secret_is_never_reported( string $text, string $secret ): void {
+		$reports = [
+			'stringify'        => ChangeSet::stringify( $text ),
+			'redact_text'      => ChangeSet::redact_text( $text ),
+			'inside an array'  => ChangeSet::stringify( [ 'target' => $text ] ),
+			'diff, old side'   => ChangeSet::diff( [ 'f' => $text ], [ 'f' => 'other' ], [ 'f' ] ),
+			'diff, new side'   => ChangeSet::diff( [ 'f' => 'other' ], [ 'f' => $text ], [ 'f' ] ),
+			'diff, both sides' => ChangeSet::diff( [ 'f' => $text ], [ 'f' => $text . ' ' ], [ 'f' ] ),
+			'option value'     => SensitiveOption::value( 'lw_backup_target', $text ),
+		];
+
+		foreach ( $reports as $where => $report ) {
+			$this->assertStringNotContainsString( $secret, json_encode( $report, JSON_THROW_ON_ERROR ), $where );
+		}
+	}
+
+	public function test_an_escaped_url_in_a_string_literal_is_masked_and_reads_unescaped(): void {
+		$this->assertSame( '"https://[redacted]@host/db"', ChangeSet::stringify( '"https:\/\/user:p@ss@host\/db"' ) );
+		$this->assertSame( '"https://[redacted]@host/db"', SensitiveOption::value( 'lw_backup_target', '"https:\/\/user:p@ss@host\/db"' ) );
+	}
+
+	public function test_a_url_encoded_twice_is_masked_inside_both_literals(): void {
+		$this->assertSame(
+			'"\"https://[redacted]@host/db\""',
+			ChangeSet::stringify( self::encode_times( 'https://user:p@ss@host/db', 2 ) )
+		);
+	}
+
+	public function test_an_escaped_url_password_change_only_is_a_changed_flag(): void {
+		$changes = ChangeSet::diff(
+			[ 'backup_target' => '"sftp:\/\/bob:OLDPASS@files.example.com\/backups"' ],
+			[ 'backup_target' => '"sftp:\/\/bob:NEWPASS@files.example.com\/backups"' ],
+			[ 'backup_target' ]
+		);
+
+		$this->assertSame( [ self::item( 'backup_target', null, null ) ], $changes );
+	}
+
+	/**
+	 * A string literal without secrets is written out again as a compact
+	 * literal: still the same text, only easier to read.
+	 */
+	public function test_a_json_string_literal_without_secrets_round_trips_readably(): void {
+		$this->assertSame( '"https://example.com/path"', ChangeSet::stringify( '"https:\/\/example.com\/path"' ) );
+		$this->assertSame( '"café"', ChangeSet::stringify( '"caf' . self::json_escape( 'é' ) . '"' ) );
+		$this->assertSame( '"hello"', ChangeSet::stringify( " \"hello\"\n" ) );
+		$this->assertSame( '"hello"', SensitiveOption::value( 'lw_x', '"hello"' ) );
+
+		$text = self::encode_times( 'plain "quoted" text', 4 );
+		$this->assertSame( $text, ChangeSet::stringify( $text ) );
+		$this->assertSame( 'plain "quoted" text', json_decode( json_decode( json_decode( json_decode( (string) ChangeSet::stringify( $text ) ) ) ) ) );
+	}
+
+	public function test_a_json_object_encoded_ten_times_is_still_unwrapped_and_masked(): void {
+		$this->assertSame(
+			'{"apiKey":"[redacted]","enabled":"yes"}',
+			ChangeSet::stringify( self::encode_times( '{"apiKey":"SEC","enabled":"yes"}', 10 ) )
+		);
+	}
+
+	/**
+	 * Through the untruncated paths: ten layers of `hello` run past the
+	 * 1024-character cut.
+	 */
+	public function test_text_encoded_ten_times_still_round_trips(): void {
+		$text = self::encode_times( 'hello', 10 );
+
+		$this->assertSame( $text, ChangeSet::redact_text( $text ) );
+		$this->assertSame( $text, SensitiveOption::value( 'lw_x', $text ) );
+	}
+
+	/**
+	 * Past the unwrap limit the text cannot be looked into, so it is cut to
+	 * the same `…` a too-deep structure gets, never passed through.
+	 */
+	public function test_a_string_literal_past_the_unwrap_limit_is_cut(): void {
+		foreach ( [ 11, 12, 13, 14 ] as $times ) {
+			$text = self::encode_times( '{"apiKey":"SEC"}', $times );
+
+			$this->assertSame( '…', ChangeSet::stringify( $text ), "$times times" );
+			$this->assertSame( '…', ChangeSet::redact_text( $text ), "$times times" );
+			$this->assertSame( '…', SensitiveOption::value( 'lw_x', $text ), "$times times" );
+		}
+
+		$this->assertSame( '…', ChangeSet::stringify( self::encode_times( 'hello', 11 ) ) );
+	}
+
+	public function test_past_the_unwrap_limit_a_diff_is_a_changed_flag(): void {
+		$changes = ChangeSet::diff(
+			[ 'gateway_json' => self::encode_times( '{"apiKey":"OLDSECRET"}', 12 ) ],
+			[ 'gateway_json' => self::encode_times( '{"apiKey":"NEWSECRET"}', 12 ) ],
+			[ 'gateway_json' ]
+		);
+
+		$this->assertSame( [ self::item( 'gateway_json', null, null ) ], $changes );
+	}
+
+	public function test_a_byte_order_mark_does_not_hide_a_json_text(): void {
+		$this->assertSame( '{"apiKey":"[redacted]"}', ChangeSet::stringify( "\xEF\xBB\xBF" . '{"apiKey":"SEC"}' ) );
+		$this->assertSame( '{"apiKey":"[redacted]"}', SensitiveOption::value( 'lw_x', "\xEF\xBB\xBF" . '{"apiKey":"SEC"}' ) );
+		$this->assertSame( '"https://[redacted]@host/db"', ChangeSet::stringify( "\xEF\xBB\xBF" . '"https:\/\/user:p@ss@host\/db"' ) );
+	}
+
+	public function test_a_byte_order_mark_in_front_of_plain_text_is_kept(): void {
+		$this->assertSame( "\xEF\xBB\xBFhello", ChangeSet::stringify( "\xEF\xBB\xBFhello" ) );
 	}
 
 	public function test_a_key_that_is_not_a_credential_keeps_its_value(): void {
