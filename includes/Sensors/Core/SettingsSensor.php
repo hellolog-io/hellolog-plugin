@@ -9,7 +9,9 @@ declare(strict_types=1);
 
 namespace HelloLog\Sensors\Core;
 
+use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\OptionChangePolicy;
 use Throwable;
 
 defined( 'ABSPATH' ) || exit;
@@ -20,6 +22,14 @@ defined( 'ABSPATH' ) || exit;
  * search-engine visibility, permalink structure) so they get their own
  * severity-MEDIUM/HIGH codes; everything else in the watchlist rolls up
  * to code 6000.
+ *
+ * Each event has the setting as its target and the old-to-new change, built
+ * the way the plugin settings sensors build theirs (see
+ * {@see OptionChangePolicy::target()} and {@see OptionChangePolicy::changes()}),
+ * and every value it carries is masked (a password in a URL, a
+ * credential-like key in JSON). Unlike plugin settings, every write to a
+ * watched option is logged, whoever made it: a cron job or a visitor's
+ * request changing the site address is exactly what has to be on record.
  */
 final class SettingsSensor extends AbstractSensor {
 
@@ -73,19 +83,26 @@ final class SettingsSensor extends AbstractSensor {
 			if ( $old_value === $value ) {
 				return;
 			}
+			$changes = OptionChangePolicy::changes( $option, $old_value, $value );
+			if ( [] === $changes ) {
+				return; // Nothing a reader could see changed (`1` and `'1'`).
+			}
 
-			$code = $this->code_for( $option );
+			$old = ChangeSet::redact_text( $this->stringify( $old_value ) );
+			$new = ChangeSet::redact_text( $this->stringify( $value ) );
 			$this->emit(
-				$code,
+				$this->code_for( $option ),
 				[
 					'option'   => $option,
-					'old'      => $this->stringify( $old_value ),
-					'new'      => $this->stringify( $value ),
-					'state'    => $this->stringify( $value ),
+					'target'   => OptionChangePolicy::target( $option ),
+					'changes'  => $changes,
+					'old'      => $old,
+					'new'      => $new,
+					'state'    => $new,
 					'metadata' => [
 						'option' => $option,
-						'old'    => $this->stringify( $old_value ),
-						'new'    => $this->stringify( $value ),
+						'old'    => $old,
+						'new'    => $new,
 					],
 				]
 			);
@@ -105,6 +122,10 @@ final class SettingsSensor extends AbstractSensor {
 	}
 
 	/**
+	 * The text of a value, before masking. Arrays and objects are written out
+	 * whole: masking has to read the JSON to find a credential-like key in it,
+	 * and the event builder shortens long metadata values afterwards.
+	 *
 	 * @param mixed $value
 	 */
 	private function stringify( $value ): string {
@@ -112,6 +133,6 @@ final class SettingsSensor extends AbstractSensor {
 			return (string) $value;
 		}
 		$encoded = wp_json_encode( $value );
-		return is_string( $encoded ) ? substr( $encoded, 0, 256 ) : '';
+		return is_string( $encoded ) ? $encoded : '';
 	}
 }
