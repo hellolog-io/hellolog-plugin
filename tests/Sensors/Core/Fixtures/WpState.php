@@ -31,6 +31,9 @@ final class WpState {
 	/** Whether the current user may edit posts (core's edit link needs it). */
 	public static bool $can_edit = true;
 
+	/** The action `doing_action()` reports as running, if any. */
+	public static ?string $doing_action = null;
+
 	/** What `get_comment()` returns. */
 	public static ?\WP_Comment $comment = null;
 }

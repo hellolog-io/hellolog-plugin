@@ -95,7 +95,9 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	public function on_delete( int $post_id, WP_Post $post ): void {
-		if ( ! $this->should_track( $post ) || ! self::is_loggable_delete( (string) $post->post_status ) ) {
+		// Core's only caller of `wp_delete_auto_drafts()` is this cron action.
+		$cleanup = function_exists( 'doing_action' ) && doing_action( 'wp_scheduled_auto_draft_delete' );
+		if ( ! $this->should_track( $post ) || ! self::is_loggable_delete( (string) $post->post_status, $cleanup ) ) {
 			return;
 		}
 		// `before_delete_post` only fires for permanent deletes — trash uses
@@ -177,14 +179,18 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Whether the permanent delete of a post is worth an event. WordPress
-	 * clears out stale `auto-draft` placeholders by itself in cron, so those
-	 * are housekeeping, not something anyone deleted.
+	 * Whether the permanent delete of a post is worth an event.
 	 *
-	 * @param string $status Status of the post being deleted.
+	 * Only the housekeeping WordPress runs by itself is skipped: its cron
+	 * job that clears out stale `auto-draft` placeholders. Any other delete
+	 * of an `auto-draft` post is logged, otherwise setting a post to that
+	 * status first would be a way to delete it unseen.
+	 *
+	 * @param string $status                 Status of the post being deleted.
+	 * @param bool   $in_auto_draft_cleanup Whether WordPress's own auto-draft cleanup is running.
 	 */
-	public static function is_loggable_delete( string $status ): bool {
-		return 'auto-draft' !== $status;
+	public static function is_loggable_delete( string $status, bool $in_auto_draft_cleanup ): bool {
+		return ! ( 'auto-draft' === $status && $in_auto_draft_cleanup );
 	}
 
 	/**

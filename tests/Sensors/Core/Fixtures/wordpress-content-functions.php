@@ -40,6 +40,10 @@ namespace {
 		}
 	}
 
+	function doing_action( ?string $hook_name = null ): bool {
+		return null === $hook_name ? null !== WpState::$doing_action : WpState::$doing_action === $hook_name;
+	}
+
 	function get_post_type_object( string $type ): ?object {
 		return array_key_exists( $type, WpState::$post_types ) ? (object) [ 'show_ui' => WpState::$post_types[ $type ] ] : null;
 	}

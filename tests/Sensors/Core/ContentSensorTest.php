@@ -11,6 +11,7 @@ namespace HelloLog\Tests\Sensors\Core;
 
 use HelloLog\Events\EventDispatcher;
 use HelloLog\Sensors\Core\ContentSensor;
+use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -54,6 +55,7 @@ final class ContentSensorTest extends TestCase {
 			'new to private'            => [ 'private', 'new', 2000 ],
 			'new to trash'              => [ 'trash', 'new', 2003 ],
 			'new to inherit'            => [ 'inherit', 'new', 0 ],
+			'new to auto-draft'         => [ 'auto-draft', 'new', 0 ],
 			'trash to publish'          => [ 'publish', 'trash', 2001 ],
 			'private to publish'        => [ 'publish', 'private', 2001 ],
 			'trash to draft'            => [ 'draft', 'trash', 0 ],
@@ -243,26 +245,26 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
-	 * @return array<string, array{0: string, 1: bool}> post status, expected.
+	 * @return array<string, array{0: string, 1: bool, 2: bool}> post status, in WP's own auto-draft cleanup, expected.
 	 */
-	public static function delete_statuses(): array {
-		return [
-			'auto-draft' => [ 'auto-draft', false ],
-			'draft'      => [ 'draft', true ],
-			'publish'    => [ 'publish', true ],
-			'pending'    => [ 'pending', true ],
-			'future'     => [ 'future', true ],
-			'private'    => [ 'private', true ],
-			'trash'      => [ 'trash', true ],
-			'inherit'    => [ 'inherit', true ],
+	public static function delete_cases(): array {
+		$cases = [
+			'auto-draft in the cleanup'      => [ 'auto-draft', true, false ],
+			'auto-draft outside the cleanup' => [ 'auto-draft', false, true ],
 		];
+		foreach ( [ 'draft', 'publish', 'pending', 'future', 'private', 'trash', 'inherit' ] as $status ) {
+			$cases[ $status . ' in the cleanup' ]      = [ $status, true, true ];
+			$cases[ $status . ' outside the cleanup' ] = [ $status, false, true ];
+		}
+
+		return $cases;
 	}
 
 	/**
-	 * @dataProvider delete_statuses
+	 * @dataProvider delete_cases
 	 */
-	public function test_is_loggable_delete( string $status, bool $expected ): void {
-		$this->assertSame( $expected, ContentSensor::is_loggable_delete( $status ) );
+	public function test_is_loggable_delete( string $status, bool $in_auto_draft_cleanup, bool $expected ): void {
+		$this->assertSame( $expected, ContentSensor::is_loggable_delete( $status, $in_auto_draft_cleanup ) );
 	}
 
 	/**
@@ -293,14 +295,52 @@ final class ContentSensorTest extends TestCase {
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_deleting_an_auto_draft_emits_nothing(): void {
+	public function test_deleting_an_auto_draft_in_wps_cleanup_emits_nothing(): void {
 		$calls = $this->run_hook(
 			static function ( ContentSensor $sensor, callable $post ): void {
+				WpState::$doing_action = 'wp_scheduled_auto_draft_delete';
 				$sensor->on_delete( 7, $post( [ 'post_status' => 'auto-draft' ] ) );
 			}
 		);
 
 		$this->assertSame( [], $calls );
+	}
+
+	/**
+	 * Setting a post to `auto-draft` and deleting it must not be a way to hide
+	 * the deletion: only the cleanup WordPress runs itself is skipped.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_deleting_an_auto_draft_outside_the_cleanup_is_logged(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_delete( 7, $post( [ 'post_status' => 'auto-draft' ] ) );
+
+				WpState::$doing_action = 'wp_ajax_delete-post';
+				$sensor->on_delete( 8, $post( [ 'ID' => 8, 'post_status' => 'auto-draft' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2005, 2005 ], array_column( $calls, 0 ) );
+		$this->assertSame( '7', $calls[0][1]['target']['id'] );
+		$this->assertSame( '8', $calls[1][1]['target']['id'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_deleting_a_real_post_is_logged_even_inside_the_cleanup(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				WpState::$doing_action = 'wp_scheduled_auto_draft_delete';
+				$sensor->on_delete( 7, $post( [ 'post_status' => 'publish' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2005 ], array_column( $calls, 0 ) );
 	}
 
 	/**
