@@ -275,4 +275,20 @@ final class SensitiveOptionTest extends TestCase {
 		$this->assertSame( 'HUF', SensitiveOption::value( 'woocommerce_currency', 'HUF' ) );
 		$this->assertSame( '<complex>', SensitiveOption::value( 'woocommerce_currency', [ 'a' ] ) );
 	}
+
+	/**
+	 * When the regex engine gives up on a name, the name counts as a
+	 * credential: failing the other way would report the value unmasked.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_name_the_regex_engine_gives_up_on_is_sensitive(): void {
+		ini_set( 'pcre.jit', '0' );
+		ini_set( 'pcre.backtrack_limit', '1' );
+
+		$this->assertTrue( SensitiveOption::is_sensitive( 'api_key' ) );
+		$this->assertTrue( SensitiveOption::is_sensitive( 'woocommerce_PayPal_ApiKey' ) );
+		$this->assertSame( SensitiveOption::REDACTED, SensitiveOption::value( 'lw_x_api_key', 987654 ) );
+	}
 }

@@ -44,19 +44,30 @@ final class SensitiveOption {
 	 */
 	private const PATTERN = '/key|secret|token|pass(word)?|pwd|credential|private|license|licence|salt|iban|account_number|sort_code|routing_number|card_number|bank_account|connection_string|bearer|swift|signature|(?<![a-z0-9])(?:bic|cvv2?|cvc|otp|jwt|dsn|pem|cert)(?![a-z0-9])|auth(?!ors?(?![a-z]))/';
 
+	/**
+	 * A name the regex engine gives up on (backtrack limit) counts as
+	 * credential-like: the other answer would report its value unmasked.
+	 *
+	 * @param string $option Option name, array key or field name.
+	 */
 	public static function is_sensitive( string $option ): bool {
-		return 1 === preg_match( self::PATTERN, self::normalize( $option ) );
+		$name = self::normalize( $option );
+
+		return null === $name || 0 !== preg_match( self::PATTERN, $name );
 	}
 
 	/**
 	 * One spelling for every way a name is written: `accountNumber`,
 	 * `account-number`, `Account Number` and `ACCOUNT_NUMBER` all become
-	 * `account_number`.
+	 * `account_number`. Null when the regex engine gives up on the name.
 	 *
 	 * @param string $name Option name, array key or header name.
 	 */
-	private static function normalize( string $name ): string {
-		$name = preg_replace( '/([a-z0-9])([A-Z])/', '$1_$2', $name ) ?? $name;
+	private static function normalize( string $name ): ?string {
+		$name = preg_replace( '/([a-z0-9])([A-Z])/', '$1_$2', $name );
+		if ( null === $name ) {
+			return null;
+		}
 		$name = str_replace( [ '-', ' ' ], '_', $name );
 
 		// Not strtolower(): before PHP 8.2 it follows the locale, which turns an

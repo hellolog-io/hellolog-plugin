@@ -953,6 +953,95 @@ final class ChangeSetTest extends TestCase {
 		$this->assertSame( "\xEF\xBB\xBFhello", ChangeSet::stringify( "\xEF\xBB\xBFhello" ) );
 	}
 
+	/**
+	 * Prefixes longer than the regex engine's default backtrack limit.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function long_json_prefixes(): array {
+		return [
+			'spaces'                  => [ str_repeat( ' ', 1100000 ) ],
+			'all json whitespace'     => [ str_repeat( " \t\n\r", 300000 ) ],
+			'byte order marks'        => [ str_repeat( "\xEF\xBB\xBF", 1100000 ) ],
+			'marks between newlines'  => [ str_repeat( "\xEF\xBB\xBF\n", 600000 ) ],
+		];
+	}
+
+	/**
+	 * @dataProvider long_json_prefixes
+	 *
+	 * @param string $prefix What goes in front of the JSON.
+	 */
+	public function test_a_long_prefix_does_not_hide_a_json_text( string $prefix ): void {
+		$this->assertSame(
+			'{"apiKey":"[redacted]","enabled":"yes"}',
+			ChangeSet::redact_text( $prefix . '{"apiKey":"SEC","enabled":"yes"}' )
+		);
+	}
+
+	/**
+	 * Without JIT the regex engine gives up on a long prefix; the strip in
+	 * front of JSON detection must not depend on it, or the raw text goes out.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @dataProvider long_json_prefixes
+	 *
+	 * @param string $prefix What goes in front of the JSON.
+	 */
+	public function test_without_pcre_jit_a_long_prefix_still_does_not_hide_a_json_text( string $prefix ): void {
+		ini_set( 'pcre.jit', '0' );
+		ini_set( 'pcre.backtrack_limit', '1000000' );
+
+		$text    = $prefix . '{"apiKey":"SEC","enabled":"yes"}';
+		$reports = [
+			'stringify'      => ChangeSet::stringify( $text ),
+			'redact_text'    => ChangeSet::redact_text( $text ),
+			'diff, old side' => ChangeSet::diff( [ 'f' => $text ], [ 'f' => 'other' ], [ 'f' ] ),
+			'diff, new side' => ChangeSet::diff( [ 'f' => 'other' ], [ 'f' => $text ], [ 'f' ] ),
+			'option value'   => SensitiveOption::value( 'lw_backup_target', $text ),
+		];
+
+		foreach ( $reports as $where => $report ) {
+			$this->assertStringNotContainsString( 'SEC', json_encode( $report, JSON_THROW_ON_ERROR ), $where );
+		}
+		$this->assertSame( '{"apiKey":"[redacted]","enabled":"yes"}', $reports['redact_text'] );
+	}
+
+	/**
+	 * A text the regex engine gives up on is cut, never reported unmasked.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_text_the_regex_engine_gives_up_on_is_cut(): void {
+		ini_set( 'pcre.jit', '0' );
+		ini_set( 'pcre.backtrack_limit', '1' );
+
+		$this->assertSame( '…', ChangeSet::stringify( 'see https://user:SEC@host/db' ) );
+		$this->assertSame( '…', ChangeSet::redact_text( 'see https://user:SEC@host/db' ) );
+		$this->assertSame( '…', ChangeSet::stringify( '"https:\/\/user:SEC@host\/db"' ) );
+	}
+
+	/**
+	 * A key the regex engine gives up on counts as a credential, so even a
+	 * value no text rule looks at (a number) stays out.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_key_the_regex_engine_gives_up_on_is_masked(): void {
+		ini_set( 'pcre.jit', '0' );
+		ini_set( 'pcre.backtrack_limit', '1' );
+
+		$this->assertSame( '{"apiKey":"[redacted]"}', ChangeSet::stringify( [ 'apiKey' => 987654 ] ) );
+		$this->assertSame(
+			[ self::item( 'api_key', SensitiveOption::REDACTED, SensitiveOption::REDACTED ) ],
+			ChangeSet::diff( [ 'api_key' => 111111 ], [ 'api_key' => 222222 ], [ 'api_key' ] )
+		);
+	}
+
 	public function test_a_key_that_is_not_a_credential_keeps_its_value(): void {
 		$changes = ChangeSet::diff(
 			[ 'gateway' => [ 'title' => 'Card', 'authors' => 'Ann' ] ],

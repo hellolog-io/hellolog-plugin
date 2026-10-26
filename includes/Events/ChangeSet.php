@@ -51,10 +51,16 @@ final class ChangeSet {
 	private const URL_USERINFO = '~([a-z][a-z0-9+.\-]*:(?:\\\\*/){2})[^\s/?#]*@~i';
 
 	/**
-	 * Whitespace and UTF-8 byte order marks in front of a text. A JSON
-	 * decoder refuses a byte order mark, so it is dropped before decoding.
+	 * UTF-8 byte order mark. A JSON decoder refuses it, so it is dropped from
+	 * the front of a text before decoding.
 	 */
-	private const LEADING_JSON_NOISE = '/\A(?:\s|\xEF\xBB\xBF)++/';
+	private const BOM = "\xEF\xBB\xBF";
+
+	/**
+	 * Whitespace dropped from the front of a text before decoding: the JSON
+	 * kind plus vertical tab and form feed.
+	 */
+	private const LEADING_SPACE = " \t\n\r\x0B\x0C";
 
 	/**
 	 * Deepest array level that is still written out; anything below becomes
@@ -412,6 +418,9 @@ final class ChangeSet {
 	 * JSON. PHP-serialized text is NOT unserialized: that can instantiate
 	 * objects chosen by whoever wrote the value.
 	 *
+	 * A text the masking cannot finish (the regex engine gives up, the
+	 * encoder fails) becomes `…`: it is never reported unmasked.
+	 *
 	 * @param string $text  Valid UTF-8 text.
 	 * @param int    $depth Array nesting level of the value.
 	 */
@@ -435,7 +444,7 @@ final class ChangeSet {
 		if ( null !== $decoded ) {
 			$masked = self::json( self::sort_keys( $decoded, $depth + 1, true ) );
 
-			return false === $masked ? SensitiveOption::REDACTED : $masked;
+			return false === $masked ? self::ELLIPSIS : $masked;
 		}
 
 		$masked = preg_replace( self::URL_USERINFO, '$1' . SensitiveOption::REDACTED . '@', $text );
@@ -446,7 +455,7 @@ final class ChangeSet {
 			}
 		}
 
-		return $masked ?? SensitiveOption::REDACTED;
+		return $masked ?? self::ELLIPSIS;
 	}
 
 	/**
@@ -493,13 +502,27 @@ final class ChangeSet {
 
 	/**
 	 * The text as a JSON decoder must see it: without the whitespace and
-	 * byte order marks in front of it. Used for decoding only; plain text is
-	 * reported with its own leading characters.
+	 * byte order marks in front of it, however many and in whatever mix.
+	 * Used for decoding only; plain text is reported with its own leading
+	 * characters.
+	 *
+	 * Plain string functions on purpose, one pass: a regex can give up on a
+	 * long prefix (backtrack limit), and the unstripped text would then pass
+	 * as plain text with its JSON unmasked.
 	 *
 	 * @param string $text Any text.
 	 */
 	private static function json_body( string $text ): string {
-		return preg_replace( self::LEADING_JSON_NOISE, '', $text ) ?? $text;
+		$offset = 0;
+		do {
+			$start   = $offset;
+			$offset += strspn( $text, self::LEADING_SPACE, $offset );
+			while ( self::BOM === substr( $text, $offset, 3 ) ) {
+				$offset += 3;
+			}
+		} while ( $offset !== $start );
+
+		return 0 === $offset ? $text : substr( $text, $offset );
 	}
 
 	/**
