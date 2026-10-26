@@ -69,6 +69,15 @@ final class FakeWpdb {
 	public array $statements = [];
 
 	/**
+	 * Rows of the options tables: table name => option name => value. A
+	 * `DELETE FROM <options table> WHERE option_name LIKE …` removes the
+	 * matching ones.
+	 *
+	 * @var array<string, array<string, mixed>>
+	 */
+	public array $option_rows = [];
+
+	/**
 	 * What the database would have answered to statements on a queue table
 	 * that does not exist.
 	 *
@@ -142,8 +151,52 @@ final class FakeWpdb {
 		if ( 1 === preg_match( '/^DROP TABLE IF EXISTS (\S+)$/', $query, $m ) ) {
 			$this->tables = array_values( array_diff( $this->tables, [ $m[1] ] ) );
 		}
+		if ( 1 === preg_match( '/^DELETE FROM (\S+_options) WHERE (.+)$/s', $query, $m ) ) {
+			return $this->delete_options_like( $m[1], $m[2] );
+		}
 
 		return 0;
+	}
+
+	/**
+	 * Removes the rows of an options table whose name matches one of the
+	 * `option_name LIKE '…'` patterns, read the way MySQL reads them.
+	 *
+	 * @param string $table Options table.
+	 * @param string $where The WHERE clause.
+	 */
+	private function delete_options_like( string $table, string $where ): int {
+		preg_match_all( "/option_name LIKE '((?:[^'\\\\]|\\\\.)*)'/", $where, $m );
+		$patterns = [];
+		foreach ( $m[1] as $like ) {
+			$like  = stripslashes( $like );
+			$regex = '';
+			foreach ( preg_split( '/(\\\\.|%|_)/', $like, -1, PREG_SPLIT_DELIM_CAPTURE | PREG_SPLIT_NO_EMPTY ) as $part ) {
+				if ( '%' === $part ) {
+					$regex .= '.*';
+				} elseif ( '_' === $part ) {
+					$regex .= '.';
+				} elseif ( '\\' === $part[0] && 2 === strlen( $part ) ) {
+					$regex .= preg_quote( $part[1], '/' );
+				} else {
+					$regex .= preg_quote( $part, '/' );
+				}
+			}
+			$patterns[] = '/^' . $regex . '$/s';
+		}
+
+		$deleted = 0;
+		foreach ( array_keys( $this->option_rows[ $table ] ?? [] ) as $name ) {
+			foreach ( $patterns as $pattern ) {
+				if ( 1 === preg_match( $pattern, (string) $name ) ) {
+					unset( $this->option_rows[ $table ][ $name ] );
+					++$deleted;
+					break;
+				}
+			}
+		}
+
+		return $deleted;
 	}
 
 	/**
