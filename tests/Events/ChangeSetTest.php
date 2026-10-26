@@ -187,15 +187,57 @@ final class ChangeSetTest extends TestCase {
 		$this->assertSame( [ self::item( 'post_content', null, null ) ], $changes );
 	}
 
-	public function test_long_values_that_differ_only_after_the_limit_still_register_as_a_change(): void {
+	public function test_long_values_that_differ_only_after_the_limit_become_a_changed_flag(): void {
 		$old = str_repeat( 'x', 2000 );
 		$new = substr( $old, 0, 1999 ) . 'y';
+
+		$changes = ChangeSet::diff( [ 'f' => $old ], [ 'f' => $new ], [ 'f' ] );
+
+		// Both sides would be cut to the same text, which reads as "no change"
+		// and would be dropped later — so the item carries no values instead.
+		$this->assertSame( [ self::item( 'f', null, null ) ], $changes );
+	}
+
+	public function test_long_values_that_differ_within_the_limit_keep_their_cut_values(): void {
+		$old = str_repeat( 'x', 2000 );
+		$new = 'y' . substr( $old, 1 );
 
 		$changes = ChangeSet::diff( [ 'f' => $old ], [ 'f' => $new ], [ 'f' ] );
 
 		$this->assertCount( 1, $changes );
 		$this->assertSame( 1024, mb_strlen( $changes[0]['old'], 'UTF-8' ) );
 		$this->assertSame( 1024, mb_strlen( $changes[0]['new'], 'UTF-8' ) );
+		$this->assertNotSame( $changes[0]['old'], $changes[0]['new'] );
+	}
+
+	public function test_a_long_value_change_survives_merge(): void {
+		$old = str_repeat( 'x', 2000 );
+		$new = substr( $old, 0, 1999 ) . 'y';
+
+		$changes = ChangeSet::diff( [ 'f' => $old ], [ 'f' => $new ], [ 'f' ] );
+
+		$this->assertSame( $changes, ChangeSet::merge( $changes, [] ) );
+		$this->assertSame( $changes, ChangeSet::merge( [], $changes ) );
+		$this->assertSame( $changes, ChangeSet::merge( $changes, $changes ) );
+	}
+
+	public function test_author_fields_keep_their_values(): void {
+		$changes = ChangeSet::diff(
+			[
+				'post_author'    => 1,
+				'comment_author' => 'Ann',
+			],
+			[
+				'post_author'    => 2,
+				'comment_author' => 'Bob',
+			],
+			[ 'post_author', 'comment_author' ]
+		);
+
+		$this->assertSame(
+			[ self::item( 'post_author', '1', '2' ), self::item( 'comment_author', 'Ann', 'Bob' ) ],
+			$changes
+		);
 	}
 
 	public function test_credential_like_names_are_redacted_on_both_sides(): void {
@@ -371,6 +413,80 @@ final class ChangeSetTest extends TestCase {
 
 		$this->assertIsString( $out );
 		$this->assertTrue( mb_check_encoding( $out, 'UTF-8' ) );
+	}
+
+	public function test_a_self_referencing_array_is_cut_off_instead_of_recursing_forever(): void {
+		$a         = [ 'k' => 'v' ];
+		$a['self'] = &$a;
+
+		$out = ChangeSet::stringify( $a );
+
+		$this->assertIsString( $out );
+		$this->assertLessThanOrEqual( 1024, mb_strlen( $out, 'UTF-8' ) );
+		$this->assertStringContainsString( '…', $out );
+		$this->assertSame( [ 'k', 'self' ], array_keys( $a ), 'the input must not be modified' );
+	}
+
+	public function test_a_self_referencing_list_is_cut_off_too(): void {
+		$list   = [ 'a' ];
+		$list[] = &$list;
+
+		$out = ChangeSet::stringify( $list );
+
+		$this->assertIsString( $out );
+		$this->assertStringContainsString( '…', $out );
+	}
+
+	public function test_very_deep_nesting_is_cut_to_an_ellipsis(): void {
+		$deep = 'leaf';
+		for ( $i = 0; $i < 30; $i++ ) {
+			$deep = [ 'a' => $deep ];
+		}
+
+		$out = ChangeSet::stringify( $deep );
+
+		$this->assertStringContainsString( '"…"', $out );
+		$this->assertStringNotContainsString( 'leaf', $out );
+	}
+
+	public function test_ordinary_nesting_is_not_cut(): void {
+		$deep = 1;
+		for ( $i = 0; $i < 5; $i++ ) {
+			$deep = [ 'a' => $deep ];
+		}
+
+		$this->assertSame( '{"a":{"a":{"a":{"a":{"a":1}}}}}', ChangeSet::stringify( $deep ) );
+	}
+
+	public function test_invalid_utf8_in_a_string_is_replaced(): void {
+		$out = ChangeSet::stringify( "bad\xB1end" );
+
+		$this->assertSame( "bad\u{FFFD}end", $out );
+		$this->assertTrue( mb_check_encoding( $out, 'UTF-8' ) );
+	}
+
+	public function test_valid_multibyte_strings_pass_through_untouched(): void {
+		$this->assertSame( 'árvíztűrő tükörfúrógép', ChangeSet::stringify( 'árvíztűrő tükörfúrógép' ) );
+	}
+
+	public function test_invalid_utf8_never_reaches_a_reported_value(): void {
+		$changes = ChangeSet::diff(
+			[ 'a' => "x\xB1" ],
+			[
+				'a'    => "y\xB1",
+				'list' => [ "z\xB1" ],
+			],
+			[ 'a', 'list' ]
+		);
+
+		$this->assertCount( 2, $changes );
+		foreach ( $changes as $change ) {
+			foreach ( [ 'old', 'new' ] as $side ) {
+				if ( null !== $change[ $side ] ) {
+					$this->assertTrue( mb_check_encoding( $change[ $side ], 'UTF-8' ), $change['field'] . ' ' . $side );
+				}
+			}
+		}
 	}
 
 	// ---- merge ---------------------------------------------------------

@@ -21,7 +21,17 @@ final class SensitiveOption {
 
 	public const REDACTED = '[redacted]';
 
-	private const PATTERN = '/key|secret|token|pass(word)?|pwd|credential|private|license|licence|salt|auth/i';
+	/**
+	 * Credential-like fragments, matched anywhere in the name.
+	 *
+	 * `auth` covers auth_key, oauth_*, authorization, authorize_url,
+	 * authorised_*, authentication… but must not swallow `author`/`authors`
+	 * (post_author, comment_author_email, author_id): those are ordinary
+	 * content fields. The lookahead skips `auth` only when it is the whole
+	 * word `author(s)`; `authorization`, `authorise` and the like keep
+	 * matching because a letter follows `author`/`authors`.
+	 */
+	private const PATTERN = '/key|secret|token|pass(word)?|pwd|credential|private|license|licence|salt|auth(?!ors?(?![a-z]))/i';
 
 	public static function is_sensitive( string $option ): bool {
 		return 1 === preg_match( self::PATTERN, $option );

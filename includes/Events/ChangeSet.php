@@ -21,9 +21,10 @@ defined( 'ABSPATH' ) || exit;
  * and the list is always 0-indexed. Values are strings or null — never numbers
  * or booleans — and are cut to {@see self::MAX_VALUE_LENGTH} characters.
  *
- * Two kinds of item carry no readable values: fields that hold content or a
- * password (both sides null) and credential-like names (both sides masked).
- * They only say "this field changed".
+ * Some items carry no readable values and only say "this field changed":
+ * fields that hold content or a password (both sides null), credential-like
+ * names (both sides masked) and long values whose cut-off texts would look
+ * identical (both sides null).
  */
 final class ChangeSet {
 
@@ -31,6 +32,12 @@ final class ChangeSet {
 	public const MAX_VALUE_LENGTH = 1024;
 
 	private const ELLIPSIS = '…';
+
+	/**
+	 * Deepest array level that is still written out; anything below becomes
+	 * `…`. Keeps a self-referencing array from recursing forever.
+	 */
+	private const MAX_DEPTH = 10;
 
 	/**
 	 * Fields whose value is a password hash. Never sent, not even masked.
@@ -83,8 +90,14 @@ final class ChangeSet {
 				$old = SensitiveOption::REDACTED;
 				$new = SensitiveOption::REDACTED;
 			} else {
-				$old = self::truncate( $old );
-				$new = self::truncate( $new );
+				$old_cut = self::truncate( $old );
+				$new_cut = self::truncate( $new );
+
+				// Values that only differ past the cut-off would read as "no
+				// change" (and merge() would drop them), so they become a
+				// plain "changed" flag instead.
+				$old = $old_cut === $new_cut ? null : $old_cut;
+				$new = $old_cut === $new_cut ? null : $new_cut;
 			}
 
 			$changes[] = [
@@ -118,10 +131,10 @@ final class ChangeSet {
 	 * it keeps the position of its first appearance. A field whose final `old`
 	 * equals its final `new` has returned to where it started and is dropped.
 	 *
-	 * Items that carry no values — content and password fields (null/null) and
-	 * masked credentials (`[redacted]` on both sides) — look like "no change"
-	 * but are not: folding can't tell whether they returned to the start, so
-	 * they stay.
+	 * Items that carry no values — content and password fields and long values
+	 * cut to the same text (null/null), masked credentials (`[redacted]` on
+	 * both sides) — look like "no change" but are not: folding can't tell
+	 * whether they returned to the start, so they stay.
 	 *
 	 * @param array<int, array{field: string, old: ?string, new: ?string}> $a Earlier changes.
 	 * @param array<int, array{field: string, old: ?string, new: ?string}> $b Later changes.
@@ -180,9 +193,10 @@ final class ChangeSet {
 	/**
 	 * Full, untruncated text of a value — what two snapshots are compared on.
 	 *
-	 * @param mixed $v Any value.
+	 * @param mixed $v     Any value.
+	 * @param int   $depth Array nesting level of `$v`.
 	 */
-	private static function normalize( $v ): ?string {
+	private static function normalize( $v, int $depth = 0 ): ?string {
 		if ( null === $v ) {
 			return null;
 		}
@@ -193,17 +207,24 @@ final class ChangeSet {
 			// Casting NAN/INF to string raises a warning on newer PHP versions.
 			return is_nan( $v ) ? 'NAN' : ( $v > 0 ? 'INF' : '-INF' );
 		}
-		if ( is_int( $v ) || is_float( $v ) || is_string( $v ) ) {
+		if ( is_int( $v ) || is_float( $v ) ) {
 			return (string) $v;
+		}
+		if ( is_string( $v ) ) {
+			return self::scrub( $v );
 		}
 		if ( is_object( $v ) ) {
 			if ( $v instanceof \Stringable ) {
-				return (string) $v;
+				return self::scrub( (string) $v );
 			}
 			$v = get_object_vars( $v );
 		}
 		if ( is_array( $v ) ) {
-			return array_values( $v ) === $v ? self::join_list( $v ) : self::encode( $v );
+			if ( $depth > self::MAX_DEPTH ) {
+				return self::ELLIPSIS;
+			}
+
+			return self::is_list( $v ) ? self::join_list( $v, $depth ) : self::encode( $v, $depth );
 		}
 
 		// Resources and anything else without a readable form.
@@ -211,14 +232,33 @@ final class ChangeSet {
 	}
 
 	/**
+	 * Whether the keys are exactly 0..n-1 in order. Looks at the keys only, so
+	 * it stays cheap and safe on self-referencing arrays; `array_is_list()`
+	 * needs PHP 8.1.
+	 *
+	 * @param array<int|string, mixed> $data Array to inspect.
+	 */
+	private static function is_list( array $data ): bool {
+		$expected = 0;
+		foreach ( $data as $key => $unused ) {
+			if ( $key !== $expected++ ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
 	 * A list is a set for our purposes: sorted, so a reorder is not a change.
 	 *
-	 * @param array<int, mixed> $list List array.
+	 * @param array<int, mixed> $list  List array.
+	 * @param int               $depth Array nesting level of `$list`.
 	 */
-	private static function join_list( array $list ): string {
+	private static function join_list( array $list, int $depth ): string {
 		$parts = [];
 		foreach ( $list as $item ) {
-			$parts[] = self::normalize( $item ) ?? '';
+			$parts[] = self::normalize( $item, $depth + 1 ) ?? '';
 		}
 		sort( $parts, SORT_STRING );
 
@@ -229,41 +269,75 @@ final class ChangeSet {
 	 * JSON text of an associative array, keys sorted at every depth so the
 	 * same data always gives the same string.
 	 *
-	 * @param array<int|string, mixed> $data Associative array.
+	 * @param array<int|string, mixed> $data  Associative array.
+	 * @param int                      $depth Array nesting level of `$data`.
 	 */
-	private static function encode( array $data ): string {
-		// This helper must stay free of WordPress calls, so no wp_json_encode().
-		// phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
-		$json = json_encode(
-			self::sort_keys( $data ),
-			JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR
-		);
+	private static function encode( array $data, int $depth ): string {
+		$json = self::json( self::sort_keys( $data, $depth ) );
 
 		return false === $json ? '<complex>' : $json;
 	}
 
 	/**
 	 * Recursively sort the keys of every associative array. Lists keep their
-	 * order.
+	 * order. Builds a new array and never writes into the input, which may
+	 * hold references to the caller's own variables.
 	 *
-	 * @param mixed $v Any value.
+	 * @param mixed $v     Any value.
+	 * @param int   $depth Array nesting level of `$v`.
 	 *
 	 * @return mixed
 	 */
-	private static function sort_keys( $v ) {
+	private static function sort_keys( $v, int $depth ) {
 		if ( ! is_array( $v ) ) {
 			return $v;
 		}
+		if ( $depth > self::MAX_DEPTH ) {
+			return self::ELLIPSIS;
+		}
 
-		$is_list = array_values( $v ) === $v;
+		$sorted = [];
 		foreach ( $v as $key => $item ) {
-			$v[ $key ] = self::sort_keys( $item );
+			$sorted[ $key ] = self::sort_keys( $item, $depth + 1 );
 		}
-		if ( ! $is_list ) {
-			ksort( $v, SORT_STRING );
+		if ( ! self::is_list( $v ) ) {
+			ksort( $sorted, SORT_STRING );
 		}
 
-		return $v;
+		return $sorted;
+	}
+
+	/**
+	 * Replace bytes that are not valid UTF-8 with U+FFFD, the way the JSON
+	 * encoder does for array values, so every reported text is valid UTF-8.
+	 *
+	 * @param string $text Any text.
+	 */
+	private static function scrub( string $text ): string {
+		if ( mb_check_encoding( $text, 'UTF-8' ) ) {
+			return $text;
+		}
+
+		$json = self::json( $text );
+		$out  = false === $json ? null : json_decode( $json );
+
+		return is_string( $out ) ? $out : '';
+	}
+
+	/**
+	 * Compact, deterministic JSON that never fails on bad UTF-8.
+	 *
+	 * @param mixed $v Any value.
+	 *
+	 * @return string|false
+	 */
+	private static function json( $v ) {
+		// This helper must stay free of WordPress calls, so no wp_json_encode().
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.json_encode_json_encode
+		return json_encode(
+			$v,
+			JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_PARTIAL_OUTPUT_ON_ERROR
+		);
 	}
 
 	/**

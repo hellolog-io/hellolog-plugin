@@ -37,6 +37,55 @@ final class SensitiveOptionTest extends TestCase {
 		];
 	}
 
+	/**
+	 * @dataProvider auth_names
+	 */
+	public function test_authentication_names_are_sensitive( string $name ): void {
+		$this->assertTrue( SensitiveOption::is_sensitive( $name ) );
+	}
+
+	/**
+	 * @return array<string, array{string}>
+	 */
+	public static function auth_names(): array {
+		return [
+			'auth key'       => [ 'auth_key' ],
+			'authorization'  => [ 'woocommerce_x_authorization' ],
+			'authorize url'  => [ 'lw_x_authorize_url' ],
+			'authorise'      => [ 'lw_x_authorised_domains' ],
+			'authentication' => [ 'lw_x_authentication' ],
+			'oauth'          => [ 'lw_x_oauth_client' ],
+			'oauth token'    => [ 'lw_x_oauth_token' ],
+			'upper case'     => [ 'WOOCOMMERCE_AUTHORIZATION' ],
+			'authorization header' => [ 'authorization_header' ],
+		];
+	}
+
+	/**
+	 * @dataProvider author_names
+	 */
+	public function test_author_names_are_not_sensitive( string $name ): void {
+		$this->assertFalse( SensitiveOption::is_sensitive( $name ) );
+	}
+
+	/**
+	 * @return array<string, array{string}>
+	 */
+	public static function author_names(): array {
+		return [
+			'post author'          => [ 'post_author' ],
+			'comment author'       => [ 'comment_author' ],
+			'comment author email' => [ 'comment_author_email' ],
+			'comment author url'   => [ 'comment_author_url' ],
+			'author id'            => [ 'author_id' ],
+			'authors'              => [ 'authors' ],
+			'plain author'         => [ 'author' ],
+			'author with digits'   => [ 'author2' ],
+			'upper case'           => [ 'POST_AUTHOR' ],
+			'product author'       => [ 'woocommerce_product_author' ],
+		];
+	}
+
 	public function test_ordinary_names_are_not_sensitive(): void {
 		$this->assertFalse( SensitiveOption::is_sensitive( 'woocommerce_currency' ) );
 		$this->assertFalse( SensitiveOption::is_sensitive( 'woocommerce_calc_taxes' ) );
