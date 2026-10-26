@@ -105,9 +105,21 @@ final class OptionChangePolicy {
 			return [];
 		}
 
-		$method = strtoupper( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) );
+		$method = self::method_name( sanitize_text_field( wp_unslash( $_SERVER['REQUEST_METHOD'] ) ) );
 
-		return 1 === preg_match( '/^[A-Z][A-Z-]{0,19}$/', $method ) ? [ 'http_method' => $method ] : [];
+		return null === $method ? [] : [ 'http_method' => $method ];
+	}
+
+	/**
+	 * The upper-cased method when the text is a plain method word (letters
+	 * and hyphens, at most 20, nothing before or after it); null otherwise.
+	 *
+	 * @param string $method What the server reports as the request method.
+	 */
+	public static function method_name( string $method ): ?string {
+		$method = strtoupper( $method );
+
+		return 1 === preg_match( '/^[A-Z][A-Z-]{0,19}\z/D', $method ) ? $method : null;
 	}
 
 	/**

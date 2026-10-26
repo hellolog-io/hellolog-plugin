@@ -196,6 +196,39 @@ final class OptionChangePolicyTest extends TestCase {
 		];
 	}
 
+	/**
+	 * @dataProvider method_words
+	 *
+	 * @param string  $raw      What the server reports.
+	 * @param ?string $expected The method that is recorded, null for none.
+	 */
+	public function test_only_a_plain_method_word_is_recorded( string $raw, ?string $expected ): void {
+		$this->assertSame( $expected, OptionChangePolicy::method_name( $raw ) );
+	}
+
+	/**
+	 * @return array<string, array{0: string, 1: ?string}>
+	 */
+	public static function method_words(): array {
+		return [
+			'upper case'                 => [ 'POST', 'POST' ],
+			'lower case'                 => [ 'post', 'POST' ],
+			'mixed case'                 => [ 'Get', 'GET' ],
+			'a hyphenated method'        => [ 'VERSION-CONTROL', 'VERSION-CONTROL' ],
+			'a trailing newline'         => [ "POST\n", null ],
+			'a trailing newline, GET'    => [ "GET\n", null ],
+			'a leading newline'          => [ "\nPOST", null ],
+			'a trailing space'           => [ 'POST ', null ],
+			'an embedded space'          => [ 'PO ST', null ],
+			'punctuation'                => [ 'POST;x', null ],
+			'a leading hyphen'           => [ '-POST', null ],
+			'a digit'                    => [ 'POST2', null ],
+			'twenty letters'             => [ str_repeat( 'A', 20 ), str_repeat( 'A', 20 ) ],
+			'twenty-one letters'         => [ str_repeat( 'A', 21 ), null ],
+			'empty'                      => [ '', null ],
+		];
+	}
+
 	public function test_the_target_is_the_option_as_a_setting(): void {
 		$this->assertSame(
 			[

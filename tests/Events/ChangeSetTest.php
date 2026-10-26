@@ -463,6 +463,12 @@ final class ChangeSetTest extends TestCase {
 			'a connection string'    => [ 'mysql://root:hunter2@127.0.0.1:3306/shop', 'mysql://[redacted]@127.0.0.1:3306/shop' ],
 			'inside a longer text'   => [ 'Backup to sftp://bob:hunter2@files.example.com now', 'Backup to sftp://[redacted]@files.example.com now' ],
 			'two urls'               => [ 'http://a:b@one.example http://c:d@two.example', 'http://[redacted]@one.example http://[redacted]@two.example' ],
+			'an at sign in the password'        => [ 'mysql://root:p@ss@host/db', 'mysql://[redacted]@host/db' ],
+			'two at signs in the password'      => [ 'mysql://root:p@ss@word@host:3306/db', 'mysql://[redacted]@host:3306/db' ],
+			'an at sign and a colon'            => [ 'amqp://guest:p:a@ss@broker.example.com:5672', 'amqp://[redacted]@broker.example.com:5672' ],
+			'an at sign, no path'               => [ 'redis://:p@ss@cache.example.com', 'redis://[redacted]@cache.example.com' ],
+			'an at sign, the query follows'     => [ 'https://bob:p@ss@api.example.com?x=1', 'https://[redacted]@api.example.com?x=1' ],
+			'an at sign, then a text'           => [ 'Restore from sftp://bob:p@ss@files.example.com now, please', 'Restore from sftp://[redacted]@files.example.com now, please' ],
 		];
 	}
 
@@ -567,11 +573,13 @@ final class ChangeSetTest extends TestCase {
 		);
 	}
 
-	public function test_a_json_string_without_secrets_is_reported_as_it_was_written(): void {
-		$text = '{ "title": "Card",  "enabled": true }';
-
-		$this->assertSame( $text, ChangeSet::stringify( $text ) );
-		$this->assertSame( '[1, 2, 3]', ChangeSet::stringify( '[1, 2, 3]' ) );
+	/**
+	 * A decoded JSON text is always written out again, never passed through as
+	 * it came: where nothing is masked it is only compact JSON with sorted keys.
+	 */
+	public function test_a_json_string_without_secrets_is_reported_as_compact_json(): void {
+		$this->assertSame( '{"enabled":true,"title":"Card"}', ChangeSet::stringify( '{ "title": "Card",  "enabled": true }' ) );
+		$this->assertSame( '[1,2,3]', ChangeSet::stringify( '[1, 2, 3]' ) );
 	}
 
 	public function test_text_that_only_looks_like_json_is_untouched(): void {
@@ -620,6 +628,144 @@ final class ChangeSetTest extends TestCase {
 		ChangeSet::diff( [ 'x' => $probe . ' ' ], [ 'x' => $probe ], [ 'x' ] );
 
 		$this->assertFalse( UnserializeProbe::$woken );
+	}
+
+	/**
+	 * Nesting deeper than the reported depth is cut to `…`, and the cut must
+	 * not hand back the raw text it replaced.
+	 *
+	 * @return array<string, array{0: string}> A JSON text with `%s` where the secret goes.
+	 */
+	public static function deeply_nested_json(): array {
+		$secret = '{"apiKey":"%s"}';
+
+		return [
+			'objects, secret at depth 11'    => [ str_repeat( '{"a":', 10 ) . $secret . str_repeat( '}', 10 ) ],
+			'objects, secret at depth 12'    => [ str_repeat( '{"a":', 11 ) . $secret . str_repeat( '}', 11 ) ],
+			'objects, secret at depth 15'    => [ str_repeat( '{"a":', 14 ) . $secret . str_repeat( '}', 14 ) ],
+			'objects, secret at depth 40'    => [ str_repeat( '{"a":', 39 ) . $secret . str_repeat( '}', 39 ) ],
+			'lists, secret at depth 11'      => [ str_repeat( '[', 10 ) . $secret . str_repeat( ']', 10 ) ],
+			'lists, secret at depth 15'      => [ str_repeat( '[', 14 ) . $secret . str_repeat( ']', 14 ) ],
+			'mixed, secret at depth 13'      => [ str_repeat( '{"a":[', 6 ) . $secret . str_repeat( ']}', 6 ) ],
+			'a password key, depth 12'       => [ str_repeat( '{"a":', 11 ) . '{"note":"x","password":"%s"}' . str_repeat( '}', 11 ) ],
+		];
+	}
+
+	/**
+	 * @dataProvider deeply_nested_json
+	 *
+	 * @param string $template JSON text with `%s` where the secret goes.
+	 */
+	public function test_a_secret_below_the_depth_limit_of_a_json_text_is_never_reported( string $template ): void {
+		$reported = (string) ChangeSet::stringify( sprintf( $template, 'SECRETVALUE' ) );
+
+		$this->assertStringNotContainsString( 'SECRETVALUE', $reported );
+		$this->assertStringNotContainsString( 'apiKey', $reported );
+		$this->assertStringContainsString( '…', $reported );
+	}
+
+	/**
+	 * @dataProvider deeply_nested_json
+	 *
+	 * @param string $template JSON text with `%s` where the secret goes.
+	 */
+	public function test_a_secret_below_the_depth_limit_never_leaves_through_a_diff( string $template ): void {
+		$changes = ChangeSet::diff(
+			[ 'gateway_json' => sprintf( $template, 'OLDSECRET' ) ],
+			[ 'gateway_json' => sprintf( $template, 'NEWSECRET' ) ],
+			[ 'gateway_json' ]
+		);
+
+		$this->assertSame( [ self::item( 'gateway_json', null, null ) ], $changes );
+		$json = (string) json_encode( $changes );
+		$this->assertStringNotContainsString( 'OLDSECRET', $json );
+		$this->assertStringNotContainsString( 'NEWSECRET', $json );
+	}
+
+	/**
+	 * @dataProvider deeply_nested_json
+	 *
+	 * @param string $template JSON text with `%s` where the secret goes.
+	 */
+	public function test_a_secret_below_the_depth_limit_stays_out_next_to_a_visible_change( string $template ): void {
+		$changes = ChangeSet::diff(
+			[ 'gateway_json' => sprintf( $template, 'OLDSECRET' ) ],
+			[ 'gateway_json' => '{"changed":"yes"}' ],
+			[ 'gateway_json' ]
+		);
+
+		$this->assertCount( 1, $changes );
+		$json = (string) json_encode( $changes );
+		$this->assertStringNotContainsString( 'OLDSECRET', $json );
+		$this->assertSame( '{"changed":"yes"}', $changes[0]['new'] );
+	}
+
+	/**
+	 * Past the decoder's own nesting limit the text cannot be read, so it is
+	 * never reported as written: a secret in front of the nesting would go
+	 * out with it.
+	 */
+	public function test_a_json_text_nested_beyond_the_decoder_limit_is_cut_not_passed_through(): void {
+		$text = '{"apiKey":"SECRETVALUE","a":' . str_repeat( '{"a":', 520 ) . '1' . str_repeat( '}', 520 ) . '}';
+
+		$this->assertSame( '…', ChangeSet::stringify( $text ) );
+
+		$changes = ChangeSet::diff(
+			[ 'gateway_json' => $text ],
+			[ 'gateway_json' => str_replace( 'SECRETVALUE', 'OTHERVALUE', $text ) ],
+			[ 'gateway_json' ]
+		);
+		$this->assertSame( [ self::item( 'gateway_json', null, null ) ], $changes );
+	}
+
+	/**
+	 * A JSON text that is itself written as a JSON string literal: the
+	 * decoded value is again a JSON object or list.
+	 */
+	public function test_a_double_encoded_json_string_has_its_secrets_masked(): void {
+		$once  = (string) json_encode( [ 'apiKey' => 'S', 'enabled' => 'yes' ] );
+		$twice = (string) json_encode( $once );
+
+		$this->assertSame( '{"apiKey":"[redacted]","enabled":"yes"}', ChangeSet::stringify( $twice ) );
+		$this->assertSame( '"{\"apiKey\":\"S\"}"', (string) json_encode( '{"apiKey":"S"}' ), 'The fixture is a string literal holding JSON.' );
+		$this->assertSame( '{"apiKey":"[redacted]"}', ChangeSet::stringify( '"{\"apiKey\":\"S\"}"' ) );
+	}
+
+	public function test_a_triple_encoded_json_string_has_its_secrets_masked(): void {
+		$text = (string) json_encode( (string) json_encode( (string) json_encode( [ 'password' => 'S3CRET', 'ok' => 1 ] ) ) );
+
+		$reported = (string) ChangeSet::stringify( $text );
+
+		$this->assertStringNotContainsString( 'S3CRET', $reported );
+		$this->assertSame( '{"ok":1,"password":"[redacted]"}', $reported );
+	}
+
+	public function test_a_double_encoded_list_has_its_secrets_masked(): void {
+		$reported = (string) ChangeSet::stringify( '"[{\"token\":\"T\",\"n\":1}]"' );
+
+		$this->assertSame( '[{"n":1,"token":"[redacted]"}]', $reported );
+	}
+
+	public function test_a_double_encoded_secret_never_leaves_through_a_diff(): void {
+		$encode = static fn( string $secret ): string => (string) json_encode( (string) json_encode( [ 'apiKey' => $secret, 'enabled' => 'yes' ] ) );
+
+		$changes = ChangeSet::diff(
+			[ 'gateway_json' => $encode( 'OLDSECRET' ) ],
+			[ 'gateway_json' => $encode( 'NEWSECRET' ) ],
+			[ 'gateway_json' ]
+		);
+
+		$this->assertSame( [ self::item( 'gateway_json', null, null ) ], $changes );
+	}
+
+	public function test_a_json_string_literal_that_holds_plain_text_is_untouched(): void {
+		foreach ( [ '"hello"', '"a \"quoted\" word"', '"{not json}"', '"123"' ] as $text ) {
+			$this->assertSame( $text, ChangeSet::stringify( $text ) );
+		}
+	}
+
+	public function test_a_string_literal_holding_a_credential_url_is_masked(): void {
+		$this->assertSame( '"https://[redacted]@api.example.com/v1"', ChangeSet::stringify( '"https://bob:hunter2@api.example.com/v1"' ) );
 	}
 
 	public function test_a_key_that_is_not_a_credential_keeps_its_value(): void {

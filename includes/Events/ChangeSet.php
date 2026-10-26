@@ -41,10 +41,12 @@ final class ChangeSet {
 	private const ELLIPSIS = '…';
 
 	/**
-	 * The `user:password@` part of a URL (`scheme://` and the first `@` with
-	 * no `/`, `?`, `#` or space between), captured after the scheme.
+	 * The `user:password@` part of a URL: everything after `scheme://` up to
+	 * the LAST `@` before the first `/`, `?`, `#` or space (the authority
+	 * ends there). Greedy on purpose: a password may hold `@` itself
+	 * (`mysql://root:p@ss@host/db`), and the host never does.
 	 */
-	private const URL_USERINFO = '~([a-z][a-z0-9+.\-]*://)[^/?#\s@]+@~i';
+	private const URL_USERINFO = '~([a-z][a-z0-9+.\-]*://)[^\s/?#]*@~i';
 
 	/**
 	 * Deepest array level that is still written out; anything below becomes
@@ -380,45 +382,63 @@ final class ChangeSet {
 	/**
 	 * A string can carry secrets of its own, in two shapes.
 	 *
-	 * Text that is a JSON object or list is decoded, masked with the same
-	 * credential-like-key rule as an array and written out again, but only
-	 * when something was masked, so ordinary JSON keeps the spelling it was
-	 * saved with. Any other text only has the `user:password@` part of its
-	 * URLs masked. PHP-serialized text is NOT unserialized: that can
+	 * Text that is a JSON object or list (also one written as a JSON string
+	 * literal, once or several times over) is decoded, masked with the same
+	 * credential-like-key rule as an array and ALWAYS written out again as
+	 * compact JSON with sorted keys. It is never passed through as written,
+	 * not even when nothing was masked: below the depth limit the structure
+	 * is cut to `…` before any key could be seen, so only the rewrite keeps
+	 * the raw text out. Any other text only has the `user:password@` part of
+	 * its URLs masked. PHP-serialized text is NOT unserialized: that can
 	 * instantiate objects chosen by whoever wrote the value.
 	 *
 	 * @param string $text  Valid UTF-8 text.
 	 * @param int    $depth Array nesting level of the value.
 	 */
 	private static function mask_text( string $text, int $depth ): string {
-		$decoded = self::decode_json( $text );
+		$too_deep = false;
+		$decoded  = self::decode_json( $text, $too_deep );
+		if ( $too_deep ) {
+			return self::ELLIPSIS;
+		}
 		if ( null === $decoded ) {
 			return preg_replace( self::URL_USERINFO, '$1' . SensitiveOption::REDACTED . '@', $text ) ?? SensitiveOption::REDACTED;
 		}
 
-		$plain  = self::json( self::sort_keys( $decoded, $depth + 1, false ) );
 		$masked = self::json( self::sort_keys( $decoded, $depth + 1, true ) );
-		if ( false === $masked ) {
-			return SensitiveOption::REDACTED;
-		}
 
-		return $plain === $masked ? $text : $masked;
+		return false === $masked ? SensitiveOption::REDACTED : $masked;
 	}
 
 	/**
-	 * The array or object a text is the JSON of; null for anything else.
+	 * The array or object a text is the JSON of; null for anything else. A
+	 * JSON string literal whose value is such a text counts too (a value
+	 * that was JSON-encoded twice), up to {@see self::MAX_DEPTH} times over.
 	 *
-	 * @param string $text Any text.
+	 * Text nested deeper than the decoder allows cannot be read at all; that
+	 * is reported through `$too_deep` and the caller must not pass it on.
+	 *
+	 * @param string $text     Any text.
+	 * @param bool   $too_deep Set to true when the text is JSON the decoder refused for its depth.
+	 * @param int    $level    How many string literals were already unwrapped.
 	 *
 	 * @return array<int|string, mixed>|null
 	 */
-	private static function decode_json( string $text ): ?array {
+	private static function decode_json( string $text, bool &$too_deep, int $level = 0 ): ?array {
 		$first = ltrim( $text )[0] ?? '';
+		if ( '"' === $first && $level < self::MAX_DEPTH ) {
+			$inner = json_decode( $text, true, 512, JSON_BIGINT_AS_STRING );
+
+			return is_string( $inner ) ? self::decode_json( $inner, $too_deep, $level + 1 ) : null;
+		}
 		if ( '{' !== $first && '[' !== $first ) {
 			return null;
 		}
 
 		$decoded = json_decode( $text, true, 512, JSON_BIGINT_AS_STRING );
+		if ( null === $decoded && JSON_ERROR_DEPTH === json_last_error() ) {
+			$too_deep = true;
+		}
 
 		return is_array( $decoded ) ? $decoded : null;
 	}
