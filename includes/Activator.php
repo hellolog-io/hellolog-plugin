@@ -45,6 +45,37 @@ final class Activator {
 	];
 
 	/**
+	 * Hook the network site lifecycle: a site created while the plugin is
+	 * network-active is set up (priority 100, after core has created the
+	 * site's own tables), and a deleted site's queue table is dropped with
+	 * its other tables.
+	 */
+	public static function register(): void {
+		add_action( 'wp_initialize_site', [ self::class, 'initialize_site' ], 100, 1 );
+		add_filter( 'wpmu_drop_tables', [ self::class, 'drop_with_site' ], 10, 2 );
+	}
+
+	/**
+	 * The tables WordPress drops when it deletes a site, plus that site's
+	 * queue table.
+	 *
+	 * @param mixed $tables  Names of the site's tables.
+	 * @param mixed $site_id Id of the site being deleted.
+	 * @return array<int, string>
+	 */
+	public static function drop_with_site( $tables, $site_id ): array {
+		global $wpdb;
+
+		$tables = array_values( (array) $tables );
+		$queue  = $wpdb->get_blog_prefix( (int) $site_id ) . self::TABLE_BASENAME;
+		if ( ! in_array( $queue, $tables, true ) ) {
+			$tables[] = $queue;
+		}
+
+		return $tables;
+	}
+
+	/**
 	 * Activation hook.
 	 *
 	 * @param bool $network_wide Whether the plugin is activated for the whole network.

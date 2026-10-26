@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Tests\Queue;
 
 use HelloLog\Activator;
+use HelloLog\Tests\Events\Fixtures\WpCalls;
 use HelloLog\Tests\Queue\Fixtures\FakeWpdb;
 use HelloLog\Tests\Queue\Fixtures\NetworkState;
 use PHPUnit\Framework\TestCase;
@@ -108,5 +109,50 @@ final class ActivatorTest extends TestCase {
 		Activator::initialize_site( new \WP_Site( 901, 2 ) );
 
 		$this->assertSame( [ 'wp_901_hellolog_queue' ], $this->wpdb->tables );
+	}
+
+	public function test_the_site_hooks_are_registered(): void {
+		require_once __DIR__ . '/../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../Events/Fixtures/wordpress-hook-functions.php';
+
+		Activator::register();
+
+		$this->assertSame(
+			[
+				'priority'      => 100,
+				'accepted_args' => 1,
+			],
+			WpCalls::$hooks['wp_initialize_site'] ?? null,
+			'After core has created the site (priority 10).'
+		);
+		$this->assertSame(
+			[
+				'priority'      => 10,
+				'accepted_args' => 2,
+			],
+			WpCalls::$hooks['wpmu_drop_tables'] ?? null
+		);
+	}
+
+	/**
+	 * The main plugin file cannot be loaded here (it defines the version and
+	 * loads the bundled scheduler), so its one call is checked as written.
+	 */
+	public function test_the_main_plugin_file_registers_the_site_hooks(): void {
+		$main = (string) file_get_contents( dirname( __DIR__, 2 ) . '/hellolog.php' );
+
+		$this->assertContains( '\HelloLog\Activator::register();', array_map( 'trim', explode( "\n", $main ) ) );
+	}
+
+	public function test_deleting_a_site_drops_its_queue_table_too(): void {
+		$this->assertSame(
+			[ 'wp_7_posts', 'wp_7_options', 'wp_7_hellolog_queue' ],
+			Activator::drop_with_site( [ 'wp_7_posts', 'wp_7_options' ], 7 )
+		);
+		$this->assertSame(
+			[ 'wp_7_hellolog_queue' ],
+			Activator::drop_with_site( [ 'wp_7_hellolog_queue' ], 7 ),
+			'A table already listed is not listed twice.'
+		);
 	}
 }
