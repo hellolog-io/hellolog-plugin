@@ -60,12 +60,18 @@ final class ContentSensorTest extends TestCase {
 			'pending to auto-draft'     => [ 'auto-draft', 'pending', 2013 ],
 			'private to auto-draft'     => [ 'auto-draft', 'private', 2013 ],
 			'future to auto-draft'      => [ 'auto-draft', 'future', 2013 ],
+			// Out of the trash into the placeholder state WordPress deletes on its
+			// own: that is the silent deletion "reverted" exists to flag.
 			'trash to auto-draft'       => [ 'auto-draft', 'trash', 2013 ],
 			'custom to auto-draft'      => [ 'auto-draft', 'acf-disabled', 2013 ],
-			'publish to auto-draft'     => [ 'auto-draft', 'publish', 2002 ],
-			'trash to publish'          => [ 'publish', 'trash', 2001 ],
+			'publish to auto-draft'     => [ 'auto-draft', 'publish', 2013 ],
+			'trash to publish'          => [ 'publish', 'trash', 2004 ],
 			'private to publish'        => [ 'publish', 'private', 2001 ],
-			'trash to draft'            => [ 'draft', 'trash', 0 ],
+			'trash to draft'            => [ 'draft', 'trash', 2004 ],
+			'trash to pending'          => [ 'pending', 'trash', 2004 ],
+			'trash to private'          => [ 'private', 'trash', 2004 ],
+			'trash to inherit'          => [ 'inherit', 'trash', 2004 ],
+			'trash to an order status'  => [ 'wc-processing', 'trash', 2004 ],
 			'auto-draft to inherit'     => [ 'inherit', 'auto-draft', 0 ],
 		];
 	}
@@ -141,10 +147,10 @@ final class ContentSensorTest extends TestCase {
 	public static function owned_type_codes(): array {
 		$cases = [];
 		foreach ( ContentSensor::OWNED_ELSEWHERE as $type ) {
-			foreach ( [ 2003, 2004 ] as $code ) {
+			foreach ( [ 2003, 2004, 2013 ] as $code ) {
 				$cases[ $type . ' ' . $code ] = [ $type, $code, true ];
 			}
-			foreach ( [ 2000, 2001, 2002, 2005, 2006, 2013 ] as $code ) {
+			foreach ( [ 2000, 2001, 2002, 2005, 2006 ] as $code ) {
 				$cases[ $type . ' ' . $code ] = [ $type, $code, false ];
 			}
 		}
@@ -154,11 +160,12 @@ final class ContentSensorTest extends TestCase {
 
 	/**
 	 * The store sensors report products, coupons and orders in their own
-	 * words, but not their trash and restore: those stay with this sensor.
+	 * words, but not their trash, restore or revert to auto-draft: those
+	 * stay with this sensor.
 	 *
 	 * @dataProvider owned_type_codes
 	 */
-	public function test_types_owned_elsewhere_keep_only_trash_and_restore( string $post_type, int $code, bool $expected ): void {
+	public function test_types_owned_elsewhere_keep_only_trash_restore_and_revert( string $post_type, int $code, bool $expected ): void {
 		$this->assertSame( $expected, ContentSensor::is_tracked_type( $post_type, true, $code, true ) );
 	}
 
@@ -542,6 +549,192 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
+	 * The REST API has no restore route: the block editor's Restore sends a
+	 * plain status update (`{"status":"draft"}`), so the status change is
+	 * the only sign of the restore.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_restore_through_a_status_update_is_logged_once(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$draft = $post( [ 'post_status' => 'draft' ] );
+				$sensor->on_status( 'draft', 'trash', $draft );
+				$sensor->on_updated( 7, $draft, $post( [ 'post_status' => 'trash' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				'type'  => 'post',
+				'id'    => '7',
+				'label' => 'Hello',
+			],
+			$calls[0][1]['target']
+		);
+		$this->assertSame( 'draft', $calls[0][1]['post']['status'] );
+		$this->assertSame(
+			[ 'edit' => 'https://example.test/wp-admin/post.php?post=7&action=edit' ],
+			$calls[0][1]['links']
+		);
+	}
+
+	/**
+	 * `wp_untrash_post()` fires `untrash_post`, changes the status (which
+	 * fires the status change) and then fires `untrashed_post`: one restore,
+	 * one event, still telling the status the post had before the trash.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_wp_untrash_post_logs_one_restore_with_the_previous_status(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$draft             = $post( [ 'post_status' => 'draft' ] );
+				WpState::$posts[7] = $draft;
+
+				$sensor->on_untrash( 7, 'publish' );
+				$sensor->on_status( 'draft', 'trash', $draft );
+				$sensor->on_updated( 7, $draft, $post( [ 'post_status' => 'trash' ] ) );
+				$sensor->on_untrashed( 7, 'publish' );
+			}
+		);
+
+		$this->assertSame( [ 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame( 'publish', $calls[0][1]['metadata']['previous_status'] );
+		$this->assertSame( '7', $calls[0][1]['target']['id'] );
+	}
+
+	/**
+	 * Trashed and restored twice in one request: two restores, each once.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_each_restore_of_a_request_is_logged_once(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$draft             = $post( [ 'post_status' => 'draft' ] );
+				WpState::$posts[7] = $draft;
+
+				$sensor->on_untrash( 7, 'publish' );
+				$sensor->on_status( 'draft', 'trash', $draft );
+				$sensor->on_untrashed( 7, 'publish' );
+
+				$sensor->on_status( 'trash', 'draft', $post( [ 'post_status' => 'trash' ] ) );
+				$sensor->on_status( 'draft', 'trash', $draft );
+			}
+		);
+
+		$this->assertSame( [ 2004, 2003, 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame( 'publish', $calls[0][1]['metadata']['previous_status'] );
+		$this->assertArrayNotHasKey( 'previous_status', $calls[2][1]['metadata'] );
+	}
+
+	/**
+	 * A restore through a status update leaves nothing behind: a later
+	 * `untrashed_post` of its own (fired by some plugin) is still logged.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_status_update_restore_does_not_swallow_a_later_untrashed_post(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$draft             = $post( [ 'post_status' => 'draft' ] );
+				WpState::$posts[7] = $draft;
+
+				$sensor->on_status( 'draft', 'trash', $draft );
+				$sensor->on_untrashed( 7, 'publish' );
+			}
+		);
+
+		$this->assertSame( [ 2004, 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame( 'publish', $calls[1][1]['metadata']['previous_status'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_both_restore_hooks_are_registered_with_the_previous_status(): void {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+		$this->run_hook( static fn( ContentSensor $sensor ) => $sensor->boot() );
+
+		foreach ( [ 'untrash_post', 'untrashed_post' ] as $hook ) {
+			$this->assertSame( 2, WpState::$actions[ $hook ]['accepted_args'] ?? null, $hook );
+		}
+	}
+
+	/**
+	 * A trashed post sent to `auto-draft` is cleaned up by WordPress later
+	 * without a trace: it is logged as reverted, not as restored.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_trashed_post_sent_to_auto_draft_is_reverted_not_restored(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_status( 'auto-draft', 'trash', $post( [ 'post_status' => 'auto-draft' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2013 ], array_column( $calls, 0 ) );
+	}
+
+	/**
+	 * No store sensor reports a product or an order sent to `auto-draft`,
+	 * where WordPress's cleanup deletes it unseen, so this one does.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_product_or_order_sent_to_auto_draft_is_logged_once_as_reverted(): void {
+		require_once __DIR__ . '/Fixtures/woocommerce-class.php';
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				foreach ( [ 'product' => 7, 'shop_order' => 9 ] as $type => $id ) {
+					foreach ( [ 'trash', 'publish' ] as $old ) {
+						$sensor->on_status( 'auto-draft', $old, $post( [ 'ID' => $id, 'post_type' => $type, 'post_status' => 'auto-draft' ] ) );
+					}
+				}
+			}
+		);
+
+		$this->assertSame( [ 2013, 2013, 2013, 2013 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[ 'post:7', 'post:7', 'post:9', 'post:9' ],
+			array_map( static fn( array $call ): string => $call[1]['target']['type'] . ':' . $call[1]['target']['id'], $calls )
+		);
+		$this->assertSame( [ 'product', 'product', 'shop_order', 'shop_order' ], array_map( static fn( array $call ): string => $call[1]['post']['type'], $calls ) );
+	}
+
+	/**
+	 * A product or coupon restored through the shop's REST API is a status
+	 * update too.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_product_or_coupon_restored_through_a_status_update_is_logged(): void {
+		require_once __DIR__ . '/Fixtures/woocommerce-class.php';
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_status( 'draft', 'trash', $post( [ 'post_type' => 'product', 'post_status' => 'draft' ] ) );
+				$sensor->on_status( 'publish', 'trash', $post( [ 'ID' => 8, 'post_type' => 'shop_coupon', 'post_status' => 'publish' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2004, 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 'product', 'shop_coupon' ], array_map( static fn( array $call ): string => $call[1]['post']['type'], $calls ) );
+	}
+
+	/**
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
@@ -708,7 +901,7 @@ final class ContentSensorTest extends TestCase {
 			}
 		);
 
-		$this->assertSame( [ 2013, 2002 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 2013, 2013 ], array_column( $calls, 0 ) );
 		$this->assertSame(
 			[
 				'type'  => 'post',

@@ -96,7 +96,8 @@ This version requires the HelloLog service release from October 2026 or later.
   from template variables.
 * New: WooCommerce order notes are logged with their text and type
   (customer, private, system or status).
-* New: Posts reverted to auto-draft are now logged.
+* New: Posts reverted to auto-draft are now logged, from any status, also
+  for WooCommerce products and coupons.
 * New: A post update also records changes to the publish date, the menu
   order and password protection (whether a password is set, never the
   password itself).
@@ -106,12 +107,19 @@ This version requires the HelloLog service release from October 2026 or later.
   event wins — an order note is no longer logged twice, plain status notes
   fold into the order status change, and publishing a new post logs
   "published".
-* Change: Settings changes record the HTTP method.
+* Change: Plugin settings changes (WooCommerce, Rank Math, Yoast SEO, Termly,
+  LW plugins) record the HTTP method.
 * Change: Comment events cover comments, pingbacks, trackbacks, reviews and
   notes left on a post in the block editor.
 * Change: Profile edits that only touch the first or last name, the nickname
   or the biographical info are not logged yet; they will be in a later
   release.
+* Change: Event times are recorded to the millisecond.
+* Change: Long values in an event's details are cut to 1,024 characters.
+* Change: A sign-in with an application password is logged at most once an
+  hour per user, application password and IP address.
+* Fix: Requests authenticated with an application password no longer run
+  out of memory.
 * Fix: A new registration no longer logs a false role change.
 * Fix: Empty "post updated" events are dropped.
 * Fix: Plugins' own bookkeeping writes and background option changes are no
@@ -120,7 +128,23 @@ This version requires the HelloLog service release from October 2026 or later.
 * Fix: A two-factor login is no longer logged as "2FA enabled".
 * Fix: Menu changes are no longer logged twice.
 * Fix: WooCommerce products, orders and coupons are no longer also logged as
-  generic posts. Moving them to the trash and restoring them is still logged.
+  generic posts. Moving products and coupons to the trash and restoring them
+  is still logged.
+* Fix: Core settings changes record the setting and what changed, with
+  masked values: a password in a URL no longer reaches the log.
+* Fix: Restoring from the trash in the block editor or through the REST API
+  is logged.
+* Fix: Approving a comment no longer also logs an edit; an edit lists what
+  changed.
+* Fix: On multisite, every site gets its queue table (at network
+  activation, when it is created, or on its first event), so its events are
+  no longer lost. Events written while a site is being deleted are kept in
+  the main site's queue. Uninstalling removes the queue tables and helloLOG's
+  settings on every site; deleting a site removes its queue table.
+* Fix: Titles stored with HTML entities read as plain text in event targets
+  and messages.
+* Fix: Creating helloLOG's own queue table is no longer logged as a database
+  change.
 * Fix: On multisite, every event is queued on the site it happened on, also
   when a request switches between sites.
 * Fix: A privileged role assigned at registration is always logged.

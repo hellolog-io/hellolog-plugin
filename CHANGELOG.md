@@ -20,7 +20,8 @@ October 2026 or later.
 - WooCommerce order notes are logged with their text and type (customer,
   private, system or status). Orders get a target and a link to the order
   edit screen.
-- Posts reverted to auto-draft are now logged.
+- Posts reverted to auto-draft are now logged, from any status (a published
+  or trashed post included), for WooCommerce products and coupons too.
 - A post update also records changes to the publish date, the menu order and
   password protection (whether a password is set, never the password itself).
 - New `hellolog_suppression_rules` filter to add suppression, merge or
@@ -34,13 +35,22 @@ October 2026 or later.
   events of one save become one.
 - Publishing a new post logs one "published" event instead of "created"
   plus "published".
-- Settings changes record the HTTP method of the request that made them.
+- Plugin settings changes (WooCommerce, Rank Math, Yoast SEO, Termly and the
+  LW plugins) record the HTTP method of the request that made them; changes
+  made with WP-CLI have none.
 - Comment events cover comments, pingbacks, trackbacks, reviews and notes
   left on a post in the block editor.
 - Profile edits that only touch the first or last name, the nickname or the
   biographical info are not logged yet; they will be in a later release.
+- Event times are recorded to the millisecond.
+- Long values in an event's details are cut to 1,024 characters.
+- A sign-in with an application password is logged at most once an hour per
+  user, application password and IP address, so an integration that polls
+  the REST API no longer floods the log.
 
 ### Fixed
+- Requests authenticated with an application password (REST API or XML-RPC
+  clients, mobile apps, integrations) no longer run out of memory.
 - A new registration no longer logs a false role change.
 - "Post updated" events that changed nothing are dropped.
 - Writes that plugins make to their own bookkeeping options (queues,
@@ -51,7 +61,28 @@ October 2026 or later.
 - Deleting auto-drafts during WordPress' own cleanup is no longer logged.
 - Menu changes are no longer logged twice.
 - WooCommerce products, orders and coupons are no longer also logged as
-  generic posts. Moving them to the trash and restoring them is still logged.
+  generic posts. Moving products and coupons to the trash and restoring them
+  is still logged.
+- Changes to core settings (site title, tagline, site address, admin e-mail
+  and the other watched settings) record the setting as their target and
+  what changed, and their values are masked like those of plugin settings: a
+  password in a URL no longer reaches the log.
+- Restoring a post, page, product or coupon from the trash in the block
+  editor or through the REST API is now logged.
+- Approving a comment through the REST API (the block editor, apps) no longer
+  also logs "comment edited". An edit is logged only when the text or the
+  author's name, e-mail or URL changed, and lists what changed.
+- On multisite, network activation sets up every site (within a time limit,
+  and not on large networks), sites added later are set up when they are
+  created, and any site still without its queue table is set up on its
+  first event, so their events are no longer lost. Events written while a
+  site is being deleted are kept in the main site's queue. Uninstalling
+  removes the queue table and helloLOG's settings (the API key included) on
+  every site, and deleting a site removes its queue table.
+- Titles that WordPress stores with HTML entities (such as order titles)
+  read as plain text in event targets and messages.
+- Creating helloLOG's own queue table is no longer logged as a database
+  change.
 - On multisite, every event is queued on the site it happened on, also when
   a request switches between sites.
 - A privileged role assigned at registration is always logged.

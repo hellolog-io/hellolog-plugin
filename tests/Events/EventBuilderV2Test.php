@@ -86,6 +86,28 @@ final class EventBuilderV2Test extends TestCase {
 		$this->assertSame( 'cli', $builder->build( self::CODE )['source'] );
 	}
 
+	/**
+	 * The events of one request are ordered by when they happened, which
+	 * whole seconds cannot tell.
+	 */
+	public function test_occurred_at_carries_real_milliseconds_in_utc(): void {
+		$builder = $this->builder();
+		$before  = microtime( true );
+		$first   = $this->build( $builder )['occurred_at'];
+		usleep( 3000 );
+		$second = $this->build( $builder )['occurred_at'];
+
+		$format = '/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/D';
+		$this->assertMatchesRegularExpression( $format, $first );
+		$this->assertMatchesRegularExpression( $format, $second );
+		$this->assertNotSame( $first, $second, 'Two events 3 ms apart have different times.' );
+		$this->assertGreaterThan( $first, $second );
+
+		$read = \DateTimeImmutable::createFromFormat( 'Y-m-d\TH:i:s.v\Z', $first, new \DateTimeZone( 'UTC' ) );
+		$this->assertInstanceOf( \DateTimeImmutable::class, $read );
+		$this->assertEqualsWithDelta( $before, (float) $read->format( 'U.u' ), 1.0 );
+	}
+
 	public function test_unknown_code_returns_null(): void {
 		$this->assertNull( $this->builder()->build( 12345 ) );
 	}
@@ -363,6 +385,40 @@ final class EventBuilderV2Test extends TestCase {
 		$this->assertSame( 'Backup to sftp://[redacted]@files.example.com', $payload['target']['label'] );
 	}
 
+	/**
+	 * WordPress stores some titles with their entities (an order is titled
+	 * `Order &ndash; …`); a label is plain text.
+	 */
+	public function test_the_target_label_has_its_html_entities_decoded(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'target' => [
+					'type'  => 'post',
+					'id'    => '13',
+					'label' => 'Order &ndash; October 26, 2026 @ 10:00 AM &amp; Tom&#039;s &quot;gift&quot;',
+				],
+			]
+		);
+
+		$this->assertSame( 'Order – October 26, 2026 @ 10:00 AM & Tom\'s "gift"', $payload['target']['label'] );
+	}
+
+	public function test_the_target_label_is_decoded_before_it_is_cut(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'target' => [
+					'type'  => 'post',
+					'id'    => '13',
+					'label' => str_repeat( 'a', 250 ) . '&ndash;',
+				],
+			]
+		);
+
+		$this->assertSame( str_repeat( 'a', 250 ) . '–', $payload['target']['label'] );
+	}
+
 	public function test_the_target_label_is_masked_before_it_is_cut(): void {
 		// Cut first, the 254 characters would end inside the password, leaving
 		// a piece of it with no URL around it to be recognised by.
@@ -389,6 +445,18 @@ final class EventBuilderV2Test extends TestCase {
 		$this->assertSame( 'see https://[redacted]@h/x', $from_meta['metadata']['post_title'] );
 	}
 
+	/**
+	 * The title in the metadata reads like the label and the vars: plain
+	 * text, decoded before it is masked.
+	 */
+	public function test_the_metadata_title_has_its_html_entities_decoded_before_masking(): void {
+		$payload = $this->build( $this->builder(), [ 'title' => 'Order &ndash; Tom&#039;s &amp; co' ] );
+		$this->assertSame( 'Order – Tom\'s & co', $payload['metadata']['post_title'] );
+
+		$payload = $this->build( $this->builder(), [ 'metadata' => [ 'post_title' => 'see https://user:secretpw&#64;example.com/x' ] ] );
+		$this->assertSame( 'see https://[redacted]@example.com/x', $payload['metadata']['post_title'] );
+	}
+
 	public function test_vars_filled_from_template_fields(): void {
 		$payload = $this->build(
 			$this->builder(),
@@ -407,6 +475,39 @@ final class EventBuilderV2Test extends TestCase {
 			$payload['vars']
 		);
 		$this->assertSame( 'bob did x', $payload['message'] );
+	}
+
+	/**
+	 * WordPress stores some titles with their entities (`Order &ndash; …`);
+	 * a template value, and the message rendered from it, are plain text.
+	 */
+	public function test_template_values_have_their_html_entities_decoded(): void {
+		$payload = $this->build(
+			$this->builder( RequestSource::ADMIN, null, '{post_type} "{title}" moved to trash. {note}' ),
+			[
+				'post_type' => 'Shop order',
+				'title'     => 'Order &ndash; October 26, 2026 @ 10:00 AM',
+				'vars'      => [ 'note' => 'Tom&#039;s &amp; &quot;Jerry&quot;' ],
+			]
+		);
+
+		$this->assertSame( 'Order – October 26, 2026 @ 10:00 AM', $payload['vars']['title'] );
+		$this->assertSame( 'Tom\'s & "Jerry"', $payload['vars']['note'] );
+		$this->assertSame( 'Shop order "Order – October 26, 2026 @ 10:00 AM" moved to trash. Tom\'s & "Jerry"', $payload['message'] );
+	}
+
+	/**
+	 * Decoded first, then masked: an `@` written as an entity must not carry
+	 * a password past the masking.
+	 */
+	public function test_template_values_are_decoded_before_they_are_masked(): void {
+		$payload = $this->build(
+			$this->builder( RequestSource::ADMIN, null, 'Saved {url}' ),
+			[ 'url' => 'https://user:secretpw&#64;example.com/x' ]
+		);
+
+		$this->assertSame( 'https://[redacted]@example.com/x', $payload['vars']['url'] );
+		$this->assertStringNotContainsString( 'secretpw', $payload['message'] );
 	}
 
 	public function test_explicit_vars_win_over_template_fields(): void {
@@ -589,6 +690,88 @@ final class EventBuilderV2Test extends TestCase {
 
 		$this->assertSame( 512, mb_strlen( $payload['vars']['long'], 'UTF-8' ) );
 		$this->assertSame( str_repeat( 'é', 511 ) . '…', $payload['vars']['long'] );
+	}
+
+	/**
+	 * A setting can hold hundreds of kilobytes; its value must not ride along
+	 * whole in every event's metadata.
+	 */
+	public function test_a_long_metadata_string_is_cut_to_1024_characters(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'metadata' => [
+					'option' => 'blogdescription',
+					'new'    => str_repeat( 'a', 300 * 1024 ),
+				],
+			]
+		);
+
+		$this->assertSame( 'blogdescription', $payload['metadata']['option'] );
+		$this->assertSame( str_repeat( 'a', 1023 ) . '…', $payload['metadata']['new'] );
+	}
+
+	public function test_metadata_strings_are_cut_at_every_depth_and_on_a_character_boundary(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'metadata' => [
+					'providers' => [
+						'outer' => [ 'inner' => str_repeat( 'é', 2000 ) ],
+						'list'  => [ str_repeat( 'ő', 1025 ), 'short' ],
+					],
+				],
+			]
+		);
+
+		$this->assertSame( str_repeat( 'é', 1023 ) . '…', $payload['metadata']['providers']['outer']['inner'] );
+		$this->assertSame( str_repeat( 'ő', 1023 ) . '…', $payload['metadata']['providers']['list'][0] );
+		$this->assertSame( 'short', $payload['metadata']['providers']['list'][1] );
+		$this->assertTrue( mb_check_encoding( (string) json_encode( $payload ), 'UTF-8' ) );
+	}
+
+	public function test_metadata_that_is_not_too_long_is_left_as_it_is(): void {
+		$metadata = [
+			'count'   => 3,
+			'ratio'   => 1.5,
+			'enabled' => false,
+			'nothing' => null,
+			'exact'   => str_repeat( 'x', 1024 ),
+			'nested'  => [ 'a' => 'b' ],
+		];
+
+		$payload = $this->build( $this->builder(), [ 'metadata' => $metadata ] );
+
+		$this->assertSame( $metadata, $payload['metadata'] );
+	}
+
+	public function test_metadata_that_refers_to_itself_ends_in_an_ellipsis(): void {
+		$metadata         = [ 'a' => 'b' ];
+		$metadata['self'] = &$metadata;
+
+		$payload = $this->build( $this->builder(), [ 'metadata' => $metadata ] );
+
+		$level = $payload['metadata'];
+		for ( $i = 0; $i < 32; $i++ ) {
+			$this->assertSame( 'b', $level['a'] );
+			$level = $level['self'];
+		}
+		$this->assertSame( '…', $level['self'] );
+	}
+
+	/**
+	 * The secret is masked first, then the text is cut: cut first, a URL
+	 * split at the limit would lose the `@` that marks its password.
+	 */
+	public function test_a_metadata_title_is_masked_before_it_is_cut(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[ 'title' => str_repeat( 'x', 1000 ) . ' https://user:secretpw@example.com/' ],
+		);
+
+		$this->assertSame( 1024, mb_strlen( $payload['metadata']['post_title'], 'UTF-8' ) );
+		$this->assertStringNotContainsString( 'user:', $payload['metadata']['post_title'] );
+		$this->assertStringEndsWith( '…', $payload['metadata']['post_title'] );
 	}
 
 	public function test_v1_shape_when_no_v2_fields(): void {

@@ -11,6 +11,7 @@ namespace HelloLog\Sensors;
 
 use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\ChangeSet;
+use HelloLog\Events\RequestContext;
 use HelloLog\Events\RequestSource;
 
 defined( 'ABSPATH' ) || exit;
@@ -45,7 +46,7 @@ final class OptionChangePolicy {
 	 * `_marketplace_suggestions$` unless it follows `_show`
 	 * (`woocommerce_show_marketplace_suggestions` is a switch somebody flips).
 	 */
-	private const INTERNAL = '/(^_|_transient|_queue|_notifications?$|_notices$|_admin_notices?$|_tracks_|_cache|_locks?$|_log$|_bans$|_baseline$|_rev$|_done$|_skipped_|_version$|_db_version|_last_|_timestamp$|_onboarding|_task_list|(?<!_show)_marketplace_suggestions$|_admin_notes?|_dismissed|_flush_rewrite|_schema_version|_usage_tracking)/';
+	private const INTERNAL = '/(^_|_transient|_queue|_notifications?$|_notices$|_admin_notices?$|_tracks_|_cache|_locks?$|_log$|_bans$|_baseline$|_rev$|_done$|_skipped_|_version$|_db_version|_last_|_timestamp$|_onboarding|_task_list|(?<!_show)_marketplace_suggestions$|_admin_notes?|_dismissed|_flush_rewrite|_schema_version|_usage_tracking|_table_created$)/';
 
 	/**
 	 * Whether a write to an option should reach the log.
@@ -78,7 +79,9 @@ final class OptionChangePolicy {
 	 * {@see self::should_log()} for the request being served right now.
 	 *
 	 * The name check runs first: it is a plain string match and settles most
-	 * writes before the request is inspected.
+	 * writes before the request is inspected. A write made while WordPress is
+	 * still determining the current user has no signed-in person yet, and the
+	 * user is not read there, see {@see RequestContext::is_determining_user()}.
 	 *
 	 * @param string $option Option name.
 	 */
@@ -87,7 +90,7 @@ final class OptionChangePolicy {
 			return false;
 		}
 
-		$has_actor  = function_exists( 'get_current_user_id' ) && get_current_user_id() > 0;
+		$has_actor  = ! RequestContext::is_determining_user() && function_exists( 'get_current_user_id' ) && get_current_user_id() > 0;
 		$background = ( function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) || ActionSchedulerContext::is_running();
 
 		return self::should_log( $option, RequestSource::current(), $has_actor, $background );
@@ -95,13 +98,14 @@ final class OptionChangePolicy {
 
 	/**
 	 * What the event should say about the request itself: its HTTP method,
-	 * upper-cased, when there is one (a WP-CLI command has none). A value that
-	 * is not a plain method word is left out rather than sent.
+	 * upper-cased, when it is an HTTP request. A WP-CLI command has none,
+	 * although WP-CLI sets `REQUEST_METHOD` itself. A value that is not a
+	 * plain method word is left out rather than sent.
 	 *
 	 * @return array{http_method?: string}
 	 */
 	public static function request_metadata(): array {
-		if ( ! isset( $_SERVER['REQUEST_METHOD'] ) ) {
+		if ( ! isset( $_SERVER['REQUEST_METHOD'] ) || RequestSource::CLI === RequestSource::current() ) {
 			return [];
 		}
 

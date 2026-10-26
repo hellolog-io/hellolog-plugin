@@ -617,11 +617,12 @@ final class ChangeSet {
 	}
 
 	/**
-	 * Cut to {@see self::MAX_VALUE_LENGTH} characters, the `…` included.
+	 * Cut to {@see self::MAX_VALUE_LENGTH} characters, the `…` included, on a
+	 * character boundary. Nothing is masked here: mask first, then cut.
 	 *
 	 * @param ?string $value Text to cut.
 	 */
-	private static function truncate( ?string $value ): ?string {
+	public static function truncate( ?string $value ): ?string {
 		if ( null === $value || mb_strlen( $value, 'UTF-8' ) <= self::MAX_VALUE_LENGTH ) {
 			return $value;
 		}

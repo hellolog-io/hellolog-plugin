@@ -28,7 +28,8 @@ defined( 'ABSPATH' ) || exit;
 final class ContentSensor extends AbstractSensor {
 
 	/**
-	 * Post types that produce no post event here but trash and restore: store
+	 * Post types that produce no post event here but trash, restore and
+	 * revert to `auto-draft`: store
 	 * products, orders and coupons are reported by the store sensors in their
 	 * own words, attachments are excluded, and the rest are internal records
 	 * nobody edits (revisions, menu items, customizer drafts, embed caches,
@@ -54,12 +55,14 @@ final class ContentSensor extends AbstractSensor {
 
 	/**
 	 * The events of {@see self::OWNED_ELSEWHERE} types this sensor leaves to
-	 * their owners. Trash (2003) and restore (2004) are not among them: no
-	 * store sensor reports those, so they are logged here for every type.
+	 * their owners. Trash (2003), restore (2004) and revert to `auto-draft`
+	 * (2013, after which WordPress deletes the post unseen) are not among
+	 * them: no store sensor reports those, so they are logged here for every
+	 * type.
 	 *
 	 * @var array<int, int>
 	 */
-	private const OWNED_ELSEWHERE_CODES = [ 2000, 2001, 2002, 2005, 2006, 2013 ];
+	private const OWNED_ELSEWHERE_CODES = [ 2000, 2001, 2002, 2005, 2006 ];
 
 	/**
 	 * Post fields compared by an in-place update, in the order they are reported.
@@ -88,6 +91,23 @@ final class ContentSensor extends AbstractSensor {
 	 */
 	private const CONTENT_FIELDS = [ 'post_content' ];
 
+	/**
+	 * Posts `wp_untrash_post()` is restoring right now: post id => the status
+	 * the post had when it was trashed. Set on `untrash_post`, taken by the
+	 * status change that follows it.
+	 *
+	 * @var array<int, string>
+	 */
+	private array $untrashing = [];
+
+	/**
+	 * Posts whose restore by `wp_untrash_post()` the status change has logged,
+	 * so the `untrashed_post` it fires next does not log it again.
+	 *
+	 * @var array<int, true>
+	 */
+	private array $restored = [];
+
 	public function key(): string {
 		return 'core-content';
 	}
@@ -96,17 +116,59 @@ final class ContentSensor extends AbstractSensor {
 		add_action( 'transition_post_status', [ $this, 'on_status' ], 10, 3 );
 		add_action( 'post_updated', [ $this, 'on_updated' ], 10, 3 );
 		add_action( 'before_delete_post', [ $this, 'on_delete' ], 10, 2 );
+		add_action( 'untrash_post', [ $this, 'on_untrash' ], 10, 2 );
 		add_action( 'untrashed_post', [ $this, 'on_untrashed' ], 10, 2 );
 	}
 
+	/**
+	 * A restore is logged by the status change out of the trash: the block
+	 * editor restores a post with a plain status update, and
+	 * `wp_untrash_post()` changes the status too. The status the post had
+	 * before the trash is only known when `wp_untrash_post()` restores it.
+	 */
 	public function on_status( string $new_status, string $old_status, WP_Post $post ): void {
 		$code = self::status_event_code( $new_status, $old_status );
-		if ( 0 !== $code && $this->should_track( $post, $code ) ) {
-			$this->emit_post_event( $code, $post );
+		if ( 0 === $code ) {
+			return;
+		}
+
+		$extra = [];
+		$id    = (int) $post->ID;
+		if ( 2004 === $code && array_key_exists( $id, $this->untrashing ) ) {
+			$extra['previous_status'] = $this->untrashing[ $id ];
+			$this->restored[ $id ]    = true;
+			unset( $this->untrashing[ $id ] );
+		}
+
+		if ( $this->should_track( $post, $code ) ) {
+			$this->emit_post_event( $code, $post, $extra );
 		}
 	}
 
+	/**
+	 * `wp_untrash_post()` is about to restore a post; the status change that
+	 * follows logs it.
+	 *
+	 * @param int    $post_id         Post id.
+	 * @param string $previous_status Status of the post when it was trashed.
+	 */
+	public function on_untrash( int $post_id, string $previous_status = '' ): void {
+		$this->untrashing[ $post_id ] = $previous_status;
+	}
+
+	/**
+	 * Logs a restore that no status change has logged, which only happens
+	 * when something fires `untrashed_post` on its own.
+	 *
+	 * @param int    $post_id         Post id.
+	 * @param string $previous_status Status of the post when it was trashed.
+	 */
 	public function on_untrashed( int $post_id, string $previous_status ): void {
+		if ( isset( $this->restored[ $post_id ] ) ) {
+			unset( $this->restored[ $post_id ] );
+			return;
+		}
+
 		$post = get_post( $post_id );
 		if ( $post instanceof WP_Post && $this->should_track( $post, 2004 ) ) {
 			$this->emit_post_event( 2004, $post, [ 'previous_status' => $previous_status ] );
@@ -155,12 +217,15 @@ final class ContentSensor extends AbstractSensor {
 	 * draft first, otherwise a direct publish would be logged as a plain
 	 * creation. A post that comes into being as anything else visible, either
 	 * from `auto-draft` (the editor's placeholder) or from `new` (inserted
-	 * directly, by the REST API or an importer), is "created". Moving to
-	 * trash is "trashed" from every state, and going from published to
-	 * anything else but trash is "unpublished". A post that was
-	 * already saved and is sent back to `auto-draft` (and was not published)
-	 * is "reverted": WordPress deletes stale auto-drafts on its own, so the
-	 * move is what has to be on record.
+	 * directly, by the REST API or an importer), is "created". A post that
+	 * already existed and is sent to `auto-draft`, from any state (published
+	 * or trashed included), is "reverted": WordPress deletes stale
+	 * auto-drafts on its own, so the move is what has to be on record; a new
+	 * placeholder (`new` to `auto-draft`) is not an event. Moving to trash is
+	 * "trashed" from every state, and moving out of the trash, to any other
+	 * state, is "restored" (the block editor restores a post with a plain
+	 * status update). Going from published to anything else but trash or
+	 * `auto-draft` is "unpublished".
 	 * Everything else (including no change) is not an event of its own.
 	 *
 	 * @param string $new New post status.
@@ -170,8 +235,14 @@ final class ContentSensor extends AbstractSensor {
 		if ( $new === $old ) {
 			return 0;
 		}
+		if ( 'auto-draft' === $new ) {
+			return 'new' === $old ? 0 : 2013;
+		}
 		if ( 'trash' === $new ) {
 			return 2003;
+		}
+		if ( 'trash' === $old ) {
+			return 2004;
 		}
 		if ( 'publish' === $new ) {
 			return 2001;
@@ -182,9 +253,6 @@ final class ContentSensor extends AbstractSensor {
 		if ( 'publish' === $old ) {
 			return 2002;
 		}
-		if ( 'auto-draft' === $new && 'new' !== $old ) {
-			return 2013;
-		}
 
 		return 0;
 	}
@@ -193,7 +261,7 @@ final class ContentSensor extends AbstractSensor {
 	 * Whether an event about a post of a type is logged by this sensor.
 	 *
 	 * Internal types without an admin screen never are. Of the
-	 * {@see self::OWNED_ELSEWHERE} types only trash and restore are, see
+	 * {@see self::OWNED_ELSEWHERE} types only trash, restore and revert are, see
 	 * {@see self::OWNED_ELSEWHERE_CODES}. Without WooCommerce a `product`
 	 * type belongs to some other plugin and is logged like any other.
 	 *

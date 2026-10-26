@@ -9,6 +9,8 @@ declare(strict_types=1);
 
 namespace HelloLog\Queue;
 
+use HelloLog\Activator;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -21,6 +23,27 @@ final class QueueRepository {
 	public const STATUS_PENDING = 'pending';
 	public const STATUS_SENDING = 'sending';
 	public const STATUS_DEAD    = 'dead';
+
+	/**
+	 * Queue tables already looked up in this request, by name.
+	 *
+	 * @var array<string, true>
+	 */
+	private static array $checked_tables = [];
+
+	/**
+	 * Sites found to exist and be initialized in this request.
+	 *
+	 * @var array<int, true>
+	 */
+	private static array $usable_sites = [];
+
+	/**
+	 * Sites WordPress started taking apart in this request.
+	 *
+	 * @var array<int, true>
+	 */
+	private static array $forgotten_sites = [];
 
 	/**
 	 * The queue table of the current site, or of the site `$blog_id` names.
@@ -38,18 +61,29 @@ final class QueueRepository {
 	 *
 	 * On a network the request may have switched sites since the event
 	 * happened, so the caller names the site the event belongs to; its queue
-	 * gets the row. Without a site the current site's queue does.
+	 * gets the row. Without a site the current site's queue does. A site
+	 * that has no queue table yet is set up first, see
+	 * {@see self::ready_table()}. A site that no longer exists or is not
+	 * initialized (deleting a site fires events stamped with it, written
+	 * while or after its tables are dropped) hands its events to the main
+	 * site's queue and is never set up again, see {@see self::existing_site()}.
 	 *
 	 * @param string $payload JSON of the event.
 	 * @param ?int   $blog_id Site the event happened on; null for the current site.
+	 *
+	 * @throws \RuntimeException When the row could not be written. The
+	 *                           dispatcher reports it through the
+	 *                           `hellolog_dispatch_failed` action.
 	 */
 	public function insert( string $payload, ?int $blog_id = null ): int {
 		global $wpdb;
 
+		$table = $this->ready_table( self::existing_site( $blog_id ) );
+
 		$now = current_time( 'mysql', true );
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$wpdb->insert(
-			$this->table( $blog_id ),
+		$inserted = $wpdb->insert(
+			$table,
 			[
 				'payload'    => $payload,
 				'attempts'   => 0,
@@ -59,8 +93,79 @@ final class QueueRepository {
 			],
 			[ '%s', '%d', '%s', '%s', '%s' ]
 		);
+		if ( false === $inserted ) {
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- never printed here; handed to the dispatcher's failure action.
+			throw new \RuntimeException( sprintf( 'The event could not be queued in %s: %s', $table, (string) $wpdb->last_error ) );
+		}
 
 		return (int) $wpdb->insert_id;
+	}
+
+	/**
+	 * Stop queueing on a site WordPress starts taking apart: its events go to
+	 * the main site's queue from now on. Hooked to `wp_uninitialize_site`
+	 * before core drops the site's tables, because every DROP is itself an
+	 * event, and a full buffer can be written in the middle of the drops.
+	 *
+	 * @param mixed $site The site being deleted (`WP_Site`).
+	 */
+	public static function forget_site( $site ): void {
+		if ( ! $site instanceof \WP_Site ) {
+			return;
+		}
+
+		$blog_id                           = (int) $site->blog_id;
+		self::$forgotten_sites[ $blog_id ] = true;
+		unset( self::$usable_sites[ $blog_id ] );
+	}
+
+	/**
+	 * The site an event is queued on: the one named while it exists and is
+	 * initialized, the main site otherwise. A site found usable is not
+	 * looked up again in the request, unless it is being taken apart.
+	 *
+	 * @param ?int $blog_id Site id on a network; null for the current site.
+	 */
+	private static function existing_site( ?int $blog_id ): ?int {
+		if ( null === $blog_id || ! function_exists( 'is_multisite' ) || ! is_multisite() || ! function_exists( 'get_site' ) ) {
+			return $blog_id;
+		}
+		if ( isset( self::$usable_sites[ $blog_id ] ) ) {
+			return $blog_id;
+		}
+		if ( isset( self::$forgotten_sites[ $blog_id ] ) || ! Activator::site_exists( $blog_id ) ) {
+			return (int) get_main_site_id();
+		}
+		self::$usable_sites[ $blog_id ] = true;
+
+		return $blog_id;
+	}
+
+	/**
+	 * The queue table of a site, set up first when it does not exist: a site
+	 * of a network can have none (added while the plugin was not
+	 * network-active, or left out of a network activation that ran out of
+	 * time). Such a site is set up the way activation does it, default
+	 * settings included, see {@see Activator::set_up_site()}. Looked up once
+	 * per table and request.
+	 *
+	 * @param ?int $blog_id Site id on a network; null for the current site.
+	 */
+	private function ready_table( ?int $blog_id = null ): string {
+		$table = $this->table( $blog_id );
+		if ( isset( self::$checked_tables[ $table ] ) ) {
+			return $table;
+		}
+		self::$checked_tables[ $table ] = true;
+
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- a schema lookup, once per request; nothing to cache.
+		$found = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
+		if ( $table !== $found ) {
+			Activator::set_up_site( $blog_id );
+		}
+
+		return $table;
 	}
 
 	/**
@@ -69,7 +174,7 @@ final class QueueRepository {
 	public function pick_batch( int $limit ): array {
 		global $wpdb;
 
-		$table = $this->table();
+		$table = $this->ready_table();
 		$now   = current_time( 'mysql', true );
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- read from our own queue table, deliberately not cached (must see fresh rows every drain tick).
@@ -108,7 +213,7 @@ final class QueueRepository {
 	 */
 	public function purge( ?string $status = null ): int {
 		global $wpdb;
-		$table = $this->table();
+		$table = $this->ready_table();
 		if ( null === $status ) {
 			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 			$deleted = $wpdb->query( "DELETE FROM {$table}" );
@@ -126,7 +231,7 @@ final class QueueRepository {
 	 */
 	public function purge_dead_before( string $cutoff ): int {
 		global $wpdb;
-		$table = $this->table();
+		$table = $this->ready_table();
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- {$table} is our own prefixed table name.
 		$deleted = $wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE status = %s AND created_at < %s", self::STATUS_DEAD, $cutoff ) );
 		return (int) $deleted;
@@ -139,7 +244,7 @@ final class QueueRepository {
 	 */
 	public function delete_oldest( int $limit ): int {
 		global $wpdb;
-		$table = $this->table();
+		$table = $this->ready_table();
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- {$table} is our own prefixed table name.
 		$deleted = $wpdb->query( $wpdb->prepare( "DELETE FROM {$table} ORDER BY id ASC LIMIT %d", $limit ) );
 		return (int) $deleted;
@@ -147,7 +252,7 @@ final class QueueRepository {
 
 	public function count_all(): int {
 		global $wpdb;
-		$table = $this->table();
+		$table = $this->ready_table();
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- {$table} is our own prefixed table name.
 		return (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
 	}
@@ -163,7 +268,7 @@ final class QueueRepository {
 	 */
 	public function requeue_dead(): int {
 		global $wpdb;
-		$table = $this->table();
+		$table = $this->ready_table();
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- flush write, not a read; nothing to cache.
 		$affected = $wpdb->query(
 			$wpdb->prepare(
@@ -191,7 +296,7 @@ final class QueueRepository {
 			return;
 		}
 		$placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
-		$table        = $this->table();
+		$table        = $this->ready_table();
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- the %d tokens are inside $placeholders, built dynamically from count($ids); the sniff can't see through the interpolation to confirm they're there, but $ids supplies exactly that many values to $wpdb->prepare().
 		$wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE id IN ({$placeholders})", $ids ) );
 	}
@@ -201,7 +306,7 @@ final class QueueRepository {
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$wpdb->update(
-			$this->table(),
+			$this->ready_table(),
 			[
 				'attempts'   => $attempts,
 				'next_try'   => $next_try,
@@ -219,7 +324,7 @@ final class QueueRepository {
 
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		$wpdb->update(
-			$this->table(),
+			$this->ready_table(),
 			[
 				'status'     => self::STATUS_DEAD,
 				'last_error' => substr( $error, 0, 512 ),
@@ -236,7 +341,7 @@ final class QueueRepository {
 	public function counts_by_status(): array {
 		global $wpdb;
 
-		$table = $this->table();
+		$table = $this->ready_table();
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$rows = $wpdb->get_results( "SELECT status, COUNT(*) AS c FROM {$table} GROUP BY status", ARRAY_A );
 		$out  = [];
@@ -255,7 +360,7 @@ final class QueueRepository {
 			return;
 		}
 		$placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
-		$table        = $this->table();
+		$table        = $this->ready_table();
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 		$wpdb->query( $wpdb->prepare( "UPDATE {$table} SET status = %s WHERE id IN ({$placeholders})", array_merge( [ $status ], $ids ) ) );
 	}

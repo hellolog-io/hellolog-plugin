@@ -33,7 +33,7 @@ final class RequestContext {
 		$username = null;
 		$roles    = [];
 
-		if ( function_exists( 'wp_get_current_user' ) ) {
+		if ( function_exists( 'wp_get_current_user' ) && ! self::is_determining_user() ) {
 			$user = wp_get_current_user();
 			if ( $user && $user->ID > 0 ) {
 				$user_id  = (int) $user->ID;
@@ -58,12 +58,37 @@ final class RequestContext {
 	}
 
 	/**
+	 * Whether WordPress is still working out who the current user is.
+	 *
+	 * Some sensors fire from inside that work: an application-password
+	 * sign-in is reported by `wp_validate_application_password()`, a
+	 * `determine_current_user` callback, before the user is the current one.
+	 * Reading the current user there (`wp_get_current_user()`,
+	 * `get_current_user_id()`) applies `determine_current_user` again, which
+	 * reports the sign-in again, until the request runs out of memory. Code
+	 * that may run there checks this first; nobody is signed in yet, and the
+	 * sensors that fire there name the user themselves.
+	 */
+	public static function is_determining_user(): bool {
+		return function_exists( 'doing_filter' ) && doing_filter( 'determine_current_user' );
+	}
+
+	/**
 	 * The raw session token is part of the auth cookie, so it never leaves
 	 * the site. Its SHA-256 is what core itself keys `session_tokens` by,
 	 * which keeps events from one session correlatable on the backend.
 	 */
 	public static function session_fingerprint( string $token ): ?string {
 		return '' === $token ? null : hash( 'sha256', $token );
+	}
+
+	/**
+	 * The IP the request comes from, as {@see self::capture()} reads it
+	 * (never anonymized here); null when there is none. Reads only the
+	 * request, so it is safe while the current user is being determined.
+	 */
+	public static function client_ip(): ?string {
+		return self::detect_ip();
 	}
 
 	private static function detect_ip(): ?string {

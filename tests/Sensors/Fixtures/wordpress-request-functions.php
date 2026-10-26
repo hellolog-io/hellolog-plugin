@@ -16,6 +16,8 @@ namespace {
 	use HelloLog\Tests\Sensors\Fixtures\RequestState;
 
 	function get_current_user_id(): int {
+		++RequestState::$user_id_reads;
+
 		return RequestState::$user_id;
 	}
 

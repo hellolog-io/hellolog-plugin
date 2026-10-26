@@ -30,10 +30,12 @@ defined( 'ABSPATH' ) || exit;
  */
 final class GitHubUpdater {
 
-	private const API_URL   = 'https://api.github.com/repos/hellolog-io/hellolog-plugin/releases/latest';
-	private const HOMEPAGE  = 'https://github.com/hellolog-io/hellolog-plugin';
-	private const SLUG      = 'hellolog';
-	private const TRANSIENT = 'hellolog_github_release';
+	/** Site transient caching the latest release; uninstalling removes it. */
+	public const TRANSIENT = 'hellolog_github_release';
+
+	private const API_URL  = 'https://api.github.com/repos/hellolog-io/hellolog-plugin/releases/latest';
+	private const HOMEPAGE = 'https://github.com/hellolog-io/hellolog-plugin';
+	private const SLUG     = 'hellolog';
 	// 12h for a real response; 1h when the last request failed, so a GitHub
 	// outage/rate limit is retried soon without hammering the API on every
 	// admin-page load in between.

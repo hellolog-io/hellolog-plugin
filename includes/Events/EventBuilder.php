@@ -39,6 +39,13 @@ class EventBuilder {
 	private const MAX_VAR_KEY      = 64;
 	private const MAX_VAR_VALUE    = 512;
 
+	/**
+	 * Deepest array level of `metadata` that is still looked into; anything
+	 * below becomes `…`. Keeps an array that refers to itself from recursing
+	 * forever.
+	 */
+	private const MAX_METADATA_DEPTH = 32;
+
 	/** Link keys that are sent, in the order they are emitted. */
 	private const LINK_KEYS = [ 'edit', 'view', 'revision' ];
 
@@ -81,7 +88,9 @@ class EventBuilder {
 	 *                                       - post (assoc id int, type string, status string): other keys and
 	 *                                         values of another type are dropped.
 	 *                                       - title (string): the `post_title` of the metadata, masked like a var.
-	 *                                       - message (string), metadata (assoc), client_event_id (string).
+	 *                                       - message (string), client_event_id (string).
+	 *                                       - metadata (assoc): every string in it, at any depth, is cut to
+	 *                                         {@see ChangeSet::MAX_VALUE_LENGTH} characters.
 	 *                                       Every other scalar whose key is a `{placeholder}` of the
 	 *                                       code's message template becomes a template var, and the
 	 *                                       English message is rendered from those vars.
@@ -100,7 +109,7 @@ class EventBuilder {
 		$payload = [
 			'schema'      => self::SCHEMA,
 			'code'        => $def->code,
-			'occurred_at' => gmdate( 'Y-m-d\TH:i:s.v\Z' ),
+			'occurred_at' => self::now(),
 			'severity'    => $def->severity,
 			'object'      => $def->object,
 			'event_type'  => $def->event_type,
@@ -160,9 +169,10 @@ class EventBuilder {
 		if ( isset( $fields['title'] ) && '' !== $fields['title'] && ! isset( $metadata['post_title'] ) ) {
 			$metadata['post_title'] = (string) $fields['title'];
 		}
-		// A title is text somebody typed: it is masked the way vars are.
+		// A title is text somebody typed: it is decoded and masked the way
+		// vars are.
 		if ( isset( $metadata['post_title'] ) && is_string( $metadata['post_title'] ) ) {
-			$metadata['post_title'] = ChangeSet::redact_text( $metadata['post_title'] );
+			$metadata['post_title'] = ChangeSet::redact_text( self::decode_entities( $metadata['post_title'] ) );
 		}
 
 		// A background run has no actor of its own; keep who set it in motion.
@@ -171,13 +181,21 @@ class EventBuilder {
 		}
 
 		if ( ! empty( $metadata ) ) {
-			$payload['metadata'] = $metadata;
+			$payload['metadata'] = $this->clip_metadata( $metadata );
 		}
 		if ( isset( $fields['client_event_id'] ) && is_string( $fields['client_event_id'] ) ) {
 			$payload['client_event_id'] = $fields['client_event_id'];
 		}
 
 		return $payload;
+	}
+
+	/**
+	 * The current time in UTC, to the millisecond: the events of one request
+	 * are only told apart in time by their milliseconds.
+	 */
+	private static function now(): string {
+		return ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->format( 'Y-m-d\TH:i:s.v\Z' );
 	}
 
 	/**
@@ -342,8 +360,10 @@ class EventBuilder {
 	 *
 	 * A type over 32 or an id over 64 characters cannot be cut without
 	 * pointing at another object, so the whole target is dropped. Only the
-	 * label is shortened, after it is masked the way vars are (a label is
-	 * often a name somebody typed, or a setting's value).
+	 * label is shortened, after its HTML entities are decoded (WordPress
+	 * stores some titles with them, `Order &ndash; …`) and it is masked the
+	 * way vars are (a label is often a name somebody typed, or a setting's
+	 * value).
 	 *
 	 * @param mixed $target Sensor-supplied `target`.
 	 * @return array{type: string, id: string, label?: string}|null
@@ -370,7 +390,7 @@ class EventBuilder {
 
 		$label = $this->scalar_text( $target['label'] ?? null );
 		if ( '' !== $label ) {
-			$clean['label'] = $this->clamp( ChangeSet::redact_text( $label ), self::MAX_TARGET_LABEL );
+			$clean['label'] = $this->clamp( ChangeSet::redact_text( self::decode_entities( $label ) ), self::MAX_TARGET_LABEL );
 		}
 
 		return $clean;
@@ -439,7 +459,9 @@ class EventBuilder {
 	 * Template values as text: every scalar field whose `{key}` appears in the
 	 * message template, overlaid with the explicit `vars`. Keys are non-empty strings,
 	 * values go through {@see ChangeSet::stringify()} (a bool reads `yes` or
-	 * `no`); a value that has no text (null) is left out.
+	 * `no`); a value that has no text (null) is left out. A string has its
+	 * HTML entities decoded first (WordPress stores some titles with them),
+	 * before it is masked, so an entity cannot hide a secret from the masking.
 	 *
 	 * @param array<string, mixed> $fields
 	 * @return array<string, string>
@@ -464,13 +486,23 @@ class EventBuilder {
 
 		$texts = [];
 		foreach ( $vars as $key => $value ) {
-			$text = ChangeSet::stringify( $value );
+			$text = ChangeSet::stringify( is_string( $value ) ? self::decode_entities( $value ) : $value );
 			if ( null !== $text ) {
 				$texts[ $key ] = $text;
 			}
 		}
 
 		return $texts;
+	}
+
+	/**
+	 * Plain text of a string that may hold HTML entities (`&ndash;`, `&amp;`,
+	 * `&#039;`): WordPress stores some titles that way.
+	 *
+	 * @param string $text Any text.
+	 */
+	private static function decode_entities( string $text ): string {
+		return html_entity_decode( $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
 	}
 
 	/**
@@ -491,6 +523,31 @@ class EventBuilder {
 		}
 
 		return array_slice( $clean, 0, self::MAX_VARS, true );
+	}
+
+	/**
+	 * The metadata with every string in it, at any depth, cut to
+	 * {@see ChangeSet::MAX_VALUE_LENGTH} characters the way change values
+	 * are. It runs after anything in the metadata is masked, so a secret is
+	 * never cut in a way that hides it from the masking. Other values are
+	 * left as they are.
+	 *
+	 * @param array<int|string, mixed> $metadata Metadata, or an array inside it.
+	 * @param int                      $depth    Array nesting level of `$metadata`.
+	 * @return array<int|string, mixed>
+	 */
+	private function clip_metadata( array $metadata, int $depth = 0 ): array {
+		$clipped = [];
+		foreach ( $metadata as $key => $value ) {
+			if ( is_string( $value ) ) {
+				$value = ChangeSet::truncate( $value );
+			} elseif ( is_array( $value ) ) {
+				$value = $depth < self::MAX_METADATA_DEPTH ? $this->clip_metadata( $value, $depth + 1 ) : self::ELLIPSIS;
+			}
+			$clipped[ $key ] = $value;
+		}
+
+		return $clipped;
 	}
 
 	/**
