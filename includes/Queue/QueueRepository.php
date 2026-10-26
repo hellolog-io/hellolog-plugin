@@ -9,6 +9,8 @@ declare(strict_types=1);
 
 namespace HelloLog\Queue;
 
+use HelloLog\Activator;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -21,6 +23,13 @@ final class QueueRepository {
 	public const STATUS_PENDING = 'pending';
 	public const STATUS_SENDING = 'sending';
 	public const STATUS_DEAD    = 'dead';
+
+	/**
+	 * Queue tables already looked up in this request, by name.
+	 *
+	 * @var array<string, true>
+	 */
+	private static array $checked_tables = [];
 
 	/**
 	 * The queue table of the current site, or of the site `$blog_id` names.
@@ -38,18 +47,27 @@ final class QueueRepository {
 	 *
 	 * On a network the request may have switched sites since the event
 	 * happened, so the caller names the site the event belongs to; its queue
-	 * gets the row. Without a site the current site's queue does.
+	 * gets the row. Without a site the current site's queue does. A site
+	 * that has no queue table yet gets one first, see
+	 * {@see self::ensure_table()}.
 	 *
 	 * @param string $payload JSON of the event.
 	 * @param ?int   $blog_id Site the event happened on; null for the current site.
+	 *
+	 * @throws \RuntimeException When the row could not be written. The
+	 *                           dispatcher reports it through the
+	 *                           `hellolog_dispatch_failed` action.
 	 */
 	public function insert( string $payload, ?int $blog_id = null ): int {
 		global $wpdb;
 
+		$table = $this->table( $blog_id );
+		$this->ensure_table( $table );
+
 		$now = current_time( 'mysql', true );
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-		$wpdb->insert(
-			$this->table( $blog_id ),
+		$inserted = $wpdb->insert(
+			$table,
 			[
 				'payload'    => $payload,
 				'attempts'   => 0,
@@ -59,8 +77,33 @@ final class QueueRepository {
 			],
 			[ '%s', '%d', '%s', '%s', '%s' ]
 		);
+		if ( false === $inserted ) {
+			// phpcs:ignore WordPress.Security.EscapeOutput.ExceptionNotEscaped -- never printed here; handed to the dispatcher's failure action.
+			throw new \RuntimeException( sprintf( 'The event could not be queued in %s: %s', $table, (string) $wpdb->last_error ) );
+		}
 
 		return (int) $wpdb->insert_id;
+	}
+
+	/**
+	 * Create a queue table that does not exist: a site added to a network
+	 * while the plugin was not network-active has none. Looked up once per
+	 * table and request, before its first event.
+	 *
+	 * @param string $table Queue table of a site.
+	 */
+	private function ensure_table( string $table ): void {
+		if ( isset( self::$checked_tables[ $table ] ) ) {
+			return;
+		}
+		self::$checked_tables[ $table ] = true;
+
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- a schema lookup, once per request; nothing to cache.
+		$found = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
+		if ( $table !== $found ) {
+			Activator::create_queue_table( $table );
+		}
 	}
 
 	/**

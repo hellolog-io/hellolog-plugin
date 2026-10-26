@@ -67,6 +67,10 @@ require_once HELLOLOG_DIR . 'vendor/woocommerce/action-scheduler/action-schedule
 register_activation_hook( __FILE__, [ \HelloLog\Activator::class, 'activate' ] );
 register_deactivation_hook( __FILE__, [ \HelloLog\Deactivator::class, 'deactivate' ] );
 
+// A site added to a network the plugin is network-active on gets its queue
+// table. Priority 100: after core has created the site's own tables.
+add_action( 'wp_initialize_site', [ \HelloLog\Activator::class, 'initialize_site' ], 100 );
+
 add_action(
 	'plugins_loaded',
 	static function (): void {
