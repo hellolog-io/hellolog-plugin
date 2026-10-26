@@ -112,6 +112,8 @@ This version requires the HelloLog service release from October 2026 or later.
 * Change: Profile edits that only touch the first or last name, the nickname
   or the biographical info are not logged yet; they will be in a later
   release.
+* Fix: Requests authenticated with an application password no longer run
+  out of memory.
 * Fix: A new registration no longer logs a false role change.
 * Fix: Empty "post updated" events are dropped.
 * Fix: Plugins' own bookkeeping writes and background option changes are no

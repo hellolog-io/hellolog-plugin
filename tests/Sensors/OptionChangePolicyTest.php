@@ -12,6 +12,8 @@ namespace HelloLog\Tests\Sensors;
 use HelloLog\Events\RequestSource;
 use HelloLog\Sensors\OptionChangePolicy;
 use HelloLog\Sensors\SensitiveOption;
+use HelloLog\Tests\Events\Fixtures\AuthState;
+use HelloLog\Tests\Sensors\Fixtures\RequestState;
 use PHPUnit\Framework\TestCase;
 
 final class OptionChangePolicyTest extends TestCase {
@@ -38,6 +40,27 @@ final class OptionChangePolicyTest extends TestCase {
 			'yoast titles saved over rest'            => [ 'wpseo_titles', 'rest', true, true ],
 			'woo db version bumped by cli'            => [ 'woocommerce_db_version', 'cli', true, false ],
 		];
+	}
+
+	/**
+	 * Reading the signed-in person while WordPress is still determining who
+	 * that is would apply `determine_current_user` again from inside itself.
+	 * Nobody is signed in yet at that point.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_signed_in_person_is_not_read_while_the_user_is_being_determined(): void {
+		require_once __DIR__ . '/Fixtures/wordpress-request-functions.php';
+		require_once __DIR__ . '/../Events/Fixtures/wordpress-auth-functions.php';
+
+		AuthState::$filters = [ 'determine_current_user' ];
+		$this->assertFalse( OptionChangePolicy::should_log_current( 'woocommerce_currency' ) );
+		$this->assertSame( 0, RequestState::$user_id_reads );
+
+		AuthState::$filters = [];
+		$this->assertTrue( OptionChangePolicy::should_log_current( 'woocommerce_currency' ) );
+		$this->assertSame( 1, RequestState::$user_id_reads );
 	}
 
 	public function test_the_original_three_argument_rule_still_holds(): void {

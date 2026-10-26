@@ -18,6 +18,9 @@ final class RequestState {
 	/** Id `get_current_user_id()` reports; 0 is nobody signed in. */
 	public static int $user_id = 1;
 
+	/** Calls of `get_current_user_id()`. */
+	public static int $user_id_reads = 0;
+
 	/** What `is_admin()` reports. */
 	public static bool $admin = true;
 

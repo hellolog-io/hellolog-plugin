@@ -41,6 +41,8 @@ October 2026 or later.
   biographical info are not logged yet; they will be in a later release.
 
 ### Fixed
+- Requests authenticated with an application password (REST API or XML-RPC
+  clients, mobile apps, integrations) no longer run out of memory.
 - A new registration no longer logs a false role change.
 - "Post updated" events that changed nothing are dropped.
 - Writes that plugins make to their own bookkeeping options (queues,

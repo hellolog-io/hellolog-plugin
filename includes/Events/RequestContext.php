@@ -33,7 +33,7 @@ final class RequestContext {
 		$username = null;
 		$roles    = [];
 
-		if ( function_exists( 'wp_get_current_user' ) ) {
+		if ( function_exists( 'wp_get_current_user' ) && ! self::is_determining_user() ) {
 			$user = wp_get_current_user();
 			if ( $user && $user->ID > 0 ) {
 				$user_id  = (int) $user->ID;
@@ -55,6 +55,22 @@ final class RequestContext {
 			: null;
 
 		return new self( $user_id, $username, $roles, $ip, $ua, $session_id );
+	}
+
+	/**
+	 * Whether WordPress is still working out who the current user is.
+	 *
+	 * Some sensors fire from inside that work: an application-password
+	 * sign-in is reported by `wp_validate_application_password()`, a
+	 * `determine_current_user` callback, before the user is the current one.
+	 * Reading the current user there (`wp_get_current_user()`,
+	 * `get_current_user_id()`) applies `determine_current_user` again, which
+	 * reports the sign-in again, until the request runs out of memory. Code
+	 * that may run there checks this first; nobody is signed in yet, and the
+	 * sensors that fire there name the user themselves.
+	 */
+	public static function is_determining_user(): bool {
+		return function_exists( 'doing_filter' ) && doing_filter( 'determine_current_user' );
 	}
 
 	/**

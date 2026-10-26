@@ -11,6 +11,7 @@ namespace HelloLog\Sensors;
 
 use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\ChangeSet;
+use HelloLog\Events\RequestContext;
 use HelloLog\Events\RequestSource;
 
 defined( 'ABSPATH' ) || exit;
@@ -78,7 +79,9 @@ final class OptionChangePolicy {
 	 * {@see self::should_log()} for the request being served right now.
 	 *
 	 * The name check runs first: it is a plain string match and settles most
-	 * writes before the request is inspected.
+	 * writes before the request is inspected. A write made while WordPress is
+	 * still determining the current user has no signed-in person yet, and the
+	 * user is not read there, see {@see RequestContext::is_determining_user()}.
 	 *
 	 * @param string $option Option name.
 	 */
@@ -87,7 +90,7 @@ final class OptionChangePolicy {
 			return false;
 		}
 
-		$has_actor  = function_exists( 'get_current_user_id' ) && get_current_user_id() > 0;
+		$has_actor  = ! RequestContext::is_determining_user() && function_exists( 'get_current_user_id' ) && get_current_user_id() > 0;
 		$background = ( function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) || ActionSchedulerContext::is_running();
 
 		return self::should_log( $option, RequestSource::current(), $has_actor, $background );
