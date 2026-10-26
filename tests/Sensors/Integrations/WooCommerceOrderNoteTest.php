@@ -30,6 +30,20 @@ use PHPUnit\Framework\TestCase;
  */
 final class WooCommerceOrderNoteTest extends TestCase {
 
+	/** The status names of the shop the pure tests ask about; one has a dot in its label. */
+	private const STATUSES = [
+		'Pending payment',
+		'Processing',
+		'On hold',
+		'Completed',
+		'Cancelled',
+		'Ready to ship',
+		'Shipped',
+		'Awaiting pay.',
+		'Paid',
+		'Ready f. pickup',
+	];
+
 	/** The sentences WooCommerce writes into a status-transition note. */
 	private const STATUS_FORMATS = [
 		'Order status changed from %1$s to %2$s.',
@@ -65,6 +79,8 @@ final class WooCommerceOrderNoteTest extends TestCase {
 			'surrounding whitespace'    => [ "  Order status changed from On hold to Cancelled.\n" ],
 			'status name with a "to"'   => [ 'Order status changed from Ready to ship to Shipped.' ],
 			'status name with a dot'    => [ 'Order status changed from Awaiting pay. to Paid.' ],
+			'custom status with a dot'  => [ 'Order status changed from Processing to Ready f. pickup.' ],
+			'set to a custom status'    => [ 'Order status set to Ready f. pickup.' ],
 		];
 	}
 
@@ -72,7 +88,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 * @dataProvider status_sentences
 	 */
 	public function test_a_note_that_is_exactly_a_status_sentence_is_a_status_note( string $content ): void {
-		$this->assertTrue( WooCommerceOrderSensor::is_status_note( $content, self::STATUS_FORMATS ) );
+		$this->assertTrue( WooCommerceOrderSensor::is_status_note( $content, self::STATUS_FORMATS, self::STATUSES ) );
 	}
 
 	/**
@@ -81,6 +97,11 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	public static function not_status_sentences(): array {
 		return [
 			'custom text before it'      => [ 'Called customer. Order status changed from Pending payment to Processing.' ],
+			'custom text after it'       => [ 'Order status changed from Pending payment to Processing. Refund promised.' ],
+			'text after a custom status' => [ 'Order status set to Ready f. pickup. Call back.' ],
+			'text inside a status name'  => [ 'Order status set to Completed, refund promised.' ],
+			'a status the shop lacks'    => [ 'Order status changed from Pending payment to Teleported.' ],
+			'two status names run in'    => [ 'Order status set to Completed. Paid.' ],
 			'a second line'              => [ "Order status changed from Pending payment to Processing.\nCall back." ],
 			'another sentence'           => [ 'Payment via Stripe (ch_123).' ],
 			'a status name only'         => [ 'Order status changed.' ],
@@ -95,23 +116,52 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 * @dataProvider not_status_sentences
 	 */
 	public function test_a_note_with_anything_else_in_it_is_no_status_note( string $content ): void {
-		$this->assertFalse( WooCommerceOrderSensor::is_status_note( $content, self::STATUS_FORMATS ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_status_note( $content, self::STATUS_FORMATS, self::STATUSES ) );
 	}
 
 	public function test_a_status_sentence_is_recognised_in_the_translated_form(): void {
 		$formats = [ 'Rendelés állapota: %1$s → %2$s.', 'Rendelés állapota beállítva: %s.' ];
 
-		$this->assertTrue( WooCommerceOrderSensor::is_status_note( 'Rendelés állapota: Fizetésre vár → Feldolgozás alatt.', $formats ) );
-		$this->assertTrue( WooCommerceOrderSensor::is_status_note( 'Rendelés állapota beállítva: Teljesítve.', $formats ) );
-		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Order status set to Completed.', $formats ) );
+		$statuses = [ 'Fizetésre vár', 'Feldolgozás alatt', 'Teljesítve' ];
+
+		$this->assertTrue( WooCommerceOrderSensor::is_status_note( 'Rendelés állapota: Fizetésre vár → Feldolgozás alatt.', $formats, $statuses ) );
+		$this->assertTrue( WooCommerceOrderSensor::is_status_note( 'Rendelés állapota beállítva: Teljesítve.', $formats, $statuses ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Order status set to Completed.', $formats, $statuses ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Rendelés állapota beállítva: Teleportálva.', $formats, $statuses ) );
 	}
 
 	public function test_a_format_that_says_nothing_but_placeholders_matches_no_note(): void {
+		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Anything at all.', [ '%s', '', ' %1$s %2$s ' ], self::STATUSES ) );
 		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Anything at all.', [ '%s', '', ' %1$s %2$s ' ] ) );
 	}
 
 	public function test_an_overlong_note_is_no_status_note(): void {
 		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Order status set to ' . str_repeat( 'a', 1100 ) . '.', self::STATUS_FORMATS ) );
+	}
+
+	public function test_a_status_name_is_matched_as_a_whole_and_not_as_a_pattern(): void {
+		$statuses = [ 'A+B', 'C (old)', 'D|E' ];
+
+		$this->assertTrue( WooCommerceOrderSensor::is_status_note( 'Order status changed from A+B to C (old).', self::STATUS_FORMATS, $statuses ) );
+		$this->assertTrue( WooCommerceOrderSensor::is_status_note( 'Order status set to D|E.', self::STATUS_FORMATS, $statuses ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Order status set to AAB.', self::STATUS_FORMATS, $statuses ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Order status set to D.', self::STATUS_FORMATS, $statuses ) );
+	}
+
+	/**
+	 * Without the names of the shop's statuses a name is whatever comes up to the next dot.
+	 */
+	public function test_without_status_names_a_name_is_anything_without_a_dot(): void {
+		$this->assertTrue( WooCommerceOrderSensor::is_status_note( 'Order status changed from Pending payment to Processing.', self::STATUS_FORMATS, [] ) );
+		$this->assertTrue( WooCommerceOrderSensor::is_status_note( 'Order status set to Whatever it is called.', self::STATUS_FORMATS, [] ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Order status changed from Pending payment to Processing. Refund promised.', self::STATUS_FORMATS, [] ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Called customer. Order status set to Completed.', self::STATUS_FORMATS, [] ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Order status set to Ready f. pickup.', self::STATUS_FORMATS, [] ) );
+	}
+
+	public function test_blank_or_repeated_status_names_are_ignored(): void {
+		$this->assertTrue( WooCommerceOrderSensor::is_status_note( 'Order status set to Completed.', self::STATUS_FORMATS, [ '', 'Completed', 'Completed' ] ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_status_note( 'Order status set to Whatever.', self::STATUS_FORMATS, [ '', 'Completed' ] ) );
 	}
 
 	public function test_only_the_shops_own_name_and_exact_address_make_a_system_note(): void {
@@ -459,28 +509,124 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_the_shop_name_and_the_status_sentences_follow_the_translation(): void {
+	public function test_the_shop_name_the_status_sentences_and_the_status_names_follow_the_translation(): void {
 		$this->stubs( true );
 		OrderNoteState::$translations = [
 			'WooCommerce'                              => 'WooKereskedelem',
 			'Order status changed from %1$s to %2$s.' => 'Rendelés állapota: %1$s → %2$s.',
+			'Order status set to %s.'                  => 'Rendelés állapota beállítva: %s.',
+		];
+		OrderNoteState::$statuses = [
+			'wc-pending'    => 'Fizetésre vár',
+			'wc-processing' => 'Feldolgozás alatt',
+			'wc-completed'  => 'Teljesítve',
 		];
 		$this->note( 11, 'Fizetve.', 'wookereskedelem@shop.hu', false, 'WooKereskedelem' );
 		$this->note( 12, 'Fizetve.', 'woocommerce@shop.hu', false, 'WooCommerce' );
 		$this->note( 13, 'Rendelés állapota: Fizetésre vár → Feldolgozás alatt.', 'admin@shop.hu' );
 		$this->note( 14, 'Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
-		$this->note( 15, 'Order status set to Completed.', 'admin@shop.hu' );
+		$this->note( 15, 'Rendelés állapota beállítva: Teljesítve.', 'admin@shop.hu' );
+		$this->note( 16, 'Rendelés állapota beállítva: Teleportálva.', 'admin@shop.hu' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
-		foreach ( [ 11, 12, 13, 14, 15 ] as $id ) {
+		foreach ( [ 11, 12, 13, 14, 15, 16 ] as $id ) {
 			$sensor->on_note_added( $id, $this->order( 5 ) );
 		}
 
 		$this->assertSame(
-			[ 'system', 'private', 'status', 'private', 'status' ],
+			[ 'system', 'private', 'status', 'private', 'status', 'private' ],
 			array_column( array_column( array_column( $recorder->calls, 1 ), 'metadata' ), 'note_type' )
 		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_custom_status_label_with_a_dot_is_still_a_status_name(): void {
+		$this->stubs( true );
+		OrderNoteState::$statuses['wc-ready-pickup'] = 'Ready f. pickup';
+		$this->note( 11, 'Order status changed from Processing to Ready f. pickup.', 'admin@shop.hu' );
+		$this->note( 12, 'Order status set to Ready f. pickup.', 'admin@shop.hu' );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_note_added( 11, $this->order( 5 ) );
+		$sensor->on_note_added( 12, $this->order( 5 ) );
+
+		$this->assertSame( [ 'status', 'status' ], array_column( array_column( array_column( $recorder->calls, 1 ), 'metadata' ), 'note_type' ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_status_sentence_is_matched_against_the_statuses_the_shop_has(): void {
+		$this->stubs( true );
+		$this->note( 11, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.hu' );
+		$this->note( 12, 'Order status changed from Pending payment to Teleported.', 'admin@shop.hu' );
+		$this->note( 13, 'Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		foreach ( [ 11, 12, 13 ] as $id ) {
+			$sensor->on_note_added( $id, $this->order( 5 ) );
+		}
+
+		$this->assertSame( [ 'private', 'private', 'status' ], array_column( array_column( array_column( $recorder->calls, 1 ), 'metadata' ), 'note_type' ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_note_to_the_trash_status_is_a_status_note(): void {
+		$this->stubs( true );
+		$this->note( 11, 'Order status changed from Processing to trash.', 'admin@shop.hu' );
+
+		$recorder = $this->recorder();
+		( new WooCommerceOrderSensor( $recorder ) )->on_note_added( 11, $this->order( 5 ) );
+
+		$this->assertSame( 'status', $recorder->calls[0][1]['metadata']['note_type'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_without_woocommerce_statuses_a_status_name_is_anything_without_a_dot(): void {
+		$this->stubs( true, false );
+		$this->assertFalse( function_exists( 'wc_get_order_statuses' ) );
+		$this->note( 11, 'Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
+		$this->note( 12, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.hu' );
+		$this->note( 13, 'Called customer. Order status set to Completed.', 'admin@shop.hu' );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		foreach ( [ 11, 12, 13 ] as $id ) {
+			$sensor->on_note_added( $id, $this->order( 5 ) );
+		}
+
+		$this->assertSame( [ 'status', 'private', 'private' ], array_column( array_column( array_column( $recorder->calls, 1 ), 'metadata' ), 'note_type' ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_when_woocommerce_lists_no_statuses_a_status_name_is_anything_without_a_dot(): void {
+		$this->stubs( true );
+		OrderNoteState::$statuses = [];
+		$this->note( 11, 'Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
+		$this->note( 12, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.hu' );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_note_added( 11, $this->order( 5 ) );
+		$sensor->on_note_added( 12, $this->order( 5 ) );
+
+		$this->assertSame( [ 'status', 'private' ], array_column( array_column( array_column( $recorder->calls, 1 ), 'metadata' ), 'note_type' ) );
 	}
 
 	/**
@@ -770,6 +916,50 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	}
 
 	/**
+	 * Words of the admin after the sentence are the news just as much as
+	 * words in front of it.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_transition_note_with_text_of_the_admin_after_it_stays(): void {
+		$this->stubs( true );
+		$order = $this->order( 5, 'A-17' );
+		$this->note( 11, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.hu' );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_status_changed( 5, 'pending', 'processing', $order );
+		$sensor->on_note_added( 11, $order );
+
+		$survivors = $this->survive( $recorder );
+
+		$this->assertSame( [ 9101, 9103 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'private', $survivors[1]['metadata']['note_type'] );
+		$this->assertSame( 'Order status changed from Pending payment to Processing. Refund promised.', $survivors[1]['vars']['note'] );
+	}
+
+	/**
+	 * A status the shop added itself, with a dot in its label, is still told apart.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_status_change_to_a_custom_status_hides_its_transition_note(): void {
+		$this->stubs( true );
+		OrderNoteState::$statuses['wc-ready-pickup'] = 'Ready f. pickup';
+		$order = $this->order( 5, 'A-17' );
+		$this->shop_note( 11, 'Order status changed from Processing to Ready f. pickup.' );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_status_changed( 5, 'processing', 'ready-pickup', $order );
+		$sensor->on_note_added( 11, $order );
+
+		$this->assertSame( [ 9101 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	/**
 	 * What WooCommerce itself notes about payments and stock is information
 	 * of its own, not a repeat of the status change.
 	 *
@@ -899,11 +1089,15 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 * Load the stand-ins and reset what they answer.
 	 *
 	 * @param bool $with_strip_tags Whether core's `wp_strip_all_tags()` exists.
+	 * @param bool $with_statuses   Whether WooCommerce's `wc_get_order_statuses()` exists.
 	 */
-	private function stubs( bool $with_strip_tags = false ): void {
+	private function stubs( bool $with_strip_tags = false, bool $with_statuses = true ): void {
 		require_once __DIR__ . '/Fixtures/wordpress-order-functions.php';
 		if ( $with_strip_tags ) {
 			require_once __DIR__ . '/Fixtures/wordpress-strip-tags-function.php';
+		}
+		if ( $with_statuses ) {
+			require_once __DIR__ . '/Fixtures/woocommerce-order-statuses-function.php';
 		}
 
 		OrderNoteState::$comments     = [];
@@ -911,6 +1105,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 		OrderNoteState::$orders       = [];
 		OrderNoteState::$translations = [];
 		OrderNoteState::$actions      = [];
+		OrderNoteState::$statuses     = OrderNoteState::DEFAULT_STATUSES;
 
 		$_SERVER['HTTP_HOST'] = 'www.shop.hu';
 	}

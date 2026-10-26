@@ -104,21 +104,27 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * Whether a note is exactly one of the sentences WooCommerce writes for a
 	 * status change, and nothing else.
 	 *
-	 * A sentence with text of a person in front of it (WooCommerce puts the
-	 * text it was given before the sentence) or after it carries that text and
-	 * is not one. A placeholder of a format stands for a status name.
+	 * A placeholder of a format stands for the name of one of the shop's
+	 * statuses, so words of a person after the sentence ("... to Processing.
+	 * Refund promised.") are not part of it, and a status name with a dot in
+	 * it still is. Text of a person in front of the sentence (WooCommerce puts
+	 * the text it was given before the sentence) makes it more than the
+	 * sentence too.
 	 *
-	 * @param string             $content Text of the note as stored.
-	 * @param array<int, string> $formats `sprintf` formats of the sentences, as translated for the site.
+	 * @param string             $content  Text of the note as stored.
+	 * @param array<int, string> $formats  `sprintf` formats of the sentences, as translated for the site.
+	 * @param array<int, string> $statuses Names of the statuses the shop has. With none given a name is
+	 *                                     any text up to the next dot.
 	 */
-	public static function is_status_note( string $content, array $formats ): bool {
+	public static function is_status_note( string $content, array $formats, array $statuses = [] ): bool {
 		$text = trim( $content );
 		if ( '' === $text || strlen( $text ) > self::MAX_STATUS_NOTE_LENGTH ) {
 			return false;
 		}
 
+		$name = self::status_name_pattern( $statuses );
 		foreach ( $formats as $format ) {
-			$pattern = self::status_pattern( (string) $format );
+			$pattern = self::status_pattern( (string) $format, $name );
 			if ( null !== $pattern && 1 === preg_match( $pattern, $text ) ) {
 				return true;
 			}
@@ -169,11 +175,32 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	}
 
 	/**
+	 * The expression that matches a status name: one of the given names, as
+	 * written; any text up to the next dot when there are none.
+	 *
+	 * @param array<int, string> $statuses Names of the statuses the shop has.
+	 */
+	private static function status_name_pattern( array $statuses ): string {
+		$names = array_unique( array_filter( array_map( 'strval', $statuses ), static fn( string $name ): bool => '' !== $name ) );
+		if ( [] === $names ) {
+			return '[^.]+?';
+		}
+
+		// The longest first, so a name never loses to one that is its beginning.
+		usort( $names, static fn( string $a, string $b ): int => strlen( $b ) <=> strlen( $a ) );
+
+		return '(?:' . implode( '|', array_map( static fn( string $name ): string => preg_quote( $name, '/' ), $names ) ) . ')';
+	}
+
+	/**
 	 * The expression that matches a note that is exactly the sentence of a
 	 * `sprintf` format, a status name in place of each placeholder; null when
 	 * the format has no text of its own to tell the sentence by.
+	 *
+	 * @param string $format `sprintf` format of the sentence.
+	 * @param string $name   Expression matching a status name, see {@see self::status_name_pattern()}.
 	 */
-	private static function status_pattern( string $format ): ?string {
+	private static function status_pattern( string $format, string $name ): ?string {
 		$parts = preg_split( '/(%(?:\d+\$)?s)/', $format, -1, PREG_SPLIT_DELIM_CAPTURE );
 		if ( false === $parts ) {
 			return null;
@@ -183,7 +210,7 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		$literal = '';
 		foreach ( $parts as $index => $part ) {
 			if ( 1 === $index % 2 ) {
-				$body .= '.+?';
+				$body .= $name;
 				continue;
 			}
 			$literal .= $part;
@@ -256,7 +283,7 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		$email    = is_object( $note ) ? (string) ( $note->comment_author_email ?? '' ) : '';
 		$type     = self::note_type(
 			$this->is_customer_note( $note_id ),
-			self::is_status_note( $content, $this->status_formats() ),
+			self::is_status_note( $content, $this->status_formats(), $this->status_names() ),
 			self::is_system_note( $author, $email, $this->system_author(), $this->system_email() )
 		);
 
@@ -354,6 +381,21 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 			// translators: %s: new order status.
 			__( 'Order status set to %s.', 'woocommerce' ), // phpcs:ignore WordPress.WP.I18n.TextDomainMismatch
 		];
+	}
+
+	/**
+	 * The names of the statuses the shop has, as WooCommerce writes them into a
+	 * status sentence (`wc_get_order_status_name()`): the labels of its listed
+	 * statuses, custom ones included, and the two it names by their slug. Empty
+	 * when WooCommerce lists none.
+	 *
+	 * @return array<int, string>
+	 */
+	private function status_names(): array {
+		$statuses = function_exists( 'wc_get_order_statuses' ) ? wc_get_order_statuses() : [];
+		$names    = is_array( $statuses ) ? array_values( array_filter( $statuses, 'is_string' ) ) : [];
+
+		return [] === $names ? [] : array_merge( $names, [ 'auto-draft', 'trash' ] );
 	}
 
 	/**

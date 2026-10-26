@@ -38,6 +38,24 @@ final class OrderNoteState {
 	 */
 	public static array $orders = [];
 
+	/** The statuses a shop starts with, as `wc_get_order_statuses()` lists them. */
+	public const DEFAULT_STATUSES = [
+		'wc-pending'    => 'Pending payment',
+		'wc-processing' => 'Processing',
+		'wc-on-hold'    => 'On hold',
+		'wc-completed'  => 'Completed',
+		'wc-cancelled'  => 'Cancelled',
+		'wc-refunded'   => 'Refunded',
+		'wc-failed'     => 'Failed',
+	];
+
+	/**
+	 * Status slug => label, what `wc_get_order_statuses()` returns.
+	 *
+	 * @var array<string, string>
+	 */
+	public static array $statuses = self::DEFAULT_STATUSES;
+
 	/**
 	 * Source text => its translation, for `__()`. A text that is not listed
 	 * is answered as it is.
