@@ -60,7 +60,9 @@ final class ContentSensorTest extends TestCase {
 			'pending to auto-draft'     => [ 'auto-draft', 'pending', 2013 ],
 			'private to auto-draft'     => [ 'auto-draft', 'private', 2013 ],
 			'future to auto-draft'      => [ 'auto-draft', 'future', 2013 ],
-			'trash to auto-draft'       => [ 'auto-draft', 'trash', 2004 ],
+			// Out of the trash into the placeholder state WordPress deletes on its
+			// own: that is the silent deletion "reverted" exists to flag.
+			'trash to auto-draft'       => [ 'auto-draft', 'trash', 2013 ],
 			'custom to auto-draft'      => [ 'auto-draft', 'acf-disabled', 2013 ],
 			'publish to auto-draft'     => [ 'auto-draft', 'publish', 2002 ],
 			'trash to publish'          => [ 'publish', 'trash', 2004 ],
@@ -663,6 +665,23 @@ final class ContentSensorTest extends TestCase {
 		foreach ( [ 'untrash_post', 'untrashed_post' ] as $hook ) {
 			$this->assertSame( 2, WpState::$actions[ $hook ]['accepted_args'] ?? null, $hook );
 		}
+	}
+
+	/**
+	 * A trashed post sent to `auto-draft` is cleaned up by WordPress later
+	 * without a trace: it is logged as reverted, not as restored.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_trashed_post_sent_to_auto_draft_is_reverted_not_restored(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_status( 'auto-draft', 'trash', $post( [ 'post_status' => 'auto-draft' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2013 ], array_column( $calls, 0 ) );
 	}
 
 	/**
