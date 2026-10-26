@@ -97,6 +97,9 @@ This version requires the HelloLog service release from October 2026 or later.
 * New: WooCommerce order notes are logged with their text and type
   (customer, private, system or status).
 * New: Posts reverted to auto-draft are now logged.
+* New: A post update also records changes to the publish date, the menu
+  order and password protection (whether a password is set, never the
+  password itself).
 * New: The `hellolog_suppression_rules` filter adjusts the per-request
   de-duplication rules.
 * Change: The events of one request are de-duplicated and the most specific
@@ -104,6 +107,11 @@ This version requires the HelloLog service release from October 2026 or later.
   fold into the order status change, and publishing a new post logs
   "published".
 * Change: Settings changes record the HTTP method.
+* Change: Comment events cover comments, pingbacks, trackbacks, reviews and
+  notes left on a post in the block editor.
+* Change: Profile edits that only touch the first or last name, the nickname
+  or the biographical info are not logged yet; they will be in a later
+  release.
 * Fix: A new registration no longer logs a false role change.
 * Fix: Empty "post updated" events are dropped.
 * Fix: Plugins' own bookkeeping writes and background option changes are no
@@ -112,11 +120,14 @@ This version requires the HelloLog service release from October 2026 or later.
 * Fix: A two-factor login is no longer logged as "2FA enabled".
 * Fix: Menu changes are no longer logged twice.
 * Fix: WooCommerce products, orders and coupons are no longer also logged as
-  generic posts.
+  generic posts. Moving them to the trash and restoring them is still logged.
+* Fix: On multisite, every event is queued on the site it happened on, also
+  when a request switches between sites.
 * Fix: A privileged role assigned at registration is always logged.
 * Security: Credential-like values are masked in option values and in
   recorded changes, including nested keys in arrays and JSON strings,
-  passwords in URLs, and bank details.
+  passwords in URLs, credential-like URL query parameters, webhook URLs and
+  bank details.
 
 = 0.4.4 =
 * Change: Events carry a hash of the login session instead of the session

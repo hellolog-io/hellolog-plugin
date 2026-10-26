@@ -21,6 +21,8 @@ October 2026 or later.
   private, system or status). Orders get a target and a link to the order
   edit screen.
 - Posts reverted to auto-draft are now logged.
+- A post update also records changes to the publish date, the menu order and
+  password protection (whether a password is set, never the password itself).
 - New `hellolog_suppression_rules` filter to add suppression, merge or
   drop-empty rules for the per-request de-duplication.
 
@@ -33,6 +35,10 @@ October 2026 or later.
 - Publishing a new post logs one "published" event instead of "created"
   plus "published".
 - Settings changes record the HTTP method of the request that made them.
+- Comment events cover comments, pingbacks, trackbacks, reviews and notes
+  left on a post in the block editor.
+- Profile edits that only touch the first or last name, the nickname or the
+  biographical info are not logged yet; they will be in a later release.
 
 ### Fixed
 - A new registration no longer logs a false role change.
@@ -45,15 +51,17 @@ October 2026 or later.
 - Deleting auto-drafts during WordPress' own cleanup is no longer logged.
 - Menu changes are no longer logged twice.
 - WooCommerce products, orders and coupons are no longer also logged as
-  generic posts.
+  generic posts. Moving them to the trash and restoring them is still logged.
+- On multisite, every event is queued on the site it happened on, also when
+  a request switches between sites.
 - A privileged role assigned at registration is always logged.
 - Logging in with two-factor authentication is no longer logged as "2FA
   enabled".
 
 ### Security
 - Credential-like values are masked in option values and in recorded changes,
-  including nested keys in arrays and JSON strings, passwords in URLs, and
-  bank details.
+  including nested keys in arrays and JSON strings, passwords in URLs,
+  credential-like URL query parameters, webhook URLs and bank details.
 
 ## [0.4.4] - 2026-10-26
 
