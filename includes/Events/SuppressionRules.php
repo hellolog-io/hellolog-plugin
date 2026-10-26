@@ -135,8 +135,10 @@ final class SuppressionRules {
 			],
 			// Role changes are not merged: folding two of them would keep the
 			// message of the first and understate the final privilege.
-			[ 2006, 4001 ],
-			[ 2006, 4001 ],
+			[ 2006, 4001, 2121, 2401 ],
+			// A menu save without changes of its own stays: it saved the
+			// menu's items.
+			[ 2006, 4001, 2121 ],
 			[
 				// Only the note that is nothing but WooCommerce's sentence about the
 				// status change repeats it, whoever it is filed under. Everything

@@ -1206,4 +1206,52 @@ final class SuppressionRulesTest extends TestCase {
 		);
 		$this->assertSame( [ 4005, 4004, 4001 ], self::codes( $result ) );
 	}
+
+	/**
+	 * Two edits of a term in one request are one event, and an edit that
+	 * changed nothing (or was undone) is not one. Menu saves fold the same
+	 * way, but a menu save without a change of its own stays: it is a save of
+	 * the menu's items.
+	 */
+	public function test_defaults_fold_term_and_menu_updates(): void {
+		$rules = SuppressionRules::defaults();
+		$term  = [
+			'type' => 'term',
+			'id'   => '7',
+		];
+		$menu  = [
+			'type' => 'menu',
+			'id'   => '9',
+		];
+
+		$folded = $rules->apply(
+			[
+				self::event( 2121, $term, [ self::change( 'name', 'News', 'Updates' ) ] ),
+				self::event( 2121, $term, [ self::change( 'slug', 'news', 'updates' ) ] ),
+			]
+		);
+		$this->assertCount( 1, $folded );
+		$this->assertSame( [ 'name', 'slug' ], array_column( $folded[0]['changes'], 'field' ) );
+
+		$this->assertSame( [], $rules->apply( [ self::event( 2121, $term, [] ) ] ) );
+		$this->assertSame(
+			[],
+			$rules->apply(
+				[
+					self::event( 2121, $term, [ self::change( 'name', 'News', 'Updates' ) ] ),
+					self::event( 2121, $term, [ self::change( 'name', 'Updates', 'News' ) ] ),
+				]
+			)
+		);
+
+		$menus = $rules->apply(
+			[
+				self::event( 2401, $menu, [ self::change( 'name', 'Main', 'Primary' ) ] ),
+				self::event( 2401, $menu, [] ),
+			]
+		);
+		$this->assertCount( 1, $menus );
+		$this->assertSame( [ self::change( 'name', 'Main', 'Primary' ) ], $menus[0]['changes'] );
+		$this->assertSame( [ 2401 ], self::codes( $rules->apply( [ self::event( 2401, $menu, [] ) ] ) ) );
+	}
 }
