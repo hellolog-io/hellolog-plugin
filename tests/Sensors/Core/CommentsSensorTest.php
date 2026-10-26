@@ -34,7 +34,9 @@ final class CommentsSensorTest extends TestCase {
 			'order note'        => [ 'order_note', false ],
 			'scheduler log'     => [ 'action_log', false ],
 			'webhook delivery'  => [ 'webhook_delivery', false ],
-			'note'              => [ 'note', false ],
+			// The block editor's notes on a post are written by people, as comments.
+			'block editor note' => [ 'note', true ],
+			'wrong case note'   => [ 'Note', false ],
 			'wrong case'        => [ 'Comment', false ],
 			'padded'            => [ ' comment', false ],
 		];
@@ -164,6 +166,24 @@ final class CommentsSensorTest extends TestCase {
 		);
 
 		$this->assertSame( [], $calls );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_block_editor_note_is_logged_like_a_comment(): void {
+		$calls = $this->run_hook(
+			$this->comment_fields( [ 'comment_type' => 'note' ] ),
+			static function ( CommentsSensor $sensor, \WP_Comment $note ): void {
+				$sensor->on_insert( 15, $note );
+				$sensor->on_edit( 15 );
+				$sensor->on_delete( 15 );
+			}
+		);
+
+		$this->assertSame( [ 2200, 2205, 2204 ], array_column( $calls, 0 ) );
+		$this->assertSame( '15', $calls[0][1]['target']['id'] );
 	}
 
 	/**

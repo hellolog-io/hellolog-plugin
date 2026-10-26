@@ -26,11 +26,12 @@ final class CommentsSensor extends AbstractSensor {
 
 	/**
 	 * Comment types that are comments in the everyday sense. The empty string
-	 * is how older comments store the plain type.
+	 * is how older comments store the plain type; `note` is a note a person
+	 * leaves on a post in the block editor.
 	 *
 	 * @var array<int, string>
 	 */
-	private const TRACKED_TYPES = [ '', 'comment', 'pingback', 'trackback', 'review' ];
+	private const TRACKED_TYPES = [ '', 'comment', 'pingback', 'trackback', 'review', 'note' ];
 
 	public function key(): string {
 		return 'core-comments';
