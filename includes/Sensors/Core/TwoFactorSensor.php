@@ -18,7 +18,6 @@ defined( 'ABSPATH' ) || exit;
  * Tracks the switching of two-factor authentication on and off for a user
  * (the `_two_factor_enabled_providers` user meta). Signing in with a second
  * factor is a login like any other and is logged by {@see LoginLogoutSensor}.
- * The standalone WP 2FA plugin gets its own sensor in M12.
  */
 final class TwoFactorSensor extends AbstractSensor {
 

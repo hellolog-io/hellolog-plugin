@@ -154,7 +154,7 @@ final class QueueRepository {
 
 	/**
 	 * Reset every `dead` row back to `pending` so the flusher picks
-	 * them up again. The backend went away (Redis OOM, transient
+	 * them up again. The backend went away (overload, transient
 	 * outage, expired token, …), the rows exceeded max retries and
 	 * landed in `dead` — once the operator confirms the backend is
 	 * healthy again, this brings them back into rotation in one shot.

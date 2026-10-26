@@ -1,6 +1,6 @@
 <?php
 /**
- * Registers the catch-all integration sensors (M12).
+ * Registers the catch-all integration sensors.
  *
  * @package HelloLog
  */

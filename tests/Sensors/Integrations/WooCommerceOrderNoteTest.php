@@ -165,17 +165,17 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	}
 
 	public function test_only_the_shops_own_name_and_exact_address_make_a_system_note(): void {
-		$this->assertTrue( WooCommerceOrderSensor::is_system_note( 'WooCommerce', 'woocommerce@shop.hu', 'WooCommerce', 'woocommerce@shop.hu' ) );
+		$this->assertTrue( WooCommerceOrderSensor::is_system_note( 'WooCommerce', 'woocommerce@shop.example.com', 'WooCommerce', 'woocommerce@shop.example.com' ) );
 	}
 
 	public function test_the_shops_address_under_another_name_is_no_system_note(): void {
-		$this->assertFalse( WooCommerceOrderSensor::is_system_note( 'Mallory', 'woocommerce@shop.hu', 'WooCommerce', 'woocommerce@shop.hu' ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_system_note( 'Mallory', 'woocommerce@shop.example.com', 'WooCommerce', 'woocommerce@shop.example.com' ) );
 	}
 
 	public function test_the_shops_name_under_another_address_is_no_system_note(): void {
-		$this->assertFalse( WooCommerceOrderSensor::is_system_note( 'WooCommerce', 'mallory@shop.hu', 'WooCommerce', 'woocommerce@shop.hu' ) );
-		$this->assertFalse( WooCommerceOrderSensor::is_system_note( 'WooCommerce', 'woocommerce@evil.test', 'WooCommerce', 'woocommerce@shop.hu' ) );
-		$this->assertFalse( WooCommerceOrderSensor::is_system_note( 'WooCommerce', 'woocommerce@shop.hu.evil.test', 'WooCommerce', 'woocommerce@shop.hu' ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_system_note( 'WooCommerce', 'mallory@shop.example.com', 'WooCommerce', 'woocommerce@shop.example.com' ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_system_note( 'WooCommerce', 'woocommerce@evil.test', 'WooCommerce', 'woocommerce@shop.example.com' ) );
+		$this->assertFalse( WooCommerceOrderSensor::is_system_note( 'WooCommerce', 'woocommerce@shop.example.com.evil.test', 'WooCommerce', 'woocommerce@shop.example.com' ) );
 	}
 
 	public function test_no_note_is_a_system_note_when_the_shop_has_no_address(): void {
@@ -378,7 +378,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	public function test_an_added_note_carries_its_text_and_type(): void {
 		$this->stubs( true );
 		$order = $this->order( 462093, '462093', 'https://shop.test/wp-admin/admin.php?page=wc-orders&action=edit&id=462093' );
-		$this->note( 11, 'Call the customer back.', 'admin@shop.hu' );
+		$this->note( 11, 'Call the customer back.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		( new WooCommerceOrderSensor( $recorder ) )->on_note_added( 11, $order );
@@ -415,7 +415,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_an_added_note_sends_at_most_500_characters_of_text(): void {
 		$this->stubs( true );
-		$this->note( 11, str_repeat( 'x', 700 ), 'admin@shop.hu' );
+		$this->note( 11, str_repeat( 'x', 700 ), 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		( new WooCommerceOrderSensor( $recorder ) )->on_note_added( 11, $this->order( 5 ) );
@@ -431,7 +431,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_an_added_note_has_its_markup_stripped(): void {
 		$this->stubs( true );
-		$this->note( 11, '<a href="https://x.test/">Refund</a> <em>agreed</em>', 'admin@shop.hu' );
+		$this->note( 11, '<a href="https://x.test/">Refund</a> <em>agreed</em>', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		( new WooCommerceOrderSensor( $recorder ) )->on_note_added( 11, $this->order( 5 ) );
@@ -460,9 +460,9 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_a_status_sentence_is_a_status_note_whoever_wrote_it(): void {
 		$this->stubs( true );
-		$this->note( 11, 'Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
+		$this->note( 11, 'Order status changed from Pending payment to Processing.', 'admin@shop.example.com' );
 		$this->shop_note( 12, 'Order status changed from Pending payment to Processing.' );
-		$this->note( 13, 'Order status set to Completed.', 'admin@shop.hu' );
+		$this->note( 13, 'Order status set to Completed.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -479,7 +479,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_a_status_sentence_with_text_of_a_person_in_front_of_it_is_a_private_note(): void {
 		$this->stubs( true );
-		$this->note( 11, 'Called customer. Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
+		$this->note( 11, 'Called customer. Order status changed from Pending payment to Processing.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		( new WooCommerceOrderSensor( $recorder ) )->on_note_added( 11, $this->order( 5 ) );
@@ -512,8 +512,8 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_a_person_using_the_shops_address_does_not_write_system_notes(): void {
 		$this->stubs( true );
-		$this->note( 11, 'Payment via Stripe (ch_123).', 'woocommerce@shop.hu', false, 'Mallory' );
-		$this->note( 12, 'Payment via Stripe (ch_123).', 'mallory@shop.hu', false, 'WooCommerce' );
+		$this->note( 11, 'Payment via Stripe (ch_123).', 'woocommerce@shop.example.com', false, 'Mallory' );
+		$this->note( 12, 'Payment via Stripe (ch_123).', 'mallory@shop.example.com', false, 'WooCommerce' );
 		$this->note( 13, 'Payment via Stripe (ch_123).', 'woocommerce@evil.test', false, 'WooCommerce' );
 
 		$recorder = $this->recorder();
@@ -531,8 +531,8 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_the_shops_address_is_built_from_the_host_the_way_woocommerce_builds_it(): void {
 		$this->stubs( true );
-		$_SERVER['HTTP_HOST'] = 'www.shop.hu';
-		$this->note( 11, 'Stock reduced.', 'woocommerce@shop.hu', false, 'WooCommerce' );
+		$_SERVER['HTTP_HOST'] = 'www.shop.example.com';
+		$this->note( 11, 'Stock reduced.', 'woocommerce@shop.example.com', false, 'WooCommerce' );
 
 		$recorder = $this->recorder();
 		( new WooCommerceOrderSensor( $recorder ) )->on_note_added( 11, $this->order( 5 ) );
@@ -548,7 +548,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 		$this->stubs( true );
 		unset( $_SERVER['HTTP_HOST'] );
 		$this->note( 11, 'Stock reduced.', 'woocommerce@noreply.com', false, 'WooCommerce' );
-		$this->note( 12, 'Stock reduced.', 'woocommerce@shop.hu', false, 'WooCommerce' );
+		$this->note( 12, 'Stock reduced.', 'woocommerce@shop.example.com', false, 'WooCommerce' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -575,12 +575,12 @@ final class WooCommerceOrderNoteTest extends TestCase {
 			'wc-processing' => 'Feldolgozás alatt',
 			'wc-completed'  => 'Teljesítve',
 		];
-		$this->note( 11, 'Fizetve.', 'wookereskedelem@shop.hu', false, 'WooKereskedelem' );
-		$this->note( 12, 'Fizetve.', 'woocommerce@shop.hu', false, 'WooCommerce' );
-		$this->note( 13, 'Rendelés állapota: Fizetésre vár → Feldolgozás alatt.', 'admin@shop.hu' );
-		$this->note( 14, 'Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
-		$this->note( 15, 'Rendelés állapota beállítva: Teljesítve.', 'admin@shop.hu' );
-		$this->note( 16, 'Rendelés állapota beállítva: Teleportálva.', 'admin@shop.hu' );
+		$this->note( 11, 'Fizetve.', 'wookereskedelem@shop.example.com', false, 'WooKereskedelem' );
+		$this->note( 12, 'Fizetve.', 'woocommerce@shop.example.com', false, 'WooCommerce' );
+		$this->note( 13, 'Rendelés állapota: Fizetésre vár → Feldolgozás alatt.', 'admin@shop.example.com' );
+		$this->note( 14, 'Order status changed from Pending payment to Processing.', 'admin@shop.example.com' );
+		$this->note( 15, 'Rendelés állapota beállítva: Teljesítve.', 'admin@shop.example.com' );
+		$this->note( 16, 'Rendelés állapota beállítva: Teleportálva.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -601,8 +601,8 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	public function test_a_custom_status_label_with_a_dot_is_still_a_status_name(): void {
 		$this->stubs( true );
 		OrderNoteState::$statuses['wc-ready-pickup'] = 'Ready f. pickup';
-		$this->note( 11, 'Order status changed from Processing to Ready f. pickup.', 'admin@shop.hu' );
-		$this->note( 12, 'Order status set to Ready f. pickup.', 'admin@shop.hu' );
+		$this->note( 11, 'Order status changed from Processing to Ready f. pickup.', 'admin@shop.example.com' );
+		$this->note( 12, 'Order status set to Ready f. pickup.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -618,9 +618,9 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_a_status_sentence_is_matched_against_the_statuses_the_shop_has(): void {
 		$this->stubs( true );
-		$this->note( 11, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.hu' );
-		$this->note( 12, 'Order status changed from Pending payment to Teleported.', 'admin@shop.hu' );
-		$this->note( 13, 'Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
+		$this->note( 11, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.example.com' );
+		$this->note( 12, 'Order status changed from Pending payment to Teleported.', 'admin@shop.example.com' );
+		$this->note( 13, 'Order status changed from Pending payment to Processing.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -637,7 +637,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_a_note_to_the_trash_status_is_a_status_note(): void {
 		$this->stubs( true );
-		$this->note( 11, 'Order status changed from Processing to trash.', 'admin@shop.hu' );
+		$this->note( 11, 'Order status changed from Processing to trash.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		( new WooCommerceOrderSensor( $recorder ) )->on_note_added( 11, $this->order( 5 ) );
@@ -652,9 +652,9 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	public function test_without_woocommerce_statuses_a_status_name_is_anything_without_a_dot(): void {
 		$this->stubs( true, false );
 		$this->assertFalse( function_exists( 'wc_get_order_statuses' ) );
-		$this->note( 11, 'Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
-		$this->note( 12, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.hu' );
-		$this->note( 13, 'Called customer. Order status set to Completed.', 'admin@shop.hu' );
+		$this->note( 11, 'Order status changed from Pending payment to Processing.', 'admin@shop.example.com' );
+		$this->note( 12, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.example.com' );
+		$this->note( 13, 'Called customer. Order status set to Completed.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -672,8 +672,8 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	public function test_when_woocommerce_lists_no_statuses_a_status_name_is_anything_without_a_dot(): void {
 		$this->stubs( true );
 		OrderNoteState::$statuses = [];
-		$this->note( 11, 'Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
-		$this->note( 12, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.hu' );
+		$this->note( 11, 'Order status changed from Pending payment to Processing.', 'admin@shop.example.com' );
+		$this->note( 12, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -720,7 +720,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_a_note_without_an_order_object_has_no_target_and_no_link(): void {
 		$this->stubs( true );
-		$this->note( 11, 'Hello.', 'admin@shop.hu' );
+		$this->note( 11, 'Hello.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		( new WooCommerceOrderSensor( $recorder ) )->on_note_added( 11, null );
@@ -874,7 +874,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_the_note_event_message_tells_the_note(): void {
 		$this->stubs( true );
-		$this->note( 11, 'Call the customer back.', 'admin@shop.hu' );
+		$this->note( 11, 'Call the customer back.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		( new WooCommerceOrderSensor( $recorder ) )->on_note_added( 11, $this->order( 462093 ) );
@@ -891,7 +891,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_a_secret_inside_a_note_is_masked_on_the_way_out(): void {
 		$this->stubs( true );
-		$this->note( 11, 'Webhook set to https://api:s3cr3t-pass@gateway.test/hook', 'admin@shop.hu' );
+		$this->note( 11, 'Webhook set to https://api:s3cr3t-pass@gateway.test/hook', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		( new WooCommerceOrderSensor( $recorder ) )->on_note_added( 11, $this->order( 5 ) );
@@ -913,7 +913,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	public function test_a_status_change_hides_the_transition_note_written_under_the_admins_name(): void {
 		$this->stubs( true );
 		$order = $this->order( 5, 'A-17' );
-		$this->note( 11, 'Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
+		$this->note( 11, 'Order status changed from Pending payment to Processing.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -951,7 +951,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	public function test_a_transition_note_with_text_of_the_admin_in_front_of_it_stays(): void {
 		$this->stubs( true );
 		$order = $this->order( 5, 'A-17' );
-		$this->note( 11, 'Called customer. Order status changed from Pending payment to Processing.', 'admin@shop.hu' );
+		$this->note( 11, 'Called customer. Order status changed from Pending payment to Processing.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -979,7 +979,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	public function test_a_transition_note_with_text_of_the_admin_after_it_stays(): void {
 		$this->stubs( true );
 		$order = $this->order( 5, 'A-17' );
-		$this->note( 11, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.hu' );
+		$this->note( 11, 'Order status changed from Pending payment to Processing. Refund promised.', 'admin@shop.example.com' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -1045,7 +1045,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 		$this->stubs( true );
 		$order = $this->order( 5, 'A-17' );
 		$this->shop_note( 11, 'Order status changed from Pending payment to Processing.' );
-		$this->note( 12, 'Call the customer back.', 'admin@shop.hu' );
+		$this->note( 12, 'Call the customer back.', 'admin@shop.example.com' );
 		$this->shop_note( 13, 'Stock levels reduced: Mug (#7) 4→3' );
 
 		$recorder = $this->recorder();
@@ -1073,7 +1073,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	public function test_a_note_under_the_shops_address_but_another_name_is_logged_as_private(): void {
 		$this->stubs( true );
 		$order = $this->order( 5 );
-		$this->note( 11, 'Payment via Stripe (ch_123).', 'woocommerce@shop.hu', false, 'Mallory' );
+		$this->note( 11, 'Payment via Stripe (ch_123).', 'woocommerce@shop.example.com', false, 'Mallory' );
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceOrderSensor( $recorder );
@@ -1161,7 +1161,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 		OrderNoteState::$actions      = [];
 		OrderNoteState::$statuses     = OrderNoteState::DEFAULT_STATUSES;
 
-		$_SERVER['HTTP_HOST'] = 'www.shop.hu';
+		$_SERVER['HTTP_HOST'] = 'www.shop.example.com';
 	}
 
 	/**
@@ -1194,7 +1194,7 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 * @param bool   $is_customer_note Whether the note was meant for the customer.
 	 */
 	private function shop_note( int $id, string $content, bool $is_customer_note = false ): void {
-		$this->note( $id, $content, 'woocommerce@shop.hu', $is_customer_note, 'WooCommerce' );
+		$this->note( $id, $content, 'woocommerce@shop.example.com', $is_customer_note, 'WooCommerce' );
 	}
 
 	/**
