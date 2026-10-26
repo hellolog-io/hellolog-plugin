@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Queue;
 
+use HelloLog\Activator;
 use HelloLog\Events\BufferedDispatcher;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
@@ -125,6 +126,37 @@ final class QueueRepositoryTest extends TestCase {
 		$this->assertSame( [ 'wp_2_hellolog_queue' ], $this->wpdb->tables );
 		$this->assertArrayHasKey( 'hellolog_sensor_filters', NetworkState::$options[2] );
 		$this->assertSame( 0, NetworkState::$switch_count );
+	}
+
+	/**
+	 * Deleting a site from the network screens fires events stamped with the
+	 * site being deleted (its deletion, its users leaving), and by the time
+	 * they are written its tables are gone. They go to the main site's
+	 * queue; the deleted site is never set up again.
+	 */
+	public function test_an_event_of_a_deleted_site_goes_to_the_main_sites_queue(): void {
+		unset( NetworkState::$sites[3] );
+		$this->wpdb->tables = [ 'wp_hellolog_queue', 'wp_2_hellolog_queue' ];
+
+		( new QueueRepository() )->insert( '{"code":4101}', 3 );
+
+		$this->assertSame( [ 'wp_hellolog_queue' ], array_column( $this->wpdb->inserts, 0 ) );
+		$this->assertSame( '{"code":4101}', $this->wpdb->inserts[0][1]['payload'] );
+		$this->assertSame( [ 'wp_hellolog_queue', 'wp_2_hellolog_queue' ], $this->wpdb->tables, 'No table is created for the deleted site.' );
+		$this->assertSame( [], $this->wpdb->deltas );
+		$this->assertArrayNotHasKey( 3, NetworkState::$options );
+		$this->assertSame( 0, NetworkState::$switch_count );
+		$this->assertSame( [], $this->wpdb->errors );
+	}
+
+	public function test_a_deleted_site_is_never_set_up(): void {
+		unset( NetworkState::$sites[3] );
+
+		Activator::set_up_site( 3 );
+
+		$this->assertSame( 0, NetworkState::$switch_count );
+		$this->assertSame( [], $this->wpdb->deltas );
+		$this->assertSame( [], NetworkState::$options );
 	}
 
 	public function test_a_single_site_is_set_up_without_switching(): void {

@@ -158,13 +158,18 @@ final class Activator {
 	/**
 	 * Set up one site the way activation does: the current site, or the
 	 * site named, switched to and back. The queue calls it for a site that
-	 * has no table yet.
+	 * has no table yet. A site that does not exist (any more) is left alone:
+	 * switching to it would create a queue table and query an options table
+	 * that are not there.
 	 *
 	 * @param ?int $blog_id Site id; null for the current site.
 	 */
 	public static function set_up_site( ?int $blog_id = null ): void {
 		if ( null === $blog_id || ! is_multisite() || get_current_blog_id() === $blog_id ) {
 			self::activate_site();
+			return;
+		}
+		if ( null === get_site( $blog_id ) ) {
 			return;
 		}
 

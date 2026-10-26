@@ -49,7 +49,9 @@ final class QueueRepository {
 	 * happened, so the caller names the site the event belongs to; its queue
 	 * gets the row. Without a site the current site's queue does. A site
 	 * that has no queue table yet is set up first, see
-	 * {@see self::ready_table()}.
+	 * {@see self::ready_table()}. A site that no longer exists (deleting a
+	 * site fires events stamped with it, written after its tables are gone)
+	 * hands its events to the main site's queue and is never set up again.
 	 *
 	 * @param string $payload JSON of the event.
 	 * @param ?int   $blog_id Site the event happened on; null for the current site.
@@ -61,7 +63,7 @@ final class QueueRepository {
 	public function insert( string $payload, ?int $blog_id = null ): int {
 		global $wpdb;
 
-		$table = $this->ready_table( $blog_id );
+		$table = $this->ready_table( self::existing_site( $blog_id ) );
 
 		$now = current_time( 'mysql', true );
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
@@ -82,6 +84,20 @@ final class QueueRepository {
 		}
 
 		return (int) $wpdb->insert_id;
+	}
+
+	/**
+	 * The site an event is queued on: the one named while it exists, the
+	 * main site once it was deleted.
+	 *
+	 * @param ?int $blog_id Site id on a network; null for the current site.
+	 */
+	private static function existing_site( ?int $blog_id ): ?int {
+		if ( null === $blog_id || ! function_exists( 'is_multisite' ) || ! is_multisite() || ! function_exists( 'get_site' ) ) {
+			return $blog_id;
+		}
+
+		return null === get_site( $blog_id ) ? (int) get_main_site_id() : $blog_id;
 	}
 
 	/**

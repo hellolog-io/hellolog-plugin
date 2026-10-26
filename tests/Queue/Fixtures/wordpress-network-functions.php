@@ -72,6 +72,21 @@ namespace {
 		return true;
 	}
 
+	/**
+	 * The site, or null when there is no such site (it was deleted).
+	 *
+	 * @param int $blog_id Site id.
+	 */
+	function get_site( $blog_id ): ?WP_Site {
+		$blog_id = (int) $blog_id;
+
+		return isset( NetworkState::$sites[ $blog_id ] ) ? new WP_Site( $blog_id, NetworkState::$sites[ $blog_id ] ) : null;
+	}
+
+	function get_main_site_id(): int {
+		return 1;
+	}
+
 	function get_current_blog_id(): int {
 		return NetworkState::$current_blog;
 	}
