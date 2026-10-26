@@ -4,7 +4,7 @@ Tags:              activity log, audit log, security, monitoring, woocommerce
 Requires at least: 6.4
 Tested up to:      6.7
 Requires PHP:      8.0
-Stable tag:        0.4.4
+Stable tag:        0.5.0
 License:           GPL-2.0-or-later
 License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -75,7 +75,38 @@ Request one from your hellolog.io dashboard (https://app.hellolog.io) —
 every site is issued its own key, bound to its domain. Paste it into
 **Tools → helloLOG → Settings**.
 
+== Upgrade Notice ==
+
+= 0.5.0 =
+Requires the HelloLog service release from 2026-10 or later. Events now carry actor, target, source, changes and links.
+
 == Changelog ==
+
+= 0.5.0 =
+* Note: Requires the HelloLog service release from 2026-10 or later.
+* New: Every event says who did it (the actor) separately from what it was
+  done to (the target), and where it came from: admin, frontend, REST API,
+  AJAX, cron, Action Scheduler, WP-CLI or XML-RPC.
+* New: Events list what changed (old and new values) and link back to the
+  edit screen. Messages are rendered from template variables.
+* New: WooCommerce order notes are logged with their text and type
+  (customer, private, system or status).
+* New: Posts reverted to auto-draft are logged.
+* New: The `hellolog_suppression_rules` filter adjusts the per-request
+  de-duplication rules.
+* Change: The events of one request are de-duplicated and the most specific
+  event wins — an order note is no longer logged twice, plain status notes
+  fold into the order status change, and publishing a new post logs
+  "published".
+* Change: Settings changes record the HTTP method.
+* Change: Credential-like values are masked more thoroughly: nested keys in
+  arrays and JSON, passwords inside URLs, and bank details.
+* Fix: A new registration no longer logs a false role change.
+* Fix: Empty "post updated" events are dropped.
+* Fix: Plugins' own bookkeeping writes and background option changes are no
+  longer logged as settings changes.
+* Fix: WordPress' own auto-draft cleanup is no longer logged.
+* Fix: A two-factor login is no longer logged as "2FA enabled".
 
 = 0.4.4 =
 * Change: Events carry a hash of the login session instead of the session
