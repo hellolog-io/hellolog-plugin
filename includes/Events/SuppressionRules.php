@@ -48,6 +48,15 @@ final class SuppressionRules {
 	private const ELLIPSIS = '…';
 
 	/**
+	 * The roles a site hands to new users on its own (WordPress's default
+	 * role, the shop's customer role). Only their first assignment is told by
+	 * the registration event; every other role is logged.
+	 *
+	 * @var array<int, string>
+	 */
+	private const DEFAULT_ROLES = [ 'customer', 'subscriber' ];
+
+	/**
 	 * Code => codes that make it redundant.
 	 *
 	 * @var array<int, array<int, int>>
@@ -107,7 +116,9 @@ final class SuppressionRules {
 				4000 => [ 9300 ],
 				9103 => [ 9101 ],
 			],
-			[ 2006, 4001, 4002 ],
+			// Role changes are not merged: folding two of them would keep the
+			// message of the first and understate the final privilege.
+			[ 2006, 4001 ],
 			[ 2006, 4001 ],
 			[
 				// Only the notes WooCommerce writes itself repeat a status change;
@@ -119,10 +130,11 @@ final class SuppressionRules {
 				// the sign-up and must stay on record with the registration.
 				4000 => static fn( array $p ): bool => 'customer' === ( $p['vars']['role'] ?? null ),
 
-				// Only the role a new user starts with is part of the registration.
-				// A later change, from a role the user already had, is its own
-				// event even in the same request.
-				4002 => static fn( array $p ): bool => self::is_initial_role( $p ),
+				// Only the plain default role a new user starts with is part of the
+				// registration. Any other first role (a multisite grant after the
+				// default one, an editor, a shop manager) and any later change,
+				// from a role the user already had, is an event of its own.
+				4002 => static fn( array $p ): bool => self::is_first_default_role( $p ),
 			]
 		);
 	}
@@ -310,17 +322,18 @@ final class SuppressionRules {
 	}
 
 	/**
-	 * Whether a role change is the first role a user gets: its `role` item has
-	 * no previous role. A payload with no `role` item is not one.
+	 * Whether a role change is only the plain default role a new user starts
+	 * with: its `role` item has no previous role and the new role is one of
+	 * {@see self::DEFAULT_ROLES}. A payload with no `role` item is not one.
 	 *
 	 * @param array<string, mixed> $payload Payload.
 	 */
-	private static function is_initial_role( array $payload ): bool {
+	private static function is_first_default_role( array $payload ): bool {
 		foreach ( self::changes_of( $payload ) as $item ) {
 			if ( 'role' === ( $item['field'] ?? null ) ) {
 				$old = $item['old'] ?? null;
 
-				return null === $old || '' === $old;
+				return ( null === $old || '' === $old ) && in_array( $item['new'] ?? null, self::DEFAULT_ROLES, true );
 			}
 		}
 

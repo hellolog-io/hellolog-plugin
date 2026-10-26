@@ -595,38 +595,89 @@ final class UserTargetTest extends TestCase {
 	}
 
 	/**
-	 * A privileged first role must stay on record: the registration event
-	 * carries it.
+	 * @return array<string, array{0: string, 1: bool}> Role, whether it is set first.
+	 */
+	public static function privileged_registrations(): array {
+		$cases = [];
+		foreach ( [ 'administrator', 'editor', 'shop_manager' ] as $role ) {
+			$cases[ $role . ', role first' ]         = [ $role, true ];
+			$cases[ $role . ', registration first' ] = [ $role, false ];
+		}
+
+		return $cases;
+	}
+
+	/**
+	 * A first role other than a plain default stays on record twice: the
+	 * registration names it, and the grant itself stays as a role change (an
+	 * acceptable duplicate; the grant must never be hidden).
 	 *
-	 * @dataProvider hook_orders
+	 * @dataProvider privileged_registrations
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_a_registration_as_administrator_keeps_the_registration_with_its_role( bool $role_first ): void {
-		$this->wp_user( 7, 'bob', [ 'administrator' ] );
+	public function test_a_registration_with_a_privileged_role_keeps_the_registration_and_the_grant( string $role, bool $role_first ): void {
+		$this->wp_user( 7, 'bob', [ $role ] );
 
 		$recorder = $this->recorder();
 		$sensor   = new UserProfileSensor( $recorder );
 		if ( $role_first ) {
-			$sensor->on_role_change( 7, 'administrator', [] );
+			$sensor->on_role_change( 7, $role, [] );
 			$sensor->on_register( 7 );
 		} else {
 			$sensor->on_register( 7 );
-			$sensor->on_role_change( 7, 'administrator', [] );
+			$sensor->on_role_change( 7, $role, [] );
 		}
 
 		$survivors = $this->survive( $recorder );
 
-		$this->assertSame( [ 4000 ], array_column( $survivors, 'code' ) );
-		$this->assertSame( 'administrator', $survivors[0]['vars']['role'] );
-		$this->assertStringContainsString( 'administrator', $survivors[0]['message'] );
+		$by_code = array_column( $survivors, null, 'code' );
+		$this->assertCount( 2, $survivors );
+		$this->assertSame( $role, $by_code[4000]['vars']['role'] );
+		$this->assertStringContainsString( $role, $by_code[4000]['message'] );
+		$this->assertSame( $role, $by_code[4002]['changes'][0]['new'] );
+		$this->assertSame( '7', $by_code[4002]['target']['id'] );
+	}
+
+	/**
+	 * Multisite creates the user with the default role, strips it, and then
+	 * grants the real one when it adds the user to the site: the grant has no
+	 * previous role either.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_multisite_style_admin_grant_after_a_default_role_registration_is_kept(): void {
+		$this->wp_user( 7, 'bob', [ 'subscriber' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_change( 7, 'subscriber', [] );
+		$sensor->on_register( 7 );
+		$sensor->on_role_change( 7, 'administrator', [] );
+
+		$survivors = $this->survive( $recorder );
+
+		$this->assertSame( [ 4000, 4002 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'subscriber', $survivors[0]['vars']['role'] );
+		$this->assertSame(
+			[
+				[
+					'field' => 'role',
+					'old'   => '',
+					'new'   => 'administrator',
+				],
+			],
+			$survivors[1]['changes']
+		);
+		$this->assertSame( 'administrator', $survivors[1]['vars']['new_role'] );
 	}
 
 	/**
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_a_shop_registration_as_administrator_keeps_both_the_registration_and_the_customer_event(): void {
+	public function test_a_shop_registration_as_administrator_keeps_the_registration_the_grant_and_the_customer_event(): void {
 		$this->wp_user( 7, 'bob', [ 'administrator' ] );
 
 		$recorder = $this->recorder();
@@ -637,8 +688,30 @@ final class UserTargetTest extends TestCase {
 
 		$survivors = $this->survive( $recorder );
 
-		$this->assertSame( [ 4000, 9300 ], array_column( $survivors, 'code' ) );
-		$this->assertSame( 'administrator', $survivors[0]['vars']['role'] );
+		$this->assertSame( [ 4002, 4000, 9300 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( 'administrator', $survivors[1]['vars']['role'] );
+	}
+
+	/**
+	 * Every role change is its own event: a merge would keep the first one's
+	 * message and understate the final privilege.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_successive_role_changes_of_a_user_stay_separate_events(): void {
+		$this->wp_user( 7, 'bob', [ 'administrator' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_change( 7, 'editor', [ 'subscriber' ] );
+		$sensor->on_role_change( 7, 'administrator', [ 'editor' ] );
+
+		$survivors = $this->survive( $recorder );
+
+		$this->assertSame( [ 4002, 4002 ], array_column( $survivors, 'code' ) );
+		$this->assertStringContainsString( 'to editor', $survivors[0]['message'] );
+		$this->assertStringContainsString( 'to administrator', $survivors[1]['message'] );
 	}
 
 	/**

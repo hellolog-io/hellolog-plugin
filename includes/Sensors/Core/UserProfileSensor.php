@@ -29,8 +29,9 @@ defined( 'ABSPATH' ) || exit;
  * WordPress fires `set_user_role` for the first role of a new user BEFORE
  * `user_register`, so a registration also produces a role change. This
  * sensor does not try to tell them apart: both events share the target, and
- * the per-request rules drop that first role change, since the registration
- * names the role. A role change from a role the user already had stays.
+ * the per-request rules drop that first role change when it is only a plain
+ * default role (`subscriber`, `customer`), since the registration names it.
+ * Any other role, and any change from a role the user already had, stays.
  */
 final class UserProfileSensor extends AbstractSensor {
 

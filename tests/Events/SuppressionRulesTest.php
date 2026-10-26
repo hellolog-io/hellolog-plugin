@@ -98,11 +98,11 @@ final class SuppressionRulesTest extends TestCase {
 	 * A role change (4002) of a user.
 	 *
 	 * @param ?string $old Previous roles as the sensor reports them; '' or null for none.
-	 * @param string  $new New role.
+	 * @param ?string $new New role.
 	 *
 	 * @return array<string, mixed>
 	 */
-	private static function role_change( int $user, ?string $old, string $new ): array {
+	private static function role_change( int $user, ?string $old, ?string $new ): array {
 		return self::event( 4002, self::user( $user ), [ self::change( 'role', $old, $new ) ] );
 	}
 
@@ -155,8 +155,8 @@ final class SuppressionRulesTest extends TestCase {
 			]
 		);
 
-		$this->assertSame( [ 4000, 9300 ], self::codes( $result ) );
-		$this->assertSame( 'administrator', $result[0]['vars']['role'] );
+		$this->assertSame( [ 4002, 4000, 9300 ], self::codes( $result ) );
+		$this->assertSame( 'administrator', $result[1]['vars']['role'] );
 	}
 
 	/**
@@ -254,7 +254,112 @@ final class SuppressionRulesTest extends TestCase {
 			]
 		);
 
+		$this->assertSame( [ 4000, 4002, 4002 ], self::codes( $result ) );
+	}
+
+	/**
+	 * Multisite adds a user to a site by registering them with the default
+	 * role, stripping it, and then granting the real role: that second grant
+	 * has no previous role either, and must not hide behind the registration.
+	 */
+	public function test_a_privileged_grant_after_a_default_role_registration_survives(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::role_change( 7, '', 'subscriber' ),
+				self::registration( 7, 'subscriber' ),
+				self::role_change( 7, '', 'administrator' ),
+			]
+		);
+
 		$this->assertSame( [ 4000, 4002 ], self::codes( $result ) );
+		$this->assertSame( 'subscriber', $result[0]['vars']['role'] );
+		$this->assertSame( 'administrator', $result[1]['changes'][0]['new'] );
+	}
+
+	/**
+	 * @return array<string, array{0: ?string}> The new role of a first assignment.
+	 */
+	public static function roles_that_are_not_a_plain_default(): array {
+		return [
+			'editor'        => [ 'editor' ],
+			'author'        => [ 'author' ],
+			'administrator' => [ 'administrator' ],
+			'shop manager'  => [ 'shop_manager' ],
+			'custom role'   => [ 'wholesale_buyer' ],
+			'wrong case'    => [ 'Subscriber' ],
+			'padded'        => [ 'customer ' ],
+			'no role'       => [ '' ],
+			'null'          => [ null ],
+		];
+	}
+
+	/**
+	 * @dataProvider roles_that_are_not_a_plain_default
+	 */
+	public function test_a_first_assignment_of_any_other_role_survives_the_registration( ?string $new ): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::role_change( 7, '', $new ),
+				self::registration( 7, 'subscriber' ),
+			]
+		);
+
+		$this->assertSame( [ 4002, 4000 ], self::codes( $result ) );
+	}
+
+	/**
+	 * @dataProvider roles_that_are_not_a_plain_default
+	 */
+	public function test_a_first_assignment_of_any_other_role_survives_the_shop_event( ?string $new ): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::role_change( 7, null, $new ),
+				self::event( 9300, self::user( 7 ) ),
+			]
+		);
+
+		$this->assertSame( [ 4002, 9300 ], self::codes( $result ) );
+	}
+
+	public function test_both_plain_defaults_are_first_assignments_that_yield(): void {
+		foreach ( [ 'customer', 'subscriber' ] as $role ) {
+			$result = SuppressionRules::defaults()->apply(
+				[
+					self::role_change( 7, '', $role ),
+					self::registration( 7, $role ),
+				]
+			);
+
+			$this->assertSame( [ 4000 ], self::codes( $result ), "the first $role must yield to the registration" );
+		}
+	}
+
+	/**
+	 * A merge would keep the message and vars of the first role change and
+	 * understate the final privilege, so every role change stays its own event.
+	 */
+	public function test_role_changes_of_a_user_are_never_folded(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::role_change( 7, 'subscriber', 'editor' ),
+				self::role_change( 7, 'editor', 'administrator' ),
+			]
+		);
+
+		$this->assertSame( [ 4002, 4002 ], self::codes( $result ) );
+		$this->assertSame( 'editor', $result[0]['changes'][0]['new'] );
+		$this->assertSame( 'administrator', $result[1]['changes'][0]['new'] );
+	}
+
+	public function test_a_role_change_that_goes_back_is_still_logged_twice(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::role_change( 7, 'subscriber', 'administrator' ),
+				self::role_change( 7, 'administrator', 'subscriber' ),
+			]
+		);
+
+		$this->assertSame( [ 4002, 4002 ], self::codes( $result ) );
 	}
 
 	public function test_only_the_role_item_decides_whether_a_role_change_is_the_first_assignment(): void {
@@ -420,11 +525,11 @@ final class SuppressionRulesTest extends TestCase {
 			[
 				self::event( 4001, self::user( 7 ), [ self::change( 'display_name', 'a', 'b' ) ] ),
 				self::event( 4001, self::user( 8 ), [ self::change( 'display_name', 'c', 'd' ) ] ),
-				self::event( 4002, self::user( 7 ), [ self::change( 'role', 'x', 'y' ) ] ),
+				self::event( 2006, self::user( 7 ), [ self::change( 'post_title', 'x', 'y' ) ] ),
 			]
 		);
 
-		$this->assertSame( [ 4001, 4001, 4002 ], self::codes( $result ) );
+		$this->assertSame( [ 4001, 4001, 2006 ], self::codes( $result ) );
 	}
 
 	public function test_merged_payload_sits_at_the_first_position(): void {
@@ -467,8 +572,8 @@ final class SuppressionRulesTest extends TestCase {
 
 		$result = SuppressionRules::defaults()->apply(
 			[
-				self::event( 4002, self::user( 7 ), [ self::change( str_repeat( 'f', 100 ), 'x', $long ) ] ),
-				self::event( 4002, self::user( 7 ), [ self::change( 'role', $long, 'y' ) ] ),
+				self::event( 4001, self::user( 7 ), [ self::change( str_repeat( 'f', 100 ), 'x', $long ) ] ),
+				self::event( 4001, self::user( 7 ), [ self::change( 'display_name', $long, 'y' ) ] ),
 			]
 		);
 
@@ -483,17 +588,17 @@ final class SuppressionRulesTest extends TestCase {
 	}
 
 	public function test_merge_that_ends_up_empty_drops_the_changes_key(): void {
-		// 4002 merges but is not in drop_empty: the payload stays, minus an
+		// A merge code that is not in drop_empty: the payload stays, minus an
 		// empty `changes` container.
-		$result = SuppressionRules::defaults()->apply(
+		$result = ( new SuppressionRules( [], [ 5000 ], [] ) )->apply(
 			[
-				self::event( 4002, self::user( 7 ), [ self::change( 'role', 'a', 'b' ) ] ),
-				self::event( 4002, self::user( 7 ), [ self::change( 'role', 'b', 'a' ) ] ),
+				self::event( 5000, self::user( 7 ), [ self::change( 'role', 'a', 'b' ) ] ),
+				self::event( 5000, self::user( 7 ), [ self::change( 'role', 'b', 'a' ) ] ),
 			]
 		);
 
 		$this->assertCount( 1, $result );
-		$this->assertSame( 4002, $result[0]['code'] );
+		$this->assertSame( 5000, $result[0]['code'] );
 		$this->assertArrayNotHasKey( 'changes', $result[0] );
 	}
 

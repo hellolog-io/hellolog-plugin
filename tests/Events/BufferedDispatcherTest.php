@@ -289,12 +289,12 @@ final class BufferedDispatcherTest extends TestCase {
 				],
 			],
 		];
-		$dispatcher->dispatch( 4002, $bad( 'a' ) );
-		$dispatcher->dispatch( 4002, $bad( 'b' ) );
+		$dispatcher->dispatch( 4001, $bad( 'a' ) );
+		$dispatcher->dispatch( 4001, $bad( 'b' ) );
 		$dispatcher->flush();
 
 		// Better a duplicate than a lost audit event.
-		$this->assertSame( [ 4002, 4002 ], array_column( $this->decoded(), 'code' ) );
+		$this->assertSame( [ 4001, 4001 ], array_column( $this->decoded(), 'code' ) );
 	}
 
 	// ---- lazy rules ----------------------------------------------------
