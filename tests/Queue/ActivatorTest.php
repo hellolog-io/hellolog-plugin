@@ -178,6 +178,14 @@ final class ActivatorTest extends TestCase {
 			],
 			WpCalls::$hooks['wpmu_drop_tables'] ?? null
 		);
+		$this->assertSame(
+			[
+				'priority'      => 1,
+				'accepted_args' => 1,
+			],
+			WpCalls::$hooks['wp_uninitialize_site'] ?? null,
+			'Before core starts dropping the tables (priority 10).'
+		);
 	}
 
 	/**

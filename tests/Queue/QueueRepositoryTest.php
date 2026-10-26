@@ -159,6 +159,59 @@ final class QueueRepositoryTest extends TestCase {
 		$this->assertSame( [], NetworkState::$options );
 	}
 
+	/**
+	 * A site whose tables are gone, or never were made, while its row is
+	 * still there is gone as well.
+	 */
+	public function test_an_event_of_a_site_that_is_not_initialized_goes_to_the_main_sites_queue(): void {
+		NetworkState::$uninitialized = [ 3 ];
+		$this->wpdb->tables          = [ 'wp_hellolog_queue', 'wp_2_hellolog_queue' ];
+
+		( new QueueRepository() )->insert( '{"code":4101}', 3 );
+
+		$this->assertSame( [ 'wp_hellolog_queue' ], array_column( $this->wpdb->inserts, 0 ) );
+		$this->assertSame( [], $this->wpdb->deltas );
+		$this->assertArrayNotHasKey( 3, NetworkState::$options );
+		$this->assertSame( [], $this->wpdb->errors );
+	}
+
+	/**
+	 * Deleting a site drops its tables one by one, and every DROP is itself
+	 * an event: a full buffer can be written in the middle of that. From the
+	 * moment WordPress starts taking the site apart, its events go to the
+	 * main site's queue, even though the site was found initialized earlier
+	 * in the request.
+	 */
+	public function test_events_written_while_a_site_is_taken_apart_go_to_the_main_sites_queue(): void {
+		$repository = new QueueRepository();
+		$repository->insert( '{"code":4001}', 3 );
+
+		QueueRepository::forget_site( new \WP_Site( 3, 1 ) );
+		$repository->insert( '{"code":7101}', 3 );
+
+		$this->assertSame( [ 'wp_3_hellolog_queue', 'wp_hellolog_queue' ], array_column( $this->wpdb->inserts, 0 ) );
+	}
+
+	public function test_a_site_is_checked_once_per_request(): void {
+		$repository = new QueueRepository();
+		$repository->insert( '{"code":1}', 3 );
+		$repository->insert( '{"code":2}', 3 );
+		( new QueueRepository() )->insert( '{"code":3}', 3 );
+
+		$this->assertSame( 1, NetworkState::$initialized_checks );
+	}
+
+	public function test_a_site_that_is_not_initialized_is_never_set_up(): void {
+		NetworkState::$uninitialized = [ 2, 3 ];
+
+		Activator::set_up_site( 3 );
+		Activator::set_up_site( 2 );
+
+		$this->assertSame( 0, NetworkState::$switch_count );
+		$this->assertSame( [], $this->wpdb->deltas );
+		$this->assertSame( [], NetworkState::$options );
+	}
+
 	public function test_a_single_site_is_set_up_without_switching(): void {
 		NetworkState::$multisite    = false;
 		NetworkState::$current_blog = 1;

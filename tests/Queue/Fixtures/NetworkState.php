@@ -43,6 +43,17 @@ final class NetworkState {
 	/** The site the request is on. */
 	public static int $current_blog = 1;
 
+	/**
+	 * Sites that exist but are not initialized (no tables, or their tables
+	 * are being dropped).
+	 *
+	 * @var array<int, int>
+	 */
+	public static array $uninitialized = [];
+
+	/** Calls of `wp_is_site_initialized()`. */
+	public static int $initialized_checks = 0;
+
 	/** Calls of `switch_to_blog()`. */
 	public static int $switch_count = 0;
 

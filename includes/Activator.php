@@ -56,6 +56,8 @@ final class Activator {
 	public static function register(): void {
 		add_action( 'wp_initialize_site', [ self::class, 'initialize_site' ], 100, 1 );
 		add_filter( 'wpmu_drop_tables', [ self::class, 'drop_with_site' ], 10, 2 );
+		// Before core starts dropping the site's tables (priority 10).
+		add_action( 'wp_uninitialize_site', [ Queue\QueueRepository::class, 'forget_site' ], 1, 1 );
 	}
 
 	/**
@@ -158,18 +160,19 @@ final class Activator {
 	/**
 	 * Set up one site the way activation does: the current site, or the
 	 * site named, switched to and back. The queue calls it for a site that
-	 * has no table yet. A site that does not exist (any more) is left alone:
-	 * switching to it would create a queue table and query an options table
-	 * that are not there.
+	 * has no table yet. A site that does not exist (any more) or is not
+	 * initialized is left alone, see {@see self::site_exists()}: setting it
+	 * up would create a queue table and query an options table that are not
+	 * there.
 	 *
 	 * @param ?int $blog_id Site id; null for the current site.
 	 */
 	public static function set_up_site( ?int $blog_id = null ): void {
-		if ( null === $blog_id || ! is_multisite() || get_current_blog_id() === $blog_id ) {
-			self::activate_site();
+		if ( null !== $blog_id && is_multisite() && ! self::site_exists( $blog_id ) ) {
 			return;
 		}
-		if ( null === get_site( $blog_id ) ) {
+		if ( null === $blog_id || ! is_multisite() || get_current_blog_id() === $blog_id ) {
+			self::activate_site();
 			return;
 		}
 
@@ -179,6 +182,21 @@ final class Activator {
 		} finally {
 			restore_current_blog();
 		}
+	}
+
+	/**
+	 * Whether a site of the network exists and is initialized (its tables
+	 * are there). A deleted site has no row; a site being deleted, or one
+	 * whose creation failed, has its row but not its tables.
+	 *
+	 * @param int $blog_id Site id.
+	 */
+	public static function site_exists( int $blog_id ): bool {
+		if ( null === get_site( $blog_id ) ) {
+			return false;
+		}
+
+		return ! function_exists( 'wp_is_site_initialized' ) || wp_is_site_initialized( $blog_id );
 	}
 
 	/**

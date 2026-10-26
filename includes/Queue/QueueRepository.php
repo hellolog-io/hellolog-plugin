@@ -32,6 +32,20 @@ final class QueueRepository {
 	private static array $checked_tables = [];
 
 	/**
+	 * Sites found to exist and be initialized in this request.
+	 *
+	 * @var array<int, true>
+	 */
+	private static array $usable_sites = [];
+
+	/**
+	 * Sites WordPress started taking apart in this request.
+	 *
+	 * @var array<int, true>
+	 */
+	private static array $forgotten_sites = [];
+
+	/**
 	 * The queue table of the current site, or of the site `$blog_id` names.
 	 *
 	 * @param ?int $blog_id Site id on a network; null for the current site.
@@ -49,9 +63,10 @@ final class QueueRepository {
 	 * happened, so the caller names the site the event belongs to; its queue
 	 * gets the row. Without a site the current site's queue does. A site
 	 * that has no queue table yet is set up first, see
-	 * {@see self::ready_table()}. A site that no longer exists (deleting a
-	 * site fires events stamped with it, written after its tables are gone)
-	 * hands its events to the main site's queue and is never set up again.
+	 * {@see self::ready_table()}. A site that no longer exists or is not
+	 * initialized (deleting a site fires events stamped with it, written
+	 * while or after its tables are dropped) hands its events to the main
+	 * site's queue and is never set up again, see {@see self::existing_site()}.
 	 *
 	 * @param string $payload JSON of the event.
 	 * @param ?int   $blog_id Site the event happened on; null for the current site.
@@ -87,8 +102,27 @@ final class QueueRepository {
 	}
 
 	/**
-	 * The site an event is queued on: the one named while it exists, the
-	 * main site once it was deleted.
+	 * Stop queueing on a site WordPress starts taking apart: its events go to
+	 * the main site's queue from now on. Hooked to `wp_uninitialize_site`
+	 * before core drops the site's tables, because every DROP is itself an
+	 * event, and a full buffer can be written in the middle of the drops.
+	 *
+	 * @param mixed $site The site being deleted (`WP_Site`).
+	 */
+	public static function forget_site( $site ): void {
+		if ( ! $site instanceof \WP_Site ) {
+			return;
+		}
+
+		$blog_id                           = (int) $site->blog_id;
+		self::$forgotten_sites[ $blog_id ] = true;
+		unset( self::$usable_sites[ $blog_id ] );
+	}
+
+	/**
+	 * The site an event is queued on: the one named while it exists and is
+	 * initialized, the main site otherwise. A site found usable is not
+	 * looked up again in the request, unless it is being taken apart.
 	 *
 	 * @param ?int $blog_id Site id on a network; null for the current site.
 	 */
@@ -96,8 +130,15 @@ final class QueueRepository {
 		if ( null === $blog_id || ! function_exists( 'is_multisite' ) || ! is_multisite() || ! function_exists( 'get_site' ) ) {
 			return $blog_id;
 		}
+		if ( isset( self::$usable_sites[ $blog_id ] ) ) {
+			return $blog_id;
+		}
+		if ( isset( self::$forgotten_sites[ $blog_id ] ) || ! Activator::site_exists( $blog_id ) ) {
+			return (int) get_main_site_id();
+		}
+		self::$usable_sites[ $blog_id ] = true;
 
-		return null === get_site( $blog_id ) ? (int) get_main_site_id() : $blog_id;
+		return $blog_id;
 	}
 
 	/**

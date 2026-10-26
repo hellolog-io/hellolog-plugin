@@ -83,6 +83,16 @@ namespace {
 		return isset( NetworkState::$sites[ $blog_id ] ) ? new WP_Site( $blog_id, NetworkState::$sites[ $blog_id ] ) : null;
 	}
 
+	/**
+	 * @param int|WP_Site $site_id Site.
+	 */
+	function wp_is_site_initialized( $site_id ): bool {
+		++NetworkState::$initialized_checks;
+		$site_id = is_object( $site_id ) ? (int) $site_id->blog_id : (int) $site_id;
+
+		return ! in_array( $site_id, NetworkState::$uninitialized, true );
+	}
+
 	function get_main_site_id(): int {
 		return 1;
 	}
