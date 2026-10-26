@@ -29,12 +29,17 @@ final class EventBuilderV2Test extends TestCase {
 	/**
 	 * A builder with a fixed request context and a fixed source.
 	 *
-	 * @param string          $source Request source the builder reports.
-	 * @param RequestContext? $ctx    Context of the current request; defaults to admin user 1.
+	 * @param string          $source   Request source the builder reports.
+	 * @param RequestContext? $ctx      Context of the current request; defaults to admin user 1.
+	 * @param string          $template Message template of the test event.
 	 */
-	private function builder( string $source = RequestSource::ADMIN, ?RequestContext $ctx = null ): EventBuilder {
+	private function builder(
+		string $source = RequestSource::ADMIN,
+		?RequestContext $ctx = null,
+		string $template = '{username} did {thing}'
+	): EventBuilder {
 		$catalog = new EventCatalog();
-		$catalog->register( new EventDefinition( self::CODE, 'user', 'updated', 'info', '{username} did {thing}' ) );
+		$catalog->register( new EventDefinition( self::CODE, 'user', 'updated', 'info', $template ) );
 
 		$ctx ??= new RequestContext( 1, 'admin', [ 'administrator' ], '203.0.113.9', 'PHPUnit', null );
 
@@ -163,11 +168,60 @@ final class EventBuilderV2Test extends TestCase {
 	public function test_explicit_actor_overrides_the_current_user_when_interactive(): void {
 		$payload = $this->build(
 			$this->builder( RequestSource::ADMIN ),
-			[ 'actor' => [ 'username' => 'bob' ] ]
+			[
+				'actor' => [
+					'id'       => 9,
+					'username' => 'bob',
+					'roles'    => [ 'editor' ],
+				],
+			]
 		);
 
-		$this->assertSame( 'bob', $payload['user']['username'] );
-		$this->assertSame( 1, $payload['user']['id'] );
+		$this->assertSame(
+			[
+				'id'       => 9,
+				'username' => 'bob',
+				'roles'    => [ 'editor' ],
+			],
+			$payload['user']
+		);
+	}
+
+	public function test_partial_actor_is_not_completed_from_the_current_user(): void {
+		foreach ( [ RequestSource::ADMIN, RequestSource::REST, RequestSource::CRON ] as $source ) {
+			$payload = $this->build(
+				$this->builder( $source ),
+				[ 'actor' => [ 'username' => 'bob' ] ]
+			);
+
+			$this->assertSame( [ 'username' => 'bob' ], $payload['user'], $source );
+		}
+	}
+
+	public function test_empty_explicit_actor_falls_back_to_the_normal_policy(): void {
+		$empty_actors = [
+			'null user'      => [ 'user' => null ],
+			'null actor'     => [ 'actor' => null ],
+			'empty array'    => [ 'actor' => [] ],
+			'only blanks'    => [
+				'actor' => [
+					'id'       => null,
+					'username' => '',
+					'roles'    => [],
+				],
+			],
+			'not an array'   => [ 'actor' => 'bob' ],
+		];
+
+		foreach ( $empty_actors as $name => $fields ) {
+			$interactive = $this->build( $this->builder( RequestSource::ADMIN ), $fields );
+			$this->assertSame( 'admin', $interactive['user']['username'], $name );
+			$this->assertSame( 1, $interactive['user']['id'], $name );
+
+			$background = $this->build( $this->builder( RequestSource::CRON ), $fields );
+			$this->assertArrayNotHasKey( 'user', $background, $name );
+			$this->assertSame( 'admin', $background['metadata']['initiated_by'], $name );
+		}
 	}
 
 	public function test_legacy_user_field_is_an_alias_of_actor(): void {
@@ -227,7 +281,101 @@ final class EventBuilderV2Test extends TestCase {
 		$this->assertSame( 'explicit', $payload['vars']['thing'] );
 		$this->assertSame( 'bob', $payload['vars']['username'] );
 		$this->assertSame( 'e', $payload['vars']['extra'] );
-		$this->assertSame( 'bob did x', $payload['message'] );
+		$this->assertSame( 'bob did explicit', $payload['message'] );
+	}
+
+	public function test_message_is_rendered_from_vars_alone(): void {
+		$payload = $this->build(
+			$this->builder( RequestSource::ADMIN, null, '{a} did {b}' ),
+			[
+				'vars' => [
+					'a' => 'x',
+					'b' => 'y',
+				],
+			]
+		);
+
+		$this->assertSame( 'x did y', $payload['message'] );
+		$this->assertSame(
+			[
+				'a' => 'x',
+				'b' => 'y',
+			],
+			$payload['vars']
+		);
+	}
+
+	public function test_message_reads_a_bool_the_way_vars_do(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'username' => 'bob',
+				'thing'    => true,
+			]
+		);
+
+		$this->assertSame( 'yes', $payload['vars']['thing'] );
+		$this->assertSame( 'bob did yes', $payload['message'] );
+	}
+
+	public function test_explicit_message_wins_over_the_rendered_one(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'message'  => 'custom',
+				'username' => 'bob',
+				'thing'    => 'x',
+			]
+		);
+
+		$this->assertSame( 'custom', $payload['message'] );
+		$this->assertSame( 'x', $payload['vars']['thing'] );
+	}
+
+	public function test_placeholder_without_a_value_stays_in_the_message(): void {
+		$payload = $this->build( $this->builder(), [ 'username' => 'bob' ] );
+
+		$this->assertSame( 'bob did {thing}', $payload['message'] );
+	}
+
+	public function test_vars_with_a_key_over_64_characters_are_dropped(): void {
+		$vars = [
+			str_repeat( 'k', 65 )   => 'long',
+			str_repeat( 'é', 65 )   => 'long multibyte',
+			str_repeat( 'k', 64 )   => 'exact',
+			str_repeat( 'é', 64 )   => 'exact multibyte',
+		];
+
+		$payload = $this->build( $this->builder(), [ 'vars' => $vars ] );
+
+		$this->assertSame(
+			[
+				str_repeat( 'k', 64 ) => 'exact',
+				str_repeat( 'é', 64 ) => 'exact multibyte',
+			],
+			$payload['vars']
+		);
+	}
+
+	public function test_dropped_long_var_keys_do_not_count_against_the_limit(): void {
+		$vars = [];
+		for ( $i = 1; $i <= 5; $i++ ) {
+			$vars[ str_repeat( 'k', 64 ) . $i ] = 'dropped';
+		}
+		for ( $i = 1; $i <= 40; $i++ ) {
+			$vars[ 'k' . $i ] = 'v';
+		}
+
+		$payload = $this->build( $this->builder(), [ 'vars' => $vars ] );
+
+		$this->assertCount( 40, $payload['vars'] );
+		$this->assertArrayHasKey( 'k40', $payload['vars'] );
+	}
+
+	public function test_vars_that_are_only_long_keys_are_omitted(): void {
+		$payload = $this->build( $this->builder(), [ 'vars' => [ str_repeat( 'k', 65 ) => 'v' ] ] );
+
+		$this->assertArrayNotHasKey( 'vars', $payload );
 	}
 
 	public function test_vars_are_strings_with_non_scalars_stringified(): void {
@@ -429,21 +577,86 @@ final class EventBuilderV2Test extends TestCase {
 		);
 	}
 
-	public function test_target_values_are_clamped(): void {
+	public function test_over_long_target_type_drops_the_whole_target(): void {
 		$payload = $this->build(
 			$this->builder(),
 			[
 				'target' => [
-					'type'  => str_repeat( 't', 40 ),
-					'id'    => str_repeat( 'i', 70 ),
+					'type'  => str_repeat( 't', 33 ),
+					'id'    => '7',
+					'label' => 'bob',
+				],
+			]
+		);
+
+		$this->assertArrayNotHasKey( 'target', $payload );
+	}
+
+	public function test_over_long_target_id_drops_the_whole_target(): void {
+		foreach ( [ str_repeat( 'i', 65 ), str_repeat( 'é', 65 ) ] as $id ) {
+			$payload = $this->build(
+				$this->builder(),
+				[
+					'target' => [
+						'type'  => 'post',
+						'id'    => $id,
+						'label' => 'Hello',
+					],
+				]
+			);
+
+			$this->assertArrayNotHasKey( 'target', $payload );
+		}
+	}
+
+	public function test_target_type_and_id_at_the_limit_are_kept_untouched(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'target' => [
+					'type' => str_repeat( 'é', 32 ),
+					'id'   => str_repeat( 'i', 64 ),
+				],
+			]
+		);
+
+		$this->assertSame(
+			[
+				'type' => str_repeat( 'é', 32 ),
+				'id'   => str_repeat( 'i', 64 ),
+			],
+			$payload['target']
+		);
+	}
+
+	public function test_target_label_is_clamped_but_never_drops_the_target(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'target' => [
+					'type'  => 'post',
+					'id'    => '5',
 					'label' => str_repeat( 'é', 300 ),
 				],
 			]
 		);
 
-		$this->assertSame( str_repeat( 't', 31 ) . '…', $payload['target']['type'] );
-		$this->assertSame( str_repeat( 'i', 63 ) . '…', $payload['target']['id'] );
+		$this->assertSame( 'post', $payload['target']['type'] );
+		$this->assertSame( '5', $payload['target']['id'] );
+		$this->assertSame( 255, mb_strlen( $payload['target']['label'], 'UTF-8' ) );
 		$this->assertSame( str_repeat( 'é', 254 ) . '…', $payload['target']['label'] );
+
+		$exact = $this->build(
+			$this->builder(),
+			[
+				'target' => [
+					'type'  => 'post',
+					'id'    => '5',
+					'label' => str_repeat( 'é', 255 ),
+				],
+			]
+		);
+		$this->assertSame( str_repeat( 'é', 255 ), $exact['target']['label'] );
 	}
 
 	// ---- changes ---------------------------------------------------------

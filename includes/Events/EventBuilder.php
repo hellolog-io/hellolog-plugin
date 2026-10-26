@@ -36,6 +36,7 @@ class EventBuilder {
 	private const MAX_CHANGES      = 50;
 	private const MAX_CHANGE_FIELD = 64;
 	private const MAX_VARS         = 40;
+	private const MAX_VAR_KEY      = 64;
 	private const MAX_VAR_VALUE    = 512;
 
 	/** Link keys that are sent, in the order they are emitted. */
@@ -65,16 +66,21 @@ class EventBuilder {
 	 *
 	 * @param int                  $code     Catalog code for the event kind.
 	 * @param array<string, mixed> $fields   Optional extras:
-	 *                                       - actor (assoc id, username, roles): who did it; replaces the current user.
+	 *                                       - actor (assoc id, username, roles): who did it; used as given and
+	 *                                         replaces the current user entirely. A null or empty actor
+	 *                                         counts as not passed.
 	 *                                       - user (assoc): deprecated alias of `actor`.
-	 *                                       - target (assoc type, id, label): the object it was done to.
+	 *                                       - target (assoc type, id, label): the object it was done to; dropped
+	 *                                         when `type` is over 32 or `id` over 64 characters.
 	 *                                       - changes (list of field, old, new): what changed.
 	 *                                       - links (assoc edit, view, revision): absolute http(s) URLs.
-	 *                                       - vars (assoc): template values; wins over the scanned fields.
+	 *                                       - vars (assoc): template values; wins over the scanned fields. Keys
+	 *                                         over 64 characters are dropped.
 	 *                                       - post (assoc), title, message (string), metadata (assoc),
 	 *                                         client_event_id (string).
 	 *                                       Every other scalar whose key is a `{placeholder}` of the
-	 *                                       code's message template becomes a template var.
+	 *                                       code's message template becomes a template var, and the
+	 *                                       English message is rendered from those vars.
 	 * @return array<string, mixed>|null  null if the code is unknown.
 	 */
 	public function build( int $code, array $fields = [] ): ?array {
@@ -127,10 +133,11 @@ class EventBuilder {
 			$payload['links'] = $links;
 		}
 
-		$message            = $fields['message'] ?? $this->render_message( $def->message_template, $fields );
+		$texts              = $this->var_texts( $def->message_template, $fields );
+		$message            = $fields['message'] ?? $this->render_message( $def->message_template, $texts );
 		$payload['message'] = (string) $message;
 
-		$vars = $this->collect_vars( $def->message_template, $fields );
+		$vars = $this->clean_vars( $texts );
 		if ( [] !== $vars ) {
 			$payload['vars'] = $vars;
 		}
@@ -174,15 +181,20 @@ class EventBuilder {
 
 	/**
 	 * The actor a sensor passed explicitly: `actor`, or its deprecated alias
-	 * `user`. An empty array counts as not passed.
+	 * `user`, without its empty entries. An actor that is null, not an array
+	 * or holds nothing but blanks counts as not passed, so the next alias, or
+	 * the normal policy, applies.
 	 *
 	 * @param array<string, mixed> $fields Sensor-supplied fields.
 	 * @return array<string, mixed>|null
 	 */
 	private function explicit_actor( array $fields ): ?array {
 		foreach ( [ 'actor', 'user' ] as $key ) {
-			if ( isset( $fields[ $key ] ) && is_array( $fields[ $key ] ) && [] !== $fields[ $key ] ) {
-				return $fields[ $key ];
+			if ( isset( $fields[ $key ] ) && is_array( $fields[ $key ] ) ) {
+				$actor = $this->compact_actor( $fields[ $key ] );
+				if ( null !== $actor ) {
+					return $actor;
+				}
 			}
 		}
 
@@ -192,40 +204,30 @@ class EventBuilder {
 	/**
 	 * The `user` of the payload.
 	 *
-	 * Interactive requests fill whatever the actor leaves out from the current
-	 * user. A background run (cron, Action Scheduler) has no person behind it:
-	 * without an explicit actor there is no `user`, and an explicit one stands
-	 * alone — it is never mixed with a user that merely was logged in.
+	 * An explicit actor is used exactly as given, in every mode: it replaces
+	 * the current user entirely and is never completed from it, so an event
+	 * never carries an identity made of two people. Without one, an
+	 * interactive request is attributed to the current user and a background
+	 * run (cron, Action Scheduler) has no person behind it, hence no `user`.
 	 *
 	 * @param array<string, mixed>|null $explicit
 	 * @return array<string, mixed>|null
 	 */
 	private function resolve_actor( RequestContext $ctx, ?array $explicit, bool $background ): ?array {
-		if ( $background ) {
-			return null === $explicit ? null : $this->compact_actor( $explicit );
+		if ( null !== $explicit ) {
+			return $explicit;
 		}
-
-		return $this->merge_user( $ctx, $explicit );
-	}
-
-	/**
-	 * @param array<string, mixed>|null $override
-	 * @return array<string, mixed>|null
-	 */
-	private function merge_user( RequestContext $ctx, ?array $override ): ?array {
-		if ( null === $override && null === $ctx->user_id ) {
+		if ( $background || null === $ctx->user_id ) {
 			return null;
 		}
 
-		$user = [
-			'id'       => $ctx->user_id,
-			'username' => $ctx->username,
-			'roles'    => $ctx->roles,
-		];
-		if ( is_array( $override ) ) {
-			$user = array_merge( $user, $override );
-		}
-		return $this->compact_actor( $user );
+		return $this->compact_actor(
+			[
+				'id'       => $ctx->user_id,
+				'username' => $ctx->username,
+				'roles'    => $ctx->roles,
+			]
+		);
 	}
 
 	/**
@@ -244,6 +246,10 @@ class EventBuilder {
 	 * The object the event is about: type and id are required, the id is
 	 * always a string, the label is optional.
 	 *
+	 * A type over 32 or an id over 64 characters cannot be cut without
+	 * pointing at another object, so the whole target is dropped. Only the
+	 * label is shortened.
+	 *
 	 * @param mixed $target Sensor-supplied `target`.
 	 * @return array{type: string, id: string, label?: string}|null
 	 */
@@ -258,9 +264,13 @@ class EventBuilder {
 			return null;
 		}
 
+		if ( mb_strlen( $type, 'UTF-8' ) > self::MAX_TARGET_TYPE || mb_strlen( $id, 'UTF-8' ) > self::MAX_TARGET_ID ) {
+			return null;
+		}
+
 		$clean = [
-			'type' => $this->clamp( $type, self::MAX_TARGET_TYPE ),
-			'id'   => $this->clamp( $id, self::MAX_TARGET_ID ),
+			'type' => $type,
+			'id'   => $id,
 		];
 
 		$label = $this->scalar_text( $target['label'] ?? null );
@@ -331,35 +341,55 @@ class EventBuilder {
 	}
 
 	/**
-	 * Template values: every scalar field whose `{key}` appears in the message
-	 * template (the same scan as {@see self::render_message()}), overlaid with
-	 * the explicit `vars`. Keys are non-empty strings, values are strings.
+	 * Template values as text: every scalar field whose `{key}` appears in the
+	 * message template, overlaid with the explicit `vars`. Keys are non-empty strings,
+	 * values go through {@see ChangeSet::stringify()} (a bool reads `yes` or
+	 * `no`); a value that has no text (null) is left out.
 	 *
 	 * @param array<string, mixed> $fields
 	 * @return array<string, string>
 	 */
-	private function collect_vars( string $template, array $fields ): array {
+	private function var_texts( string $template, array $fields ): array {
 		$vars = [];
 
 		if ( '' !== $template ) {
 			foreach ( $fields as $key => $value ) {
-				if ( is_string( $key ) && is_scalar( $value ) && str_contains( $template, '{' . $key . '}' ) ) {
+				if ( is_string( $key ) && '' !== $key && is_scalar( $value ) && str_contains( $template, '{' . $key . '}' ) ) {
 					$vars[ $key ] = $value;
 				}
 			}
 		}
 		if ( isset( $fields['vars'] ) && is_array( $fields['vars'] ) ) {
 			foreach ( $fields['vars'] as $key => $value ) {
-				if ( is_string( $key ) ) {
+				if ( is_string( $key ) && '' !== $key ) {
 					$vars[ $key ] = $value;
 				}
 			}
 		}
 
-		$clean = [];
+		$texts = [];
 		foreach ( $vars as $key => $value ) {
 			$text = ChangeSet::stringify( $value );
-			if ( '' === $key || null === $text ) {
+			if ( null !== $text ) {
+				$texts[ $key ] = $text;
+			}
+		}
+
+		return $texts;
+	}
+
+	/**
+	 * The `vars` of the payload: keys of at most 64 characters (a longer key
+	 * is dropped, not cut), values cut to 512 characters, at most 40
+	 * entries.
+	 *
+	 * @param array<string, string> $texts Output of {@see self::var_texts()}.
+	 * @return array<string, string>
+	 */
+	private function clean_vars( array $texts ): array {
+		$clean = [];
+		foreach ( $texts as $key => $text ) {
+			if ( mb_strlen( $key, 'UTF-8' ) > self::MAX_VAR_KEY ) {
 				continue;
 			}
 			$clean[ $key ] = $this->clamp( $text, self::MAX_VAR_VALUE );
@@ -389,20 +419,19 @@ class EventBuilder {
 	}
 
 	/**
-	 * Naive `{key}` placeholder substitution. The catalog ships short
-	 * English templates; localized rendering happens on the read side.
+	 * Naive `{key}` placeholder substitution from the template vars. The
+	 * catalog ships short English templates; localized rendering happens on
+	 * the read side.
 	 *
-	 * @param array<string, mixed> $fields
+	 * @param array<string, string> $texts Output of {@see self::var_texts()}.
 	 */
-	private function render_message( string $template, array $fields ): string {
+	private function render_message( string $template, array $texts ): string {
 		if ( '' === $template ) {
 			return '';
 		}
 		$replacements = [];
-		foreach ( $fields as $k => $v ) {
-			if ( is_scalar( $v ) ) {
-				$replacements[ '{' . $k . '}' ] = (string) $v;
-			}
+		foreach ( $texts as $k => $v ) {
+			$replacements[ '{' . $k . '}' ] = $v;
 		}
 		return strtr( $template, $replacements );
 	}
