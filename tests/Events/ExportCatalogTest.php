@@ -52,7 +52,7 @@ final class ExportCatalogTest extends TestCase {
 		}
 
 		$this->assertArrayHasKey( 9103, $by_code );
-		$this->assertSame( [ 'id' ], $by_code[9103]['vars'] );
+		$this->assertSame( [ 'id', 'note' ], $by_code[9103]['vars'] );
 
 		$this->assertArrayHasKey( 4002, $by_code );
 		$this->assertSame( [ 'username', 'old_role', 'new_role' ], $by_code[4002]['vars'] );
