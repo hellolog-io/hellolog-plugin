@@ -15,8 +15,9 @@ namespace HelloLog\Tests\Queue\Fixtures;
  * ever used inside a test that runs in its own process.
  *
  * Like the database, it refuses an insert into a table that does not exist,
- * and a statement on a queue table that does not exist is an error, kept in
- * {@see self::$errors}.
+ * and a statement on a queue table, or a delete from an options table, that
+ * does not exist is an error, kept in {@see self::$errors}. An options table
+ * exists when {@see self::$option_rows} has it.
  */
 final class FakeWpdb {
 
@@ -237,7 +238,7 @@ final class FakeWpdb {
 		$this->queries[] = $query;
 		$name = stripcslashes( stripslashes( $m[1] ) );
 
-		return in_array( $name, $this->tables, true ) ? $name : null;
+		return in_array( $name, $this->tables, true ) || isset( $this->option_rows[ $name ] ) ? $name : null;
 	}
 
 	public function get_charset_collate(): string {
@@ -254,6 +255,9 @@ final class FakeWpdb {
 		$this->statements[] = $query;
 		if ( str_starts_with( $query, 'DROP TABLE IF EXISTS ' ) ) {
 			return;
+		}
+		if ( 1 === preg_match( '/^DELETE FROM (\S+_options) /', $query, $m ) && ! isset( $this->option_rows[ $m[1] ] ) ) {
+			$this->errors[] = "Table 'wordpress." . $m[1] . "' doesn't exist";
 		}
 		preg_match_all( '/\bwp_(?:\d+_)?hellolog_queue\b/', $query, $m );
 		foreach ( array_unique( $m[0] ) as $table ) {

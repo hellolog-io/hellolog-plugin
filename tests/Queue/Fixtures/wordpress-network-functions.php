@@ -178,6 +178,20 @@ namespace {
 		return true;
 	}
 
+	function delete_site_transient( string $transient ): bool {
+		NetworkState::$deleted_site_transients[] = $transient;
+
+		return true;
+	}
+
+	function wp_cache_flush(): bool {
+		global $wpdb;
+
+		NetworkState::$cache_flushes[] = count( $wpdb->statements );
+
+		return true;
+	}
+
 	function delete_option( string $option ): bool {
 		unset( NetworkState::$options[ NetworkState::$current_blog ][ $option ] );
 

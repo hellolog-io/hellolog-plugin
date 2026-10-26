@@ -54,6 +54,21 @@ final class NetworkState {
 	/** Calls of `wp_is_site_initialized()`. */
 	public static int $initialized_checks = 0;
 
+	/**
+	 * Names `delete_site_transient()` was called with.
+	 *
+	 * @var array<int, string>
+	 */
+	public static array $deleted_site_transients = [];
+
+	/**
+	 * For every `wp_cache_flush()` call, how many statements `$wpdb` had run
+	 * by then.
+	 *
+	 * @var array<int, int>
+	 */
+	public static array $cache_flushes = [];
+
 	/** Calls of `switch_to_blog()`. */
 	public static int $switch_count = 0;
 

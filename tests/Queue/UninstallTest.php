@@ -105,6 +105,52 @@ final class UninstallTest extends TestCase {
 	}
 
 	/**
+	 * A site whose options table is missing (a broken or half-deleted site)
+	 * is skipped instead of failing the query.
+	 */
+	public function test_a_site_without_an_options_table_is_skipped(): void {
+		NetworkState::$sites = [
+			1 => 1,
+			2 => 1,
+			3 => 1,
+		];
+		$this->wpdb->option_rows['wp_options']   = $this->site_options();
+		$this->wpdb->option_rows['wp_2_options'] = $this->site_options();
+
+		Uninstall::uninstall();
+
+		$this->assertSame( [], $this->wpdb->errors );
+		$this->assertSame( $this->kept_options(), $this->wpdb->option_rows['wp_2_options'] );
+		$this->assertSame( [], preg_grep( '/^DELETE FROM wp_3_options/', $this->wpdb->statements ) );
+	}
+
+	/**
+	 * The update check caches the latest release for the whole network.
+	 */
+	public function test_uninstalling_removes_the_release_check_cache(): void {
+		Uninstall::uninstall();
+
+		$this->assertSame( [ 'hellolog_github_release' ], NetworkState::$deleted_site_transients );
+	}
+
+	/**
+	 * The options are removed with SQL, past the object cache: it is emptied
+	 * last, so no removed value is served from it.
+	 */
+	public function test_uninstalling_empties_the_object_cache_last(): void {
+		NetworkState::$sites                     = [
+			1 => 1,
+			2 => 1,
+		];
+		$this->wpdb->option_rows['wp_options']   = $this->site_options();
+		$this->wpdb->option_rows['wp_2_options'] = $this->site_options();
+
+		Uninstall::uninstall();
+
+		$this->assertSame( [ count( $this->wpdb->statements ) ], NetworkState::$cache_flushes );
+	}
+
+	/**
 	 * Options of a site: helloLOG's own (settings, state, transients) and
 	 * others that only look alike.
 	 *

@@ -9,6 +9,8 @@ declare(strict_types=1);
 
 namespace HelloLog;
 
+use HelloLog\Updater\GitHubUpdater;
+
 defined( 'ABSPATH' ) || exit;
 
 /**
@@ -46,6 +48,15 @@ final class Uninstall {
 	public static function uninstall(): void {
 		self::drop_queue_tables();
 		self::delete_options();
+
+		// The latest-release cache of the update check, kept for the network.
+		delete_site_transient( GitHubUpdater::TRANSIENT );
+
+		// The options went with SQL, past the object cache: empty it, so no
+		// removed value is served from it.
+		if ( function_exists( 'wp_cache_flush' ) ) {
+			wp_cache_flush();
+		}
 	}
 
 	private static function drop_queue_tables(): void {
@@ -60,8 +71,10 @@ final class Uninstall {
 
 	/**
 	 * Remove the plugin's options and transients from every site, through
-	 * each site's options table. The current site's settings also go through
-	 * the options API first, so its option cache forgets them.
+	 * each site's options table; a site whose options table is missing (a
+	 * broken or half-deleted site) is skipped. The current site's settings
+	 * also go through the options API first, so its option cache forgets
+	 * them.
 	 */
 	private static function delete_options(): void {
 		global $wpdb;
@@ -74,6 +87,10 @@ final class Uninstall {
 		$where = implode( ' OR ', array_fill( 0, count( $likes ), 'option_name LIKE %s' ) );
 		foreach ( self::site_prefixes() as $prefix ) {
 			$table = $prefix . 'options';
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- a schema lookup during uninstall; nothing to cache.
+			if ( $table !== $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) ) ) {
+				continue;
+			}
 			// phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- uninstall teardown; {$table} is a site's own options table and {$where} holds exactly one %s per LIKE value passed.
 			$wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE {$where}", $likes ) );
 		}
