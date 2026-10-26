@@ -56,6 +56,13 @@ final class ContentSensorTest extends TestCase {
 			'new to trash'              => [ 'trash', 'new', 2003 ],
 			'new to inherit'            => [ 'inherit', 'new', 0 ],
 			'new to auto-draft'         => [ 'auto-draft', 'new', 0 ],
+			'draft to auto-draft'       => [ 'auto-draft', 'draft', 2013 ],
+			'pending to auto-draft'     => [ 'auto-draft', 'pending', 2013 ],
+			'private to auto-draft'     => [ 'auto-draft', 'private', 2013 ],
+			'future to auto-draft'      => [ 'auto-draft', 'future', 2013 ],
+			'trash to auto-draft'       => [ 'auto-draft', 'trash', 2013 ],
+			'custom to auto-draft'      => [ 'auto-draft', 'acf-disabled', 2013 ],
+			'publish to auto-draft'     => [ 'auto-draft', 'publish', 2002 ],
 			'trash to publish'          => [ 'publish', 'trash', 2001 ],
 			'private to publish'        => [ 'publish', 'private', 2001 ],
 			'trash to draft'            => [ 'draft', 'trash', 0 ],
@@ -398,6 +405,37 @@ final class ContentSensorTest extends TestCase {
 		);
 
 		$this->assertSame( [], $calls );
+	}
+
+	/**
+	 * A post moved to `auto-draft` is picked up by WordPress's cleanup later,
+	 * so the move itself is what has to be on record.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_post_reverted_to_auto_draft_is_logged(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_status( 'auto-draft', 'draft', $post( [ 'post_status' => 'auto-draft' ] ) );
+				$sensor->on_status( 'auto-draft', 'new', $post( [ 'post_status' => 'auto-draft' ] ) );
+				$sensor->on_status( 'auto-draft', 'publish', $post( [ 'post_status' => 'auto-draft' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2013, 2002 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				'type'  => 'post',
+				'id'    => '7',
+				'label' => 'Hello',
+			],
+			$calls[0][1]['target']
+		);
+		$this->assertSame(
+			[ 'edit' => 'https://example.test/wp-admin/post.php?post=7&action=edit' ],
+			$calls[0][1]['links']
+		);
 	}
 
 	/**

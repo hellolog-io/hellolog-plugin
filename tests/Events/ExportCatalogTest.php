@@ -56,6 +56,13 @@ final class ExportCatalogTest extends TestCase {
 
 		$this->assertArrayHasKey( 4002, $by_code );
 		$this->assertSame( [ 'username', 'old_role', 'new_role' ], $by_code[4002]['vars'] );
+
+		$this->assertArrayHasKey( 2013, $by_code );
+		$this->assertSame( '{post_type} "{title}" reverted to auto-draft.', $by_code[2013]['label'] );
+		$this->assertSame( [ 'post_type', 'title' ], $by_code[2013]['vars'] );
+		$this->assertSame( 'post', $by_code[2013]['object'] );
+		$this->assertSame( 'updated', $by_code[2013]['event_type'] );
+		$this->assertSame( 'medium', $by_code[2013]['severity'] );
 	}
 
 	public function test_vars_keep_first_appearance_order_without_duplicates(): void {

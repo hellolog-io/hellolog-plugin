@@ -67,6 +67,7 @@ final class CatalogSeeder {
 		$c->register( new EventDefinition( 2004, ObjectType::POST, EventType::RESTORED, Severity::INFO, '{post_type} "{title}" restored from trash.' ) );
 		$c->register( new EventDefinition( 2005, ObjectType::POST, EventType::DELETED, Severity::MEDIUM, '{post_type} "{title}" permanently deleted.' ) );
 		$c->register( new EventDefinition( 2006, ObjectType::POST, EventType::UPDATED, Severity::INFO, '{post_type} "{title}" updated.' ) );
+		$c->register( new EventDefinition( 2013, ObjectType::POST, EventType::UPDATED, Severity::MEDIUM, '{post_type} "{title}" reverted to auto-draft.' ) );
 	}
 
 	private static function comments( EventCatalog $c ): void {

@@ -702,7 +702,7 @@ final class SuppressionRulesTest extends TestCase {
 	public function test_defaults_contain_the_initial_table(): void {
 		$rules = SuppressionRules::defaults();
 
-		foreach ( [ 2000, 2001, 2002, 2003, 2004, 2005, 2007, 2008, 2009 ] as $code ) {
+		foreach ( [ 2000, 2001, 2002, 2003, 2004, 2005, 2007, 2008, 2009, 2013 ] as $code ) {
 			$result = $rules->apply(
 				[
 					self::event( 2006, self::post( 1 ), [ self::change( 'a', 'b', 'c' ) ] ),

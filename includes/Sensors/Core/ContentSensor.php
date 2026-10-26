@@ -138,8 +138,11 @@ final class ContentSensor extends AbstractSensor {
 	 * from `auto-draft` (the editor's placeholder) or from `new` (inserted
 	 * directly, by the REST API or an importer), is "created". Moving to
 	 * trash is "trashed" from every state, and going from published to
-	 * anything else but trash is "unpublished". Everything else (including
-	 * no change) is not an event of its own.
+	 * anything else but trash is "unpublished". A post that was
+	 * already saved and is sent back to `auto-draft` (and was not published)
+	 * is "reverted": WordPress deletes stale auto-drafts on its own, so the
+	 * move is what has to be on record.
+	 * Everything else (including no change) is not an event of its own.
 	 *
 	 * @param string $new New post status.
 	 * @param string $old Previous post status.
@@ -159,6 +162,9 @@ final class ContentSensor extends AbstractSensor {
 		}
 		if ( 'publish' === $old ) {
 			return 2002;
+		}
+		if ( 'auto-draft' === $new && 'new' !== $old ) {
+			return 2013;
 		}
 
 		return 0;
