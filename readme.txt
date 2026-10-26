@@ -116,6 +116,8 @@ This version requires the HelloLog service release from October 2026 or later.
   release.
 * Change: Event times are recorded to the millisecond.
 * Change: Long values in an event's details are cut to 1,024 characters.
+* Change: A sign-in with an application password is logged at most once an
+  hour per user, application password and IP address.
 * Fix: Requests authenticated with an application password no longer run
   out of memory.
 * Fix: A new registration no longer logs a false role change.
@@ -136,7 +138,13 @@ This version requires the HelloLog service release from October 2026 or later.
   changed.
 * Fix: On multisite, every site gets its queue table (at network
   activation, when it is created, or on its first event), so its events are
-  no longer lost. Uninstalling or deleting a site removes the queue tables.
+  no longer lost. Events written while a site is being deleted are kept in
+  the main site's queue. Uninstalling removes the queue tables and helloLOG's
+  settings on every site; deleting a site removes its queue table.
+* Fix: Titles stored with HTML entities read as plain text in event targets
+  and messages.
+* Fix: Creating helloLOG's own queue table is no longer logged as a database
+  change.
 * Fix: On multisite, every event is queued on the site it happened on, also
   when a request switches between sites.
 * Fix: A privileged role assigned at registration is always logged.

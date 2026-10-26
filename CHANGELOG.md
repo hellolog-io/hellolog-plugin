@@ -44,6 +44,9 @@ October 2026 or later.
   biographical info are not logged yet; they will be in a later release.
 - Event times are recorded to the millisecond.
 - Long values in an event's details are cut to 1,024 characters.
+- A sign-in with an application password is logged at most once an hour per
+  user, application password and IP address, so an integration that polls
+  the REST API no longer floods the log.
 
 ### Fixed
 - Requests authenticated with an application password (REST API or XML-RPC
@@ -72,8 +75,14 @@ October 2026 or later.
 - On multisite, network activation sets up every site (within a time limit,
   and not on large networks), sites added later are set up when they are
   created, and any site still without its queue table is set up on its
-  first event, so their events are no longer lost. Uninstalling removes the
-  queue table of every site, and deleting a site removes its queue table.
+  first event, so their events are no longer lost. Events written while a
+  site is being deleted are kept in the main site's queue. Uninstalling
+  removes the queue table and helloLOG's settings (the API key included) on
+  every site, and deleting a site removes its queue table.
+- Titles that WordPress stores with HTML entities (such as order titles)
+  read as plain text in event targets and messages.
+- Creating helloLOG's own queue table is no longer logged as a database
+  change.
 - On multisite, every event is queued on the site it happened on, also when
   a request switches between sites.
 - A privileged role assigned at registration is always logged.
