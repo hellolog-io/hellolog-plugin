@@ -189,6 +189,8 @@ final class Plugin {
 			 * Add suppression, merge or drop-empty rules, usually with
 			 * `$rules->with( new SuppressionRules( ... ) )`.
 			 *
+			 * @since 0.5.0
+			 *
 			 * @param SuppressionRules $rules The rules in force. A callback must
 			 *                                return a SuppressionRules; anything
 			 *                                else is ignored.
