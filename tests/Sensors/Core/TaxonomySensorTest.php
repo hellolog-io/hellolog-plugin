@@ -78,6 +78,7 @@ final class TaxonomySensorTest extends TestCase {
 				'name'        => 'News',
 				'slug'        => 'news',
 				'parent'      => '',
+				'parent_id'   => 0,
 				'description' => 'Everything new.',
 			],
 			TaxonomySensor::term_fields(
@@ -109,6 +110,7 @@ final class TaxonomySensorTest extends TestCase {
 		);
 
 		$this->assertSame( 'News', $fields['parent'] );
+		$this->assertSame( 5, $fields['parent_id'] );
 		$this->assertSame( [ 5 ], $asked );
 	}
 
@@ -118,6 +120,7 @@ final class TaxonomySensorTest extends TestCase {
 				'name'        => '',
 				'slug'        => '',
 				'parent'      => '',
+				'parent_id'   => 0,
 				'description' => '',
 			],
 			TaxonomySensor::term_fields( new \stdClass() )
@@ -188,6 +191,106 @@ final class TaxonomySensorTest extends TestCase {
 			TaxonomySensor::term_changes(
 				$this->fields( 'News', 'news', '', 'Old text.' ),
 				$this->fields( 'News', 'news', '', 'New text.' )
+			)
+		);
+	}
+
+	/**
+	 * The parent is compared by id: a term moved to another parent with the
+	 * same name (a "Reviews" under Books to a "Reviews" under Movies) has
+	 * moved, and both parents are told apart by their ids.
+	 */
+	public function test_a_move_to_another_parent_of_the_same_name_is_one_parent_change_with_the_ids(): void {
+		$this->assertSame(
+			[
+				[
+					'field' => 'parent',
+					'old'   => 'Reviews (#4)',
+					'new'   => 'Reviews (#5)',
+				],
+			],
+			TaxonomySensor::term_changes(
+				$this->fields( 'Local', 'local', 'Reviews', '', 4 ),
+				$this->fields( 'Local', 'local', 'Reviews', '', 5 )
+			)
+		);
+	}
+
+	public function test_a_move_to_a_parent_of_another_name_reports_the_names_alone(): void {
+		$this->assertSame(
+			[
+				[
+					'field' => 'parent',
+					'old'   => 'Sports',
+					'new'   => 'Archive',
+				],
+			],
+			TaxonomySensor::term_changes(
+				$this->fields( 'Local', 'local', 'Sports', '', 3 ),
+				$this->fields( 'Local', 'local', 'Archive', '', 4 )
+			)
+		);
+	}
+
+	public function test_a_move_to_or_from_the_top_level_reports_no_parent_as_empty(): void {
+		$this->assertSame(
+			[
+				[
+					'field' => 'parent',
+					'old'   => '',
+					'new'   => 'Reviews',
+				],
+			],
+			TaxonomySensor::term_changes(
+				$this->fields( 'Local', 'local', '', '', 0 ),
+				$this->fields( 'Local', 'local', 'Reviews', '', 4 )
+			)
+		);
+		$this->assertSame(
+			[
+				[
+					'field' => 'parent',
+					'old'   => 'Reviews',
+					'new'   => '',
+				],
+			],
+			TaxonomySensor::term_changes(
+				$this->fields( 'Local', 'local', 'Reviews', '', 4 ),
+				$this->fields( 'Local', 'local', '', '', 0 )
+			)
+		);
+	}
+
+	/**
+	 * The same parent read under another name (renamed by something else
+	 * during the save) is not a change of this term.
+	 */
+	public function test_the_same_parent_is_no_change_whatever_its_name_reads(): void {
+		$this->assertSame(
+			[],
+			TaxonomySensor::term_changes(
+				$this->fields( 'Local', 'local', 'Reviews', '', 4 ),
+				$this->fields( 'Local', 'local', 'Critiques', '', 4 )
+			)
+		);
+	}
+
+	/**
+	 * A parent that can not be found keeps its `#<id>` name; it is only told
+	 * apart further from a parent that has the same text for a name.
+	 */
+	public function test_a_parent_that_cannot_be_found_keeps_its_id_name(): void {
+		$this->assertSame(
+			[
+				[
+					'field' => 'parent',
+					'old'   => '#3',
+					'new'   => 'Archive',
+				],
+			],
+			TaxonomySensor::term_changes(
+				$this->fields( 'Local', 'local', '#3', '', 3 ),
+				$this->fields( 'Local', 'local', 'Archive', '', 4 )
 			)
 		);
 	}
@@ -291,6 +394,39 @@ final class TaxonomySensorTest extends TestCase {
 			],
 			$recorder->calls[0][1]['changes']
 		);
+	}
+
+	/**
+	 * A move between two parents of the same name is a hierarchy edit and is
+	 * logged, not dropped as a save without changes.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_move_to_another_parent_of_the_same_name_is_logged(): void {
+		$this->put_term( 4, 'Reviews', 'reviews-books' );
+		$this->put_term( 5, 'Reviews', 'reviews-movies' );
+		$this->put_term( 7, 'Local', 'local', 4 );
+		$recorder = $this->recorder();
+		$sensor   = new TaxonomySensor( $recorder );
+
+		$sensor->on_before_edit( 7, 'category' );
+		$this->put_term( 7, 'Local', 'local', 5 );
+		$sensor->on_edited( 7, 70, 'category' );
+
+		$expected = [
+			[
+				'field' => 'parent',
+				'old'   => 'Reviews (#4)',
+				'new'   => 'Reviews (#5)',
+			],
+		];
+		$this->assertSame( $expected, $recorder->calls[0][1]['changes'] );
+
+		$payloads = $this->payloads( $recorder );
+		$this->assertCount( 1, $payloads );
+		$this->assertSame( 2121, $payloads[0]['code'] );
+		$this->assertSame( $expected, $payloads[0]['changes'] );
 	}
 
 	/**
@@ -557,17 +693,23 @@ final class TaxonomySensorTest extends TestCase {
 	}
 
 	/**
-	 * The fields of a term with these values.
+	 * The fields of a term with these values; with the parent's id when one
+	 * is given.
 	 *
-	 * @return array{name: string, slug: string, parent: string, description: string}
+	 * @return array<string, int|string>
 	 */
-	private function fields( string $name, string $slug = 'news', string $parent = '', string $description = '' ): array {
-		return [
+	private function fields( string $name, string $slug = 'news', string $parent = '', string $description = '', ?int $parent_id = null ): array {
+		$fields = [
 			'name'        => $name,
 			'slug'        => $slug,
 			'parent'      => $parent,
 			'description' => $description,
 		];
+		if ( null !== $parent_id ) {
+			$fields['parent_id'] = $parent_id;
+		}
+
+		return $fields;
 	}
 
 	/**

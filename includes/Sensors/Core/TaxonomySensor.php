@@ -57,7 +57,7 @@ final class TaxonomySensor extends AbstractSensor {
 	 * Fields of the terms about to be written, read just before the write:
 	 * blog id => term id => fields. A term id is unique on its own site only.
 	 *
-	 * @var array<int, array<int, array{name: string, slug: string, parent: string, description: string}>>
+	 * @var array<int, array<int, array{name: string, slug: string, parent: string, parent_id: int, description: string}>>
 	 */
 	private array $before = [];
 
@@ -207,7 +207,8 @@ final class TaxonomySensor extends AbstractSensor {
 
 	/**
 	 * The fields of a term an edit is compared on: its name, its slug, the
-	 * name of its parent (empty for none) and its description.
+	 * name of its parent (empty for none), the parent's id (0 for none;
+	 * compared, never reported) and its description.
 	 *
 	 * The parent is named by `$parent_name`, given the parent's term id. By
 	 * default the parent term is read from WordPress; a parent that can not
@@ -215,10 +216,10 @@ final class TaxonomySensor extends AbstractSensor {
 	 *
 	 * @param object                       $term        A term: a `WP_Term`, or any object with its fields.
 	 * @param (callable(int): string)|null $parent_name Names the parent term with this id.
-	 * @return array{name: string, slug: string, parent: string, description: string}
+	 * @return array{name: string, slug: string, parent: string, parent_id: int, description: string}
 	 */
 	public static function term_fields( object $term, ?callable $parent_name = null ): array {
-		$parent_id = (int) ( $term->parent ?? 0 );
+		$parent_id = max( 0, (int) ( $term->parent ?? 0 ) );
 		$parent    = '';
 		if ( $parent_id > 0 ) {
 			$taxonomy = (string) ( $term->taxonomy ?? '' );
@@ -229,6 +230,7 @@ final class TaxonomySensor extends AbstractSensor {
 			'name'        => (string) ( $term->name ?? '' ),
 			'slug'        => (string) ( $term->slug ?? '' ),
 			'parent'      => $parent,
+			'parent_id'   => $parent_id,
 			'description' => (string) ( $term->description ?? '' ),
 		];
 	}
@@ -237,11 +239,31 @@ final class TaxonomySensor extends AbstractSensor {
 	 * What changed between two {@see self::term_fields()} snapshots of a
 	 * term. A new description is reported as changed, without its text.
 	 *
-	 * @param array<string, string> $before Fields before the edit.
-	 * @param array<string, string> $after  Fields after the edit.
+	 * When both snapshots carry the parent's id, the parent is compared by
+	 * it: the same parent is no change whatever its name reads, and a move to
+	 * another parent with the same name reports both names with their ids
+	 * (`Reviews (#4)` to `Reviews (#5)`). Any other move reports the names
+	 * alone. Snapshots without the id are compared by the parent's name.
+	 *
+	 * @param array<string, int|string> $before Fields before the edit.
+	 * @param array<string, int|string> $after  Fields after the edit.
 	 * @return array<int, array{field: string, old: ?string, new: ?string}>
 	 */
 	public static function term_changes( array $before, array $after ): array {
+		if ( isset( $before['parent_id'], $after['parent_id'] ) ) {
+			$old_id   = (int) $before['parent_id'];
+			$new_id   = (int) $after['parent_id'];
+			$old_name = (string) ( $before['parent'] ?? '' );
+			$new_name = (string) ( $after['parent'] ?? '' );
+
+			if ( $old_id === $new_id ) {
+				$after['parent'] = $old_name;
+			} elseif ( $old_name === $new_name ) {
+				$before['parent'] = self::parent_with_id( $old_name, $old_id );
+				$after['parent']  = self::parent_with_id( $new_name, $new_id );
+			}
+		}
+
 		return ChangeSet::diff( $before, $after, self::FIELDS, self::CONTENT_FIELDS );
 	}
 
@@ -270,6 +292,17 @@ final class TaxonomySensor extends AbstractSensor {
 		$parent = get_term( $term_id, $taxonomy );
 
 		return is_object( $parent ) && ! is_wp_error( $parent ) && isset( $parent->name ) ? (string) $parent->name : '#' . $term_id;
+	}
+
+	/**
+	 * A parent's name told apart from another parent's of the same name by
+	 * its id; no parent stays empty.
+	 *
+	 * @param string $name      Parent name.
+	 * @param int    $parent_id Parent term id; 0 for none.
+	 */
+	private static function parent_with_id( string $name, int $parent_id ): string {
+		return 0 === $parent_id ? $name : $name . ' (#' . $parent_id . ')';
 	}
 
 	/**
