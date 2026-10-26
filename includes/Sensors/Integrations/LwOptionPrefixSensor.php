@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\SensitiveOption;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -41,7 +42,7 @@ abstract class LwOptionPrefixSensor extends AbstractSensor {
 				[
 					'option'  => $option,
 					'feature' => $option,
-					'state'   => is_scalar( $value ) ? (string) $value : '<complex>',
+					'state'   => SensitiveOption::value( $option, $value ),
 				],
 				[ 'metadata' => [ 'option' => $option ] ]
 			)

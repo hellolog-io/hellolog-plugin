@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Scheduler;
 
+use HelloLog\Queue\QueueRetention;
 use HelloLog\Settings\Options;
 use HelloLog\Transport\QueueFlusher;
 
@@ -48,7 +49,8 @@ final class ActionSchedulerBridge {
 		private QueueFlusher $flusher,
 		private Options $options,
 		private FlushLock $lock,
-		private AsLogPruner $pruner
+		private AsLogPruner $pruner,
+		private QueueRetention $retention
 	) {
 	}
 
@@ -100,6 +102,7 @@ final class ActionSchedulerBridge {
 		}
 		try {
 			$this->flusher->run();
+			$this->retention->run();
 		} finally {
 			$this->lock->release();
 		}

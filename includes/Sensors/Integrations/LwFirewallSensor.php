@@ -9,7 +9,9 @@ declare(strict_types=1);
 
 namespace HelloLog\Sensors\Integrations;
 
+use HelloLog\Events\RequestContext;
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Settings\Options;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -37,14 +39,23 @@ final class LwFirewallSensor extends AbstractSensor {
 	 */
 	public function on_blocked( string $reason, array $context ): void {
 		$ip = (string) ( $context['ip'] ?? '' );
+		// The blocked client's IP arrives in the hook context, outside
+		// RequestContext, so the operator's anonymisation setting is
+		// applied here as well.
+		if ( '' !== $ip && ( new Options() )->anonymize_ip() ) {
+			$ip = RequestContext::anonymize( $ip );
+		}
 		$this->emit(
 			9500,
 			[
 				'ip'       => $ip,
 				'reason'   => $reason,
 				'metadata' => array_merge(
-					[ 'reason' => $reason ],
-					$context
+					$context,
+					[
+						'reason' => $reason,
+						'ip'     => $ip,
+					]
 				),
 			]
 		);

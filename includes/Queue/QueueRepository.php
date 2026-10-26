@@ -105,6 +105,39 @@ final class QueueRepository {
 	}
 
 	/**
+	 * Delete `dead` rows created before `$cutoff` (UTC `Y-m-d H:i:s`).
+	 *
+	 * @return int rows deleted
+	 */
+	public function purge_dead_before( string $cutoff ): int {
+		global $wpdb;
+		$table = $this->table();
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- {$table} is our own prefixed table name.
+		$deleted = $wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE status = %s AND created_at < %s", self::STATUS_DEAD, $cutoff ) );
+		return (int) $deleted;
+	}
+
+	/**
+	 * Delete the `$limit` oldest rows, whatever their status.
+	 *
+	 * @return int rows deleted
+	 */
+	public function delete_oldest( int $limit ): int {
+		global $wpdb;
+		$table = $this->table();
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- {$table} is our own prefixed table name.
+		$deleted = $wpdb->query( $wpdb->prepare( "DELETE FROM {$table} ORDER BY id ASC LIMIT %d", $limit ) );
+		return (int) $deleted;
+	}
+
+	public function count_all(): int {
+		global $wpdb;
+		$table = $this->table();
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching, WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- {$table} is our own prefixed table name.
+		return (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$table}" );
+	}
+
+	/**
 	 * Reset every `dead` row back to `pending` so the flusher picks
 	 * them up again. The backend went away (Redis OOM, transient
 	 * outage, expired token, …), the rows exceeded max retries and

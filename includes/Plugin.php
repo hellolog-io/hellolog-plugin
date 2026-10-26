@@ -19,6 +19,7 @@ use HelloLog\Events\EventDispatcher;
 use HelloLog\Events\NullEventDispatcher;
 use HelloLog\Queue\QueueEventDispatcher;
 use HelloLog\Queue\QueueRepository;
+use HelloLog\Queue\QueueRetention;
 use HelloLog\Scheduler\ActionSchedulerBridge;
 use HelloLog\Scheduler\AsLogPruner;
 use HelloLog\Scheduler\FlushLock;
@@ -271,7 +272,13 @@ final class Plugin {
 			new ApiClient( $this->options->endpoint_url(), $this->options->token() ),
 			new RetryPolicy()
 		);
-		( new ActionSchedulerBridge( $flusher, $this->options, new FlushLock(), new AsLogPruner() ) )->register();
+		( new ActionSchedulerBridge(
+			$flusher,
+			$this->options,
+			new FlushLock(),
+			new AsLogPruner(),
+			new QueueRetention( new QueueRepository() )
+		) )->register();
 	}
 
 	/**

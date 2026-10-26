@@ -50,12 +50,20 @@ final class RequestContext {
 		$ua         = isset( $_SERVER['HTTP_USER_AGENT'] )
 			? substr( sanitize_text_field( wp_unslash( $_SERVER['HTTP_USER_AGENT'] ) ), 0, 255 )
 			: null;
-		$session_id = function_exists( 'wp_get_session_token' ) ? (string) wp_get_session_token() : null;
-		if ( '' === $session_id ) {
-			$session_id = null;
-		}
+		$session_id = function_exists( 'wp_get_session_token' )
+			? self::session_fingerprint( (string) wp_get_session_token() )
+			: null;
 
 		return new self( $user_id, $username, $roles, $ip, $ua, $session_id );
+	}
+
+	/**
+	 * The raw session token is part of the auth cookie, so it never leaves
+	 * the site. Its SHA-256 is what core itself keys `session_tokens` by,
+	 * which keeps events from one session correlatable on the backend.
+	 */
+	public static function session_fingerprint( string $token ): ?string {
+		return '' === $token ? null : hash( 'sha256', $token );
 	}
 
 	private static function detect_ip(): ?string {
@@ -69,7 +77,7 @@ final class RequestContext {
 		return ( '' !== $ip && false !== filter_var( $ip, FILTER_VALIDATE_IP ) ) ? $ip : null;
 	}
 
-	private static function anonymize( string $ip ): string {
+	public static function anonymize( string $ip ): string {
 		if ( str_contains( $ip, ':' ) ) {
 			// IPv6 — keep the /48 prefix, zero the rest.
 			$parts = array_slice( explode( ':', $ip ), 0, 3 );

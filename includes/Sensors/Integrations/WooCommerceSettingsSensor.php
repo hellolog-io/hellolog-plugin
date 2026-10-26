@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\SensitiveOption;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -50,8 +51,8 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 				'option'   => $option,
 				'metadata' => [
 					'option' => $option,
-					'old'    => is_scalar( $old_value ) ? (string) $old_value : '<complex>',
-					'new'    => is_scalar( $value ) ? (string) $value : '<complex>',
+					'old'    => SensitiveOption::value( $option, $old_value ),
+					'new'    => SensitiveOption::value( $option, $value ),
 				],
 			]
 		);

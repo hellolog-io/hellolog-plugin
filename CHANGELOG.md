@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.4] - 2026-10-26
+
+### Added
+- The local outgoing queue is bounded: after every drain tick, `dead` rows
+  older than 7 days are removed and the queue is trimmed to 50,000 rows,
+  oldest first (`Queue\QueueRetention`). Both limits are filterable via
+  `hellolog_queue_dead_retention_days` and `hellolog_queue_max_rows`.
+
+### Changed
+- `session_id` in event payloads is now the SHA-256 of the login session
+  token (the same key core uses for `session_tokens`), never the token
+  itself (`RequestContext::session_fingerprint()`).
+- WooCommerce settings and LW plugin settings events mask the value of
+  options whose names look like credentials (`Sensors\SensitiveOption`).
+- The lw-firewall blocked-request event applies the IP anonymisation
+  setting to the blocked client's IP.
+
 ## [0.4.3] - 2026-08-19
 
 ### Added

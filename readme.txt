@@ -4,7 +4,7 @@ Tags:              activity log, audit log, security, monitoring, woocommerce
 Requires at least: 6.4
 Tested up to:      6.7
 Requires PHP:      8.0
-Stable tag:        0.4.3
+Stable tag:        0.4.4
 License:           GPL-2.0-or-later
 License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -76,6 +76,17 @@ every site is issued its own key, bound to its domain. Paste it into
 **Tools → helloLOG → Settings**.
 
 == Changelog ==
+
+= 0.4.4 =
+* Change: Events carry a hash of the login session instead of the session
+  token itself.
+* Change: Option values whose names look like credentials (keys, secrets,
+  tokens, passwords) are masked in WooCommerce and LW plugin settings events.
+* Change: The lw-firewall blocked-request event respects the IP
+  anonymisation setting.
+* New: The local outgoing queue is bounded — undeliverable rows are removed
+  after 7 days and the queue is capped at 50,000 rows
+  (`hellolog_queue_dead_retention_days`, `hellolog_queue_max_rows` filters).
 
 = 0.4.3 =
 * New: Built-in updates from GitHub releases — the Plugins screen now
