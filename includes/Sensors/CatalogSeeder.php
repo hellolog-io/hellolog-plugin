@@ -94,12 +94,14 @@ final class CatalogSeeder {
 		$c->register( new EventDefinition( 5002, ObjectType::PLUGIN, EventType::DEACTIVATED, Severity::MEDIUM, 'Plugin {name} deactivated.' ) );
 		$c->register( new EventDefinition( 5003, ObjectType::PLUGIN, EventType::UPDATED, Severity::MEDIUM, 'Plugin {name} updated to {version}.' ) );
 		$c->register( new EventDefinition( 5004, ObjectType::PLUGIN, EventType::DELETED, Severity::HIGH, 'Plugin {name} deleted.' ) );
+		$c->register( new EventDefinition( 5005, ObjectType::PLUGIN, EventType::UPDATED, Severity::MEDIUM, 'Automatic updates {state} for plugin {name}.' ) );
 
 		$c->register( new EventDefinition( 5100, ObjectType::THEME, EventType::ACTIVATED, Severity::MEDIUM, 'Theme switched to {name}.' ) );
 		$c->register( new EventDefinition( 5101, ObjectType::THEME, EventType::INSTALLED, Severity::MEDIUM, 'Theme {name} installed.' ) );
 		$c->register( new EventDefinition( 5102, ObjectType::THEME, EventType::UPDATED, Severity::MEDIUM, 'Theme {name} updated to {version}.' ) );
 		$c->register( new EventDefinition( 5103, ObjectType::THEME, EventType::DELETED, Severity::HIGH, 'Theme {name} deleted.' ) );
 		$c->register( new EventDefinition( 5104, ObjectType::THEME, EventType::UPDATED, Severity::INFO, 'Theme customizer settings updated.' ) );
+		$c->register( new EventDefinition( 5105, ObjectType::THEME, EventType::UPDATED, Severity::MEDIUM, 'Automatic updates {state} for theme {name}.' ) );
 	}
 
 	private static function settings_system( EventCatalog $c ): void {
