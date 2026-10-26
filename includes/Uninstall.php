@@ -17,8 +17,9 @@ defined( 'ABSPATH' ) || exit;
  * Called from the top-level uninstall.php. Removes every trace the plugin
  * left in the local WP database: on every site (of every network), the
  * queue table and every `hellolog_*` option and transient, the token
- * included. Backend-side events are NOT touched —
- * the operator must purge them through the backend admin API if desired.
+ * included. Events already delivered are not removed by uninstalling: the
+ * service keeps them, and deleting the site in the hellolog.io dashboard
+ * removes them.
  */
 final class Uninstall {
 
