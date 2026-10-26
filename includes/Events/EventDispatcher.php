@@ -1,6 +1,6 @@
 <?php
 /**
- * Sensors publish events through this contract; M3 wires the queue impl.
+ * Sensors publish events through this contract.
  *
  * @package HelloLog
  */

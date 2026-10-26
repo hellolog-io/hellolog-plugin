@@ -16,7 +16,7 @@ defined( 'ABSPATH' ) || exit;
 /**
  * Picks up wp-admin Theme Editor and Plugin Editor saves
  * (`wp_ajax_edit-theme-plugin-file`). Periodic disk-integrity scans
- * are a separate concern handled by FilesystemScanCron (M7+).
+ * are out of scope for this sensor.
  *
  * {@see self::detect_editor_save()} is a read-only audit observer, not the
  * form handler: WP core's own save path verifies its own nonce before

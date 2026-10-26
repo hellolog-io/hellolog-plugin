@@ -16,7 +16,7 @@ use PHPUnit\Framework\TestCase;
 /**
  * The catalog has to be exhaustive — every code a sensor emits must have
  * a matching definition. This test seeds the catalog and checks the
- * codes the M6–M13 sensors fire are all present.
+ * codes the sensors fire are all present.
  */
 final class CatalogSeederIntegrityTest extends TestCase {
 

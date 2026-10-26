@@ -107,8 +107,7 @@ final class Options {
 	 * Backend's token shape: `goal_<env>_<prefix>_<secret>`, matched in
 	 * full (`^...$`) against env ∈ {live, test}, prefix exactly 8
 	 * lowercase-alphanumeric ([a-z0-9]) chars, and secret exactly 40
-	 * lowercase-alphanumeric ([a-z0-9]) chars. Kept in lock-step with
-	 * `internal/token/token.go::Parse`.
+	 * lowercase-alphanumeric ([a-z0-9]) chars.
 	 */
 	public static function is_valid_token( string $token ): bool {
 		return 1 === preg_match( '/^goal_(live|test)_[a-z0-9]{8}_[a-z0-9]{40}$/', $token );

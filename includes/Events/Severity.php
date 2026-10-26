@@ -12,7 +12,7 @@ namespace HelloLog\Events;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Wire-level severity strings shared with the backend `Severity` Go enum.
+ * Wire-level severity strings accepted by the HelloLog API.
  */
 final class Severity {
 
