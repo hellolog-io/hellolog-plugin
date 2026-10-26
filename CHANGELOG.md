@@ -20,7 +20,8 @@ October 2026 or later.
 - WooCommerce order notes are logged with their text and type (customer,
   private, system or status). Orders get a target and a link to the order
   edit screen.
-- Posts reverted to auto-draft are now logged.
+- Posts reverted to auto-draft are now logged, from any status (a published
+  or trashed post included), for WooCommerce products and coupons too.
 - A post update also records changes to the publish date, the menu order and
   password protection (whether a password is set, never the password itself).
 - New `hellolog_suppression_rules` filter to add suppression, merge or
@@ -34,7 +35,9 @@ October 2026 or later.
   events of one save become one.
 - Publishing a new post logs one "published" event instead of "created"
   plus "published".
-- Settings changes record the HTTP method of the request that made them.
+- Plugin settings changes (WooCommerce, Rank Math, Yoast SEO, Termly and the
+  LW plugins) record the HTTP method of the request that made them; changes
+  made with WP-CLI have none.
 - Comment events cover comments, pingbacks, trackbacks, reviews and notes
   left on a post in the block editor.
 - Profile edits that only touch the first or last name, the nickname or the
@@ -66,8 +69,11 @@ October 2026 or later.
 - Approving a comment through the REST API (the block editor, apps) no longer
   also logs "comment edited". An edit is logged only when the text or the
   author's name, e-mail or URL changed, and lists what changed.
-- On multisite, network activation sets up every site, and sites added later
-  get their queue table, so their events are no longer lost.
+- On multisite, network activation sets up every site (within a time limit,
+  and not on large networks), sites added later are set up when they are
+  created, and any site still without its queue table is set up on its
+  first event, so their events are no longer lost. Uninstalling removes the
+  queue table of every site, and deleting a site removes its queue table.
 - On multisite, every event is queued on the site it happened on, also when
   a request switches between sites.
 - A privileged role assigned at registration is always logged.

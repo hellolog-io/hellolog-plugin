@@ -96,7 +96,8 @@ This version requires the HelloLog service release from October 2026 or later.
   from template variables.
 * New: WooCommerce order notes are logged with their text and type
   (customer, private, system or status).
-* New: Posts reverted to auto-draft are now logged.
+* New: Posts reverted to auto-draft are now logged, from any status, also
+  for WooCommerce products and coupons.
 * New: A post update also records changes to the publish date, the menu
   order and password protection (whether a password is set, never the
   password itself).
@@ -106,7 +107,8 @@ This version requires the HelloLog service release from October 2026 or later.
   event wins — an order note is no longer logged twice, plain status notes
   fold into the order status change, and publishing a new post logs
   "published".
-* Change: Settings changes record the HTTP method.
+* Change: Plugin settings changes (WooCommerce, Rank Math, Yoast SEO, Termly,
+  LW plugins) record the HTTP method.
 * Change: Comment events cover comments, pingbacks, trackbacks, reviews and
   notes left on a post in the block editor.
 * Change: Profile edits that only touch the first or last name, the nickname
@@ -132,8 +134,9 @@ This version requires the HelloLog service release from October 2026 or later.
   is logged.
 * Fix: Approving a comment no longer also logs an edit; an edit lists what
   changed.
-* Fix: On multisite, sites added after activation get their queue table, so
-  their events are no longer lost.
+* Fix: On multisite, every site gets its queue table (at network
+  activation, when it is created, or on its first event), so its events are
+  no longer lost. Uninstalling or deleting a site removes the queue tables.
 * Fix: On multisite, every event is queued on the site it happened on, also
   when a request switches between sites.
 * Fix: A privileged role assigned at registration is always logged.
