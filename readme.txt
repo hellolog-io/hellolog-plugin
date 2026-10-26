@@ -112,6 +112,8 @@ This version requires the HelloLog service release from October 2026 or later.
 * Change: Profile edits that only touch the first or last name, the nickname
   or the biographical info are not logged yet; they will be in a later
   release.
+* Change: Event times are recorded to the millisecond.
+* Change: Long values in an event's details are cut to 1,024 characters.
 * Fix: Requests authenticated with an application password no longer run
   out of memory.
 * Fix: A new registration no longer logs a false role change.
@@ -122,7 +124,16 @@ This version requires the HelloLog service release from October 2026 or later.
 * Fix: A two-factor login is no longer logged as "2FA enabled".
 * Fix: Menu changes are no longer logged twice.
 * Fix: WooCommerce products, orders and coupons are no longer also logged as
-  generic posts. Moving them to the trash and restoring them is still logged.
+  generic posts. Moving products and coupons to the trash and restoring them
+  is still logged.
+* Fix: Core settings changes record the setting and what changed, with
+  masked values: a password in a URL no longer reaches the log.
+* Fix: Restoring from the trash in the block editor or through the REST API
+  is logged.
+* Fix: Approving a comment no longer also logs an edit; an edit lists what
+  changed.
+* Fix: On multisite, sites added after activation get their queue table, so
+  their events are no longer lost.
 * Fix: On multisite, every event is queued on the site it happened on, also
   when a request switches between sites.
 * Fix: A privileged role assigned at registration is always logged.

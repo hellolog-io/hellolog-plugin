@@ -39,6 +39,8 @@ October 2026 or later.
   left on a post in the block editor.
 - Profile edits that only touch the first or last name, the nickname or the
   biographical info are not logged yet; they will be in a later release.
+- Event times are recorded to the millisecond.
+- Long values in an event's details are cut to 1,024 characters.
 
 ### Fixed
 - Requests authenticated with an application password (REST API or XML-RPC
@@ -53,7 +55,19 @@ October 2026 or later.
 - Deleting auto-drafts during WordPress' own cleanup is no longer logged.
 - Menu changes are no longer logged twice.
 - WooCommerce products, orders and coupons are no longer also logged as
-  generic posts. Moving them to the trash and restoring them is still logged.
+  generic posts. Moving products and coupons to the trash and restoring them
+  is still logged.
+- Changes to core settings (site title, tagline, site address, admin e-mail
+  and the other watched settings) record the setting as their target and
+  what changed, and their values are masked like those of plugin settings: a
+  password in a URL no longer reaches the log.
+- Restoring a post, page, product or coupon from the trash in the block
+  editor or through the REST API is now logged.
+- Approving a comment through the REST API (the block editor, apps) no longer
+  also logs "comment edited". An edit is logged only when the text or the
+  author's name, e-mail or URL changed, and lists what changed.
+- On multisite, network activation sets up every site, and sites added later
+  get their queue table, so their events are no longer lost.
 - On multisite, every event is queued on the site it happened on, also when
   a request switches between sites.
 - A privileged role assigned at registration is always logged.
