@@ -78,20 +78,25 @@ every site is issued its own key, bound to its domain. Paste it into
 == Upgrade Notice ==
 
 = 0.5.0 =
-Requires the HelloLog service release from 2026-10 or later. Events now carry actor, target, source, changes and links.
+This version requires the HelloLog service release from October 2026 or later.
 
 == Changelog ==
 
 = 0.5.0 =
-* Note: Requires the HelloLog service release from 2026-10 or later.
-* New: Every event says who did it (the actor) separately from what it was
-  done to (the target), and where it came from: admin, frontend, REST API,
-  AJAX, cron, Action Scheduler, WP-CLI or XML-RPC.
-* New: Events list what changed (old and new values) and link back to the
-  edit screen. Messages are rendered from template variables.
+* Note: This version requires the HelloLog service release from October
+  2026 or later.
+* New: Events separate who did it (the actor) from what it was done to (the
+  target). Targets are recorded for users, posts, pages and custom post
+  types, comments, WooCommerce orders and settings; links back to the edit
+  screen are recorded for posts, comments and orders. Background runs (cron,
+  Action Scheduler) have no actor.
+* New: Events record where they came from: admin, frontend, REST API, AJAX,
+  cron, Action Scheduler, WP-CLI or XML-RPC.
+* New: Events list what changed (old and new values). Messages are rendered
+  from template variables.
 * New: WooCommerce order notes are logged with their text and type
   (customer, private, system or status).
-* New: Posts reverted to auto-draft are logged.
+* New: Posts reverted to auto-draft are now logged.
 * New: The `hellolog_suppression_rules` filter adjusts the per-request
   de-duplication rules.
 * Change: The events of one request are de-duplicated and the most specific
@@ -99,14 +104,19 @@ Requires the HelloLog service release from 2026-10 or later. Events now carry ac
   fold into the order status change, and publishing a new post logs
   "published".
 * Change: Settings changes record the HTTP method.
-* Change: Credential-like values are masked more thoroughly: nested keys in
-  arrays and JSON, passwords inside URLs, and bank details.
 * Fix: A new registration no longer logs a false role change.
 * Fix: Empty "post updated" events are dropped.
 * Fix: Plugins' own bookkeeping writes and background option changes are no
   longer logged as settings changes.
 * Fix: WordPress' own auto-draft cleanup is no longer logged.
 * Fix: A two-factor login is no longer logged as "2FA enabled".
+* Fix: Menu changes are no longer logged twice.
+* Fix: WooCommerce products, orders and coupons are no longer also logged as
+  generic posts.
+* Fix: A privileged role assigned at registration is always logged.
+* Security: Credential-like values are masked in option values and in
+  recorded changes, including nested keys in arrays and JSON strings,
+  passwords in URLs, and bank details.
 
 = 0.4.4 =
 * Change: Events carry a hash of the login session instead of the session
