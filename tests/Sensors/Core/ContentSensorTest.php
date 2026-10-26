@@ -60,12 +60,16 @@ final class ContentSensorTest extends TestCase {
 			'pending to auto-draft'     => [ 'auto-draft', 'pending', 2013 ],
 			'private to auto-draft'     => [ 'auto-draft', 'private', 2013 ],
 			'future to auto-draft'      => [ 'auto-draft', 'future', 2013 ],
-			'trash to auto-draft'       => [ 'auto-draft', 'trash', 2013 ],
+			'trash to auto-draft'       => [ 'auto-draft', 'trash', 2004 ],
 			'custom to auto-draft'      => [ 'auto-draft', 'acf-disabled', 2013 ],
 			'publish to auto-draft'     => [ 'auto-draft', 'publish', 2002 ],
-			'trash to publish'          => [ 'publish', 'trash', 2001 ],
+			'trash to publish'          => [ 'publish', 'trash', 2004 ],
 			'private to publish'        => [ 'publish', 'private', 2001 ],
-			'trash to draft'            => [ 'draft', 'trash', 0 ],
+			'trash to draft'            => [ 'draft', 'trash', 2004 ],
+			'trash to pending'          => [ 'pending', 'trash', 2004 ],
+			'trash to private'          => [ 'private', 'trash', 2004 ],
+			'trash to inherit'          => [ 'inherit', 'trash', 2004 ],
+			'trash to an order status'  => [ 'wc-processing', 'trash', 2004 ],
 			'auto-draft to inherit'     => [ 'inherit', 'auto-draft', 0 ],
 		];
 	}
@@ -539,6 +543,125 @@ final class ContentSensorTest extends TestCase {
 		$this->assertSame( [ '7', '8', '9', '7', '8' ], array_map( static fn( array $call ): string => $call[1]['target']['id'], $calls ) );
 		$this->assertSame( 'product', $calls[0][1]['post']['type'] );
 		$this->assertSame( 'shop_coupon', $calls[4][1]['post']['type'] );
+	}
+
+	/**
+	 * The REST API has no restore route: the block editor's Restore sends a
+	 * plain status update (`{"status":"draft"}`), so the status change is
+	 * the only sign of the restore.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_restore_through_a_status_update_is_logged_once(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$draft = $post( [ 'post_status' => 'draft' ] );
+				$sensor->on_status( 'draft', 'trash', $draft );
+				$sensor->on_updated( 7, $draft, $post( [ 'post_status' => 'trash' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				'type'  => 'post',
+				'id'    => '7',
+				'label' => 'Hello',
+			],
+			$calls[0][1]['target']
+		);
+		$this->assertSame( 'draft', $calls[0][1]['post']['status'] );
+		$this->assertSame(
+			[ 'edit' => 'https://example.test/wp-admin/post.php?post=7&action=edit' ],
+			$calls[0][1]['links']
+		);
+	}
+
+	/**
+	 * `wp_untrash_post()` fires `untrash_post`, changes the status (which
+	 * fires the status change) and then fires `untrashed_post`: one restore,
+	 * one event, still telling the status the post had before the trash.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_wp_untrash_post_logs_one_restore_with_the_previous_status(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$draft             = $post( [ 'post_status' => 'draft' ] );
+				WpState::$posts[7] = $draft;
+
+				$sensor->on_untrash( 7, 'publish' );
+				$sensor->on_status( 'draft', 'trash', $draft );
+				$sensor->on_updated( 7, $draft, $post( [ 'post_status' => 'trash' ] ) );
+				$sensor->on_untrashed( 7, 'publish' );
+			}
+		);
+
+		$this->assertSame( [ 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame( 'publish', $calls[0][1]['metadata']['previous_status'] );
+		$this->assertSame( '7', $calls[0][1]['target']['id'] );
+	}
+
+	/**
+	 * Trashed and restored twice in one request: two restores, each once.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_each_restore_of_a_request_is_logged_once(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$draft             = $post( [ 'post_status' => 'draft' ] );
+				WpState::$posts[7] = $draft;
+
+				$sensor->on_untrash( 7, 'publish' );
+				$sensor->on_status( 'draft', 'trash', $draft );
+				$sensor->on_untrashed( 7, 'publish' );
+
+				$sensor->on_status( 'trash', 'draft', $post( [ 'post_status' => 'trash' ] ) );
+				$sensor->on_status( 'draft', 'trash', $draft );
+			}
+		);
+
+		$this->assertSame( [ 2004, 2003, 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame( 'publish', $calls[0][1]['metadata']['previous_status'] );
+		$this->assertArrayNotHasKey( 'previous_status', $calls[2][1]['metadata'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_both_restore_hooks_are_registered_with_the_previous_status(): void {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+		$this->run_hook( static fn( ContentSensor $sensor ) => $sensor->boot() );
+
+		foreach ( [ 'untrash_post', 'untrashed_post' ] as $hook ) {
+			$this->assertSame( 2, WpState::$actions[ $hook ]['accepted_args'] ?? null, $hook );
+		}
+	}
+
+	/**
+	 * A product or coupon restored through the shop's REST API is a status
+	 * update too.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_product_or_coupon_restored_through_a_status_update_is_logged(): void {
+		require_once __DIR__ . '/Fixtures/woocommerce-class.php';
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_status( 'draft', 'trash', $post( [ 'post_type' => 'product', 'post_status' => 'draft' ] ) );
+				$sensor->on_status( 'publish', 'trash', $post( [ 'ID' => 8, 'post_type' => 'shop_coupon', 'post_status' => 'publish' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2004, 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 'product', 'shop_coupon' ], array_map( static fn( array $call ): string => $call[1]['post']['type'], $calls ) );
 	}
 
 	/**

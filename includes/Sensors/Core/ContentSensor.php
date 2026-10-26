@@ -88,6 +88,23 @@ final class ContentSensor extends AbstractSensor {
 	 */
 	private const CONTENT_FIELDS = [ 'post_content' ];
 
+	/**
+	 * Posts `wp_untrash_post()` is restoring right now: post id => the status
+	 * the post had when it was trashed. Set on `untrash_post`, taken by the
+	 * status change that follows it.
+	 *
+	 * @var array<int, string>
+	 */
+	private array $untrashing = [];
+
+	/**
+	 * Posts whose restore a status change has logged, so `untrashed_post`,
+	 * which `wp_untrash_post()` fires after that change, does not log it again.
+	 *
+	 * @var array<int, true>
+	 */
+	private array $restored = [];
+
 	public function key(): string {
 		return 'core-content';
 	}
@@ -96,17 +113,61 @@ final class ContentSensor extends AbstractSensor {
 		add_action( 'transition_post_status', [ $this, 'on_status' ], 10, 3 );
 		add_action( 'post_updated', [ $this, 'on_updated' ], 10, 3 );
 		add_action( 'before_delete_post', [ $this, 'on_delete' ], 10, 2 );
+		add_action( 'untrash_post', [ $this, 'on_untrash' ], 10, 2 );
 		add_action( 'untrashed_post', [ $this, 'on_untrashed' ], 10, 2 );
 	}
 
+	/**
+	 * A restore is logged by the status change out of the trash: the block
+	 * editor restores a post with a plain status update, and
+	 * `wp_untrash_post()` changes the status too. The status the post had
+	 * before the trash is only known when `wp_untrash_post()` restores it.
+	 */
 	public function on_status( string $new_status, string $old_status, WP_Post $post ): void {
 		$code = self::status_event_code( $new_status, $old_status );
-		if ( 0 !== $code && $this->should_track( $post, $code ) ) {
-			$this->emit_post_event( $code, $post );
+		if ( 0 === $code ) {
+			return;
+		}
+
+		$extra = [];
+		if ( 2004 === $code ) {
+			$id = (int) $post->ID;
+			if ( array_key_exists( $id, $this->untrashing ) ) {
+				$extra['previous_status'] = $this->untrashing[ $id ];
+				unset( $this->untrashing[ $id ] );
+			}
+			$this->restored[ $id ] = true;
+		}
+
+		if ( $this->should_track( $post, $code ) ) {
+			$this->emit_post_event( $code, $post, $extra );
 		}
 	}
 
+	/**
+	 * `wp_untrash_post()` is about to restore a post; the status change that
+	 * follows logs it.
+	 *
+	 * @param int    $post_id         Post id.
+	 * @param string $previous_status Status of the post when it was trashed.
+	 */
+	public function on_untrash( int $post_id, string $previous_status = '' ): void {
+		$this->untrashing[ $post_id ] = $previous_status;
+	}
+
+	/**
+	 * Logs a restore that no status change has logged, which only happens
+	 * when something fires `untrashed_post` on its own.
+	 *
+	 * @param int    $post_id         Post id.
+	 * @param string $previous_status Status of the post when it was trashed.
+	 */
 	public function on_untrashed( int $post_id, string $previous_status ): void {
+		if ( isset( $this->restored[ $post_id ] ) ) {
+			unset( $this->restored[ $post_id ] );
+			return;
+		}
+
 		$post = get_post( $post_id );
 		if ( $post instanceof WP_Post && $this->should_track( $post, 2004 ) ) {
 			$this->emit_post_event( 2004, $post, [ 'previous_status' => $previous_status ] );
@@ -156,8 +217,10 @@ final class ContentSensor extends AbstractSensor {
 	 * creation. A post that comes into being as anything else visible, either
 	 * from `auto-draft` (the editor's placeholder) or from `new` (inserted
 	 * directly, by the REST API or an importer), is "created". Moving to
-	 * trash is "trashed" from every state, and going from published to
-	 * anything else but trash is "unpublished". A post that was
+	 * trash is "trashed" from every state, and moving out of the trash, to
+	 * any state, is "restored" (the block editor restores a post with a plain
+	 * status update). Going from published to anything else but trash is
+	 * "unpublished". A post that was
 	 * already saved and is sent back to `auto-draft` (and was not published)
 	 * is "reverted": WordPress deletes stale auto-drafts on its own, so the
 	 * move is what has to be on record.
@@ -172,6 +235,9 @@ final class ContentSensor extends AbstractSensor {
 		}
 		if ( 'trash' === $new ) {
 			return 2003;
+		}
+		if ( 'trash' === $old ) {
+			return 2004;
 		}
 		if ( 'publish' === $new ) {
 			return 2001;
