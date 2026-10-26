@@ -417,17 +417,45 @@ final class SuppressionRulesTest extends TestCase {
 		$this->assertSame( [ 2006, 4000 ], self::codes( $result ) );
 	}
 
-	public function test_system_note_suppressed_by_status_change(): void {
+	public function test_status_note_suppressed_by_status_change(): void {
 		$result = SuppressionRules::defaults()->apply(
 			[
 				self::event( 9101, self::order( 5 ) ),
-				self::event( 9103, self::order( 5 ), null, [ 'metadata' => [ 'note_type' => 'system' ] ] ),
+				self::event( 9103, self::order( 5 ), null, [ 'metadata' => [ 'note_type' => 'status' ] ] ),
 				self::event( 9103, self::order( 5 ), null, [ 'metadata' => [ 'note_type' => 'private' ] ] ),
 			]
 		);
 
 		$this->assertSame( [ 9101, 9103 ], self::codes( $result ) );
 		$this->assertSame( 'private', $result[1]['metadata']['note_type'] );
+	}
+
+	/**
+	 * What the shop notes about payments, stock or errors is information of
+	 * its own, and a note meant for the customer is a message to them.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function notes_next_to_a_status_change_that_stay(): array {
+		return [
+			'system'   => [ 'system' ],
+			'customer' => [ 'customer' ],
+			'private'  => [ 'private' ],
+		];
+	}
+
+	/**
+	 * @dataProvider notes_next_to_a_status_change_that_stay
+	 */
+	public function test_only_a_status_note_is_suppressed_by_a_status_change( string $note_type ): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 9101, self::order( 5 ) ),
+				self::event( 9103, self::order( 5 ), null, [ 'metadata' => [ 'note_type' => $note_type ] ] ),
+			]
+		);
+
+		$this->assertSame( [ 9101, 9103 ], self::codes( $result ) );
 	}
 
 	public function test_note_without_a_type_is_not_suppressed(): void {
@@ -441,10 +469,10 @@ final class SuppressionRulesTest extends TestCase {
 		$this->assertSame( [ 9101, 9103 ], self::codes( $result ) );
 	}
 
-	public function test_system_note_without_a_status_change_stays(): void {
+	public function test_status_note_without_a_status_change_stays(): void {
 		$result = SuppressionRules::defaults()->apply(
 			[
-				self::event( 9103, self::order( 5 ), null, [ 'metadata' => [ 'note_type' => 'system' ] ] ),
+				self::event( 9103, self::order( 5 ), null, [ 'metadata' => [ 'note_type' => 'status' ] ] ),
 			]
 		);
 

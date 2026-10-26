@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Sensors\Integrations;
 
+use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
 
 defined( 'ABSPATH' ) || exit;
@@ -19,13 +20,22 @@ defined( 'ABSPATH' ) || exit;
  *
  * Every event names its order as `target` (labelled with the order number)
  * and, while the order still exists, links to its edit screen. An order note
- * event also carries the text of the note and its kind: `customer` (meant for
- * the customer), `system` (written by WooCommerce itself) or `private`.
+ * event also carries the text of the note and its kind, see
+ * {@see self::note_type()}.
  */
 final class WooCommerceOrderSensor extends AbstractSensor {
 
 	/** Longest note text sent, in characters, the ellipsis included. */
 	private const MAX_NOTE_LENGTH = 500;
+
+	/** What a note reads when nothing is left of it. */
+	private const EMPTY_NOTE = '(empty note)';
+
+	/**
+	 * Longest note, in bytes, that can still be a status sentence. Status names
+	 * are short; the limit only keeps the match cheap on a huge note.
+	 */
+	private const MAX_STATUS_NOTE_LENGTH = 1000;
 
 	private const ELLIPSIS = '…';
 
@@ -62,45 +72,125 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	}
 
 	/**
-	 * The kind of an order note.
+	 * The kind of an order note, in this order of precedence:
 	 *
-	 * A note meant for the customer is a customer note, whoever wrote it. Of
-	 * the others, the ones WooCommerce writes itself are recognised by the
-	 * address it files them under, which starts with `$system_prefix`; every
-	 * other note was written by a person.
+	 * - `customer`: the note is meant for the customer, whoever wrote it.
+	 * - `status`: the note is nothing but WooCommerce's sentence about a status
+	 *   change. It says what the status change event already says, and it is
+	 *   the same sentence whether the shop or an admin changing the status by
+	 *   hand has it filed under their name.
+	 * - `system`: the note was filed under the shop's own name and address.
+	 *   That is what WooCommerce notes about payments, stock and errors.
+	 * - `private`: any other note: one a person wrote, or another plugin.
 	 *
-	 * @param bool   $is_customer_note Whether the note was meant for the customer.
-	 * @param string $author_email     Address the note was written under.
-	 * @param string $system_prefix    Start of the address of WooCommerce's own notes.
-	 * @return string `customer`, `system` or `private`.
+	 * @param bool $is_customer_note Whether the note was meant for the customer.
+	 * @param bool $is_status_note   Whether the note is exactly a status sentence.
+	 * @param bool $is_system_note   Whether the note was filed under the shop's own name and address.
+	 * @return string `customer`, `status`, `system` or `private`.
 	 */
-	public static function note_type( bool $is_customer_note, string $author_email, string $system_prefix ): string {
+	public static function note_type( bool $is_customer_note, bool $is_status_note, bool $is_system_note ): string {
 		if ( $is_customer_note ) {
 			return 'customer';
 		}
 
-		if ( '' !== $system_prefix && str_starts_with( $author_email, $system_prefix ) ) {
-			return 'system';
+		if ( $is_status_note ) {
+			return 'status';
 		}
 
-		return 'private';
+		return $is_system_note ? 'system' : 'private';
 	}
 
 	/**
-	 * The text of an order note as sent: without markup and at most 500
-	 * characters, the ellipsis included.
+	 * Whether a note is exactly one of the sentences WooCommerce writes for a
+	 * status change, and nothing else.
+	 *
+	 * A sentence with text of a person in front of it (WooCommerce puts the
+	 * text it was given before the sentence) or after it carries that text and
+	 * is not one. A placeholder of a format stands for a status name.
+	 *
+	 * @param string             $content Text of the note as stored.
+	 * @param array<int, string> $formats `sprintf` formats of the sentences, as translated for the site.
+	 */
+	public static function is_status_note( string $content, array $formats ): bool {
+		$text = trim( $content );
+		if ( '' === $text || strlen( $text ) > self::MAX_STATUS_NOTE_LENGTH ) {
+			return false;
+		}
+
+		foreach ( $formats as $format ) {
+			$pattern = self::status_pattern( (string) $format );
+			if ( null !== $pattern && 1 === preg_match( $pattern, $text ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Whether a note was filed under the shop's own name and address.
+	 *
+	 * Both must be exactly what WooCommerce files its own notes under: the
+	 * address alone is not enough, a person can have any address. A shop that
+	 * has no address of its own files no note as its own.
+	 *
+	 * @param string $author        Name the note was written under.
+	 * @param string $author_email  Address the note was written under.
+	 * @param string $system_author Name WooCommerce files its own notes under.
+	 * @param string $system_email  Address WooCommerce files its own notes under.
+	 */
+	public static function is_system_note( string $author, string $author_email, string $system_author, string $system_email ): bool {
+		return '' !== $system_author && '' !== $system_email && $author === $system_author && $author_email === $system_email;
+	}
+
+	/**
+	 * The text of an order note as sent: without markup, character entities
+	 * decoded, secrets masked, and at most 500 characters, the ellipsis
+	 * included. Masking comes before the cut, so the cut cannot leave a piece
+	 * of a secret that no longer looks like one.
 	 *
 	 * @param string $content Text of the note as stored.
 	 */
 	public static function note_text( string $content ): string {
 		// phpcs:ignore WordPress.WP.AlternativeFunctions.strip_tags_strip_tags -- only reached when core's helper is not loaded.
-		$text = function_exists( 'wp_strip_all_tags' ) ? wp_strip_all_tags( $content ) : trim( strip_tags( $content ) );
+		$text = function_exists( 'wp_strip_all_tags' ) ? wp_strip_all_tags( $content ) : strip_tags( $content );
+		$text = ChangeSet::redact_text( html_entity_decode( $text, ENT_QUOTES | ENT_HTML5, 'UTF-8' ) );
+		$text = (string) preg_replace( '/^[\p{Z}\s]+|[\p{Z}\s]+$/u', '', $text );
+
+		if ( '' === $text ) {
+			return self::EMPTY_NOTE;
+		}
 
 		if ( mb_strlen( $text, 'UTF-8' ) <= self::MAX_NOTE_LENGTH ) {
 			return $text;
 		}
 
 		return mb_substr( $text, 0, self::MAX_NOTE_LENGTH - 1, 'UTF-8' ) . self::ELLIPSIS;
+	}
+
+	/**
+	 * The expression that matches a note that is exactly the sentence of a
+	 * `sprintf` format, a status name in place of each placeholder; null when
+	 * the format has no text of its own to tell the sentence by.
+	 */
+	private static function status_pattern( string $format ): ?string {
+		$parts = preg_split( '/(%(?:\d+\$)?s)/', $format, -1, PREG_SPLIT_DELIM_CAPTURE );
+		if ( false === $parts ) {
+			return null;
+		}
+
+		$body    = '';
+		$literal = '';
+		foreach ( $parts as $index => $part ) {
+			if ( 1 === $index % 2 ) {
+				$body .= '.+?';
+				continue;
+			}
+			$literal .= $part;
+			$body    .= preg_quote( $part, '/' );
+		}
+
+		return '' === trim( $literal ) ? null : '/^' . $body . '$/uD';
 	}
 
 	/**
@@ -162,7 +252,13 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		$order_id = is_object( $order ) && method_exists( $order, 'get_id' ) ? (int) $order->get_id() : 0;
 		$note     = function_exists( 'get_comment' ) ? get_comment( $note_id ) : null;
 		$content  = is_object( $note ) ? (string) ( $note->comment_content ?? '' ) : '';
-		$author   = is_object( $note ) ? (string) ( $note->comment_author_email ?? '' ) : '';
+		$author   = is_object( $note ) ? (string) ( $note->comment_author ?? '' ) : '';
+		$email    = is_object( $note ) ? (string) ( $note->comment_author_email ?? '' ) : '';
+		$type     = self::note_type(
+			$this->is_customer_note( $note_id ),
+			self::is_status_note( $content, $this->status_formats() ),
+			self::is_system_note( $author, $email, $this->system_author(), $this->system_email() )
+		);
 
 		$this->emit(
 			9103,
@@ -173,7 +269,7 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 					'metadata' => [
 						'order_id'  => $order_id,
 						'note_id'   => $note_id,
-						'note_type' => self::note_type( $this->is_customer_note( $note_id ), $author, $this->system_prefix() ),
+						'note_type' => $type,
 					],
 				],
 				$this->order_fields( $order_id, $order )
@@ -244,11 +340,43 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Start of the address WooCommerce files its own notes under: the lowercase,
-	 * translated shop name and an `@`, as `WC_Order::add_order_note()` builds it.
+	 * The `sprintf` formats of the sentences WooCommerce writes for a status
+	 * change, translated as it translates them when it writes them
+	 * (`WC_Order::status_transition()`).
+	 *
+	 * @return array<int, string>
 	 */
-	private function system_prefix(): string {
-		// phpcs:ignore WordPress.WP.I18n.TextDomainMismatch -- WooCommerce's own string, translated the way WooCommerce does when it writes the address.
-		return strtolower( __( 'WooCommerce', 'woocommerce' ) ) . '@';
+	private function status_formats(): array {
+		// The strings are WooCommerce's own, so the text domain is not ours.
+		return [
+			// translators: 1: old order status, 2: new order status.
+			__( 'Order status changed from %1$s to %2$s.', 'woocommerce' ), // phpcs:ignore WordPress.WP.I18n.TextDomainMismatch
+			// translators: %s: new order status.
+			__( 'Order status set to %s.', 'woocommerce' ), // phpcs:ignore WordPress.WP.I18n.TextDomainMismatch
+		];
+	}
+
+	/**
+	 * The name WooCommerce files its own notes under.
+	 */
+	private function system_author(): string {
+		// phpcs:ignore WordPress.WP.I18n.TextDomainMismatch -- WooCommerce's own string, translated the way WooCommerce does when it writes the note.
+		return __( 'WooCommerce', 'woocommerce' );
+	}
+
+	/**
+	 * The address WooCommerce files its own notes under, built the way
+	 * `WC_Order::add_order_note()` builds it: the lowercase translated name, an
+	 * `@` and the host of the request without `www.`. Empty when no valid
+	 * address comes out of it (a translated name made of characters an address
+	 * cannot hold).
+	 */
+	private function system_email(): string {
+		$host = 'noreply.com';
+		if ( isset( $_SERVER['HTTP_HOST'] ) ) {
+			$host = str_replace( 'www.', '', sanitize_text_field( wp_unslash( $_SERVER['HTTP_HOST'] ) ) );
+		}
+
+		return sanitize_email( strtolower( $this->system_author() ) . '@' . $host );
 	}
 }

@@ -14,7 +14,7 @@ defined( 'ABSPATH' ) || exit;
 /**
  * One user action often fires several WordPress hooks, and each of them
  * produces an event: publishing a post also "updates" it, a registration also
- * "changes the role", an order status change also writes a system note. These
+ * "changes the role", an order status change also writes a note saying so. These
  * rules say which of those events say the same thing less precisely, so only
  * the most specific one is kept.
  *
@@ -121,9 +121,11 @@ final class SuppressionRules {
 			[ 2006, 4001 ],
 			[ 2006, 4001 ],
 			[
-				// Only the notes WooCommerce writes itself repeat a status change;
-				// a note a person added must stay.
-				9103 => static fn( array $p ): bool => 'system' === ( $p['metadata']['note_type'] ?? '' ),
+				// Only the note that is nothing but WooCommerce's sentence about the
+				// status change repeats it, whoever it is filed under. Everything
+				// else stays: what the shop notes about a payment or stock, a note
+				// for the customer, and any text of a person.
+				9103 => static fn( array $p ): bool => 'status' === ( $p['metadata']['note_type'] ?? '' ),
 
 				// A shop sign-up says it all only for the role the shop gives
 				// its customers. Any other role is a privilege handed out during

@@ -49,6 +49,44 @@ namespace {
 	}
 
 	/**
+	 * @param string $value A string; core also takes arrays, the sensor never passes one.
+	 */
+	function wp_unslash( $value ): string {
+		return stripslashes( (string) $value );
+	}
+
+	/**
+	 * Like core's for a plain text: no tags, no surrounding whitespace.
+	 *
+	 * @param string $text Text to clean.
+	 */
+	function sanitize_text_field( string $text ): string {
+		return trim( strip_tags( $text ) );
+	}
+
+	/**
+	 * Like core's: characters an address cannot hold are dropped from both
+	 * halves, and an address with nothing left of either half is not an address.
+	 *
+	 * @param string $email Address to clean.
+	 */
+	function sanitize_email( string $email ): string {
+		$email = trim( $email );
+		if ( strlen( $email ) < 6 || ! str_contains( $email, '@' ) ) {
+			return '';
+		}
+
+		[ $local, $domain ] = explode( '@', $email, 2 );
+		$local              = (string) preg_replace( '/[^a-zA-Z0-9!#$%&\'*+\/=?^_`{|}~\.-]/', '', $local );
+		$domain             = (string) preg_replace( '/[^a-z0-9.-]/i', '', $domain );
+		if ( '' === $local || '' === $domain ) {
+			return '';
+		}
+
+		return $local . '@' . $domain;
+	}
+
+	/**
 	 * Records the registration; nothing is ever fired.
 	 *
 	 * @param string   $hook_name     Hook name.
