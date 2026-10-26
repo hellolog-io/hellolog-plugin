@@ -34,4 +34,11 @@ final class WpCalls {
 
 	/** The site `get_current_blog_id()` reports as current. */
 	public static int $blog_id = 1;
+
+	/**
+	 * Hook name => how it was registered with `add_action()`.
+	 *
+	 * @var array<string, array{priority: int, accepted_args: int}>
+	 */
+	public static array $hooks = [];
 }
