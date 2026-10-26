@@ -14,11 +14,12 @@ use HelloLog\Admin\AdminPage;
 use HelloLog\Admin\AssetsLoader;
 use HelloLog\Admin\TestConnectionHandler;
 use HelloLog\Events\ActionSchedulerContext;
+use HelloLog\Events\BufferedDispatcher;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
 use HelloLog\Events\NullEventDispatcher;
-use HelloLog\Queue\QueueEventDispatcher;
+use HelloLog\Events\SuppressionRules;
 use HelloLog\Queue\QueueRepository;
 use HelloLog\Queue\QueueRetention;
 use HelloLog\Scheduler\ActionSchedulerBridge;
@@ -77,6 +78,8 @@ final class Plugin {
 	private EventBuilder $builder;
 
 	private EventDispatcher $dispatcher;
+
+	private ?SuppressionRules $rules = null;
 
 	private SensorManager $sensors;
 
@@ -172,6 +175,31 @@ final class Plugin {
 		return $this->dispatcher;
 	}
 
+	/**
+	 * The rules that thin out each request's events before they are queued:
+	 * the built-in table, passed through the `hellolog_suppression_rules`
+	 * filter. Built once, when the dispatcher is assembled, so a callback
+	 * has to be hooked before then.
+	 */
+	public function rules(): SuppressionRules {
+		if ( null === $this->rules ) {
+			$rules = SuppressionRules::defaults();
+
+			/**
+			 * Add suppression, merge or drop-empty rules, usually with
+			 * `$rules->with( new SuppressionRules( ... ) )`.
+			 *
+			 * @param SuppressionRules $rules The rules in force. A callback must
+			 *                                return a SuppressionRules; anything
+			 *                                else is ignored.
+			 */
+			$filtered    = apply_filters( 'hellolog_suppression_rules', $rules );
+			$this->rules = $filtered instanceof SuppressionRules ? $filtered : $rules;
+		}
+
+		return $this->rules;
+	}
+
 	public function sensors(): SensorManager {
 		return $this->sensors;
 	}
@@ -264,7 +292,18 @@ final class Plugin {
 			return new NullEventDispatcher();
 		}
 
-		return new QueueEventDispatcher( $this->builder, new QueueRepository() );
+		$repository = new QueueRepository();
+		$dispatcher = new BufferedDispatcher(
+			$this->builder,
+			static fn( string $json ): int => $repository->insert( $json ),
+			$this->rules()
+		);
+
+		// Events are only collected during the request; this is what writes
+		// them. Priority 1 so they are written before other shutdown callbacks run.
+		add_action( 'shutdown', [ $dispatcher, 'flush' ], 1 );
+
+		return $dispatcher;
 	}
 
 	/**

@@ -1,6 +1,6 @@
 <?php
 /**
- * No-op dispatcher — used until M3 wires the real queue producer.
+ * No-op dispatcher — used while the plugin is not configured to deliver events.
  *
  * @package HelloLog
  */
@@ -12,8 +12,9 @@ namespace HelloLog\Events;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Swallows every event. Lets the sensor wiring compile and run end-to-end
- * before {@see \HelloLog\Queue\QueueEventDispatcher} arrives.
+ * Swallows every event. Stands in for {@see BufferedDispatcher} while the
+ * plugin has no endpoint or token, so nothing fills a queue that can never
+ * drain.
  */
 final class NullEventDispatcher implements EventDispatcher {
 
