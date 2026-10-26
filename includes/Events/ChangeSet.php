@@ -30,8 +30,10 @@ defined( 'ABSPATH' ) || exit;
  * Arrays and objects are written out in full, so a credential-like KEY inside
  * one (`secret_key`, `access_token`, `iban`…) has its value replaced by
  * {@see SensitiveOption::REDACTED} at every depth, in every reported text.
- * The comparison still sees the real values, so a changed secret is never
- * lost, only never shown.
+ * So does the `value` of a name/value pair whose `name`, `key` or `id` is
+ * credential-like (`{"name":"secret_key","value":"…"}`), the way settings
+ * screens store their fields. The comparison still sees the real values, so
+ * a changed secret is never lost, only never shown.
  */
 final class ChangeSet {
 
@@ -55,6 +57,23 @@ final class ChangeSet {
 	 * The scheme still starts at its first letter, as before.
 	 */
 	private const URL_USERINFO = '~(?<![a-z0-9+.\-])([0-9+.\-]*+[a-z][a-z0-9+.\-]*:(?:\\\\*/){2})[^\s/?#]*@~i';
+
+	/**
+	 * A `?name=value` or `&name=value` query parameter. The value ends at the
+	 * next `&`, `#`, `?` or space, so a URL nested in a value has its own
+	 * parameters looked at too. Name and value are taken whole (possessive)
+	 * and neither can hold the `?`/`&` a match starts with, so every
+	 * character is read once: linear even where PCRE has no JIT.
+	 */
+	private const QUERY_PARAMETER = '~([?&])([^=&#?\s]++)=([^&#?\s]++)~';
+
+	/**
+	 * The keys that name the field of a name/value pair; its `value` is masked
+	 * when one of them is credential-like.
+	 *
+	 * @var array<int, string>
+	 */
+	private const PAIR_NAME_KEYS = [ 'name', 'key', 'id' ];
 
 	/**
 	 * UTF-8 byte order mark. A JSON decoder refuses it, so it is dropped from
@@ -343,7 +362,8 @@ final class ChangeSet {
 	 * so no object can carry a value past the masking.
 	 *
 	 * With `$mask`, the value of every credential-like key is replaced by
-	 * {@see SensitiveOption::REDACTED}, whatever it holds.
+	 * {@see SensitiveOption::REDACTED}, whatever it holds, and so is the
+	 * `value` of a secret name/value pair, see {@see self::is_secret_pair()}.
 	 *
 	 * @param mixed $v     Any value.
 	 * @param int   $depth Array nesting level of `$v`.
@@ -371,9 +391,11 @@ final class ChangeSet {
 			return self::ELLIPSIS;
 		}
 
+		$secret_pair = $mask && self::is_secret_pair( $v );
+
 		$sorted = [];
 		foreach ( $v as $key => $item ) {
-			if ( $mask && is_string( $key ) && SensitiveOption::is_sensitive( $key ) ) {
+			if ( $mask && is_string( $key ) && ( SensitiveOption::is_sensitive( $key ) || ( $secret_pair && 'value' === $key ) ) ) {
 				$sorted[ $key ] = SensitiveOption::REDACTED;
 				continue;
 			}
@@ -384,6 +406,25 @@ final class ChangeSet {
 		}
 
 		return $sorted;
+	}
+
+	/**
+	 * Whether an array is a name/value pair that holds a secret: it has a
+	 * `value`, and its `name`, `key` or `id` is a credential-like name.
+	 *
+	 * @param array<int|string, mixed> $data Array to inspect.
+	 */
+	private static function is_secret_pair( array $data ): bool {
+		if ( ! array_key_exists( 'value', $data ) ) {
+			return false;
+		}
+		foreach ( self::PAIR_NAME_KEYS as $name_key ) {
+			if ( isset( $data[ $name_key ] ) && is_string( $data[ $name_key ] ) && SensitiveOption::is_sensitive( $data[ $name_key ] ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -415,10 +456,12 @@ final class ChangeSet {
 	 * was masked: below the depth limit the structure is cut to `…` before
 	 * any key could be seen, so only the rewrite keeps the raw text out.
 	 *
-	 * Any other text has the `user:password@` part of its URLs masked. When
-	 * it came out of string literals it is wrapped in the same number of
-	 * literals again, written compact (`https://…`, not `https:\/\/…`), so an
-	 * escaped URL is masked like a plain one.
+	 * Any other text has the `user:password@` part of its URLs masked, and
+	 * the value of every `?name=` or `&name=` query parameter whose name is
+	 * credential-like (`?api_key=…`, `&token=…`). When it came out of string
+	 * literals it is wrapped in the same number of literals again, written
+	 * compact (`https://…`, not `https:\/\/…`), so an escaped URL is masked
+	 * like a plain one.
 	 *
 	 * Whitespace and a byte order mark in front of a text do not hide its
 	 * JSON. PHP-serialized text is NOT unserialized: that can instantiate
@@ -454,6 +497,15 @@ final class ChangeSet {
 		}
 
 		$masked = preg_replace( self::URL_USERINFO, '$1' . SensitiveOption::REDACTED . '@', $text );
+		if ( null !== $masked ) {
+			$masked = preg_replace_callback(
+				self::QUERY_PARAMETER,
+				static fn( array $m ): string => SensitiveOption::is_sensitive( urldecode( $m[2] ) )
+					? $m[1] . $m[2] . '=' . SensitiveOption::REDACTED
+					: $m[0],
+				$masked
+			);
+		}
 		for ( $i = 0; $i < $layers && null !== $masked; $i++ ) {
 			$masked = self::json( $masked );
 			if ( false === $masked ) {

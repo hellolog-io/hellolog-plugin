@@ -536,6 +536,112 @@ final class ChangeSetTest extends TestCase {
 		$this->assertSame( $text, ChangeSet::stringify( $text ) );
 	}
 
+	/**
+	 * @return array<string, array{0: string, 1: string}> Text, what is reported.
+	 */
+	public static function urls_with_secret_parameters(): array {
+		return [
+			'a key'                       => [ 'https://h.example.com/hook?api_key=SECRET', 'https://h.example.com/hook?api_key=[redacted]' ],
+			'a token after another one'   => [ 'https://h.example.com/?page=2&token=SECRET&x=1', 'https://h.example.com/?page=2&token=[redacted]&x=1' ],
+			'two of them'                 => [ 'https://h.example.com/?access_token=S1&client_secret=S2', 'https://h.example.com/?access_token=[redacted]&client_secret=[redacted]' ],
+			'a fragment after it'         => [ 'https://h.example.com/?sig=1&password=SECRET#top', 'https://h.example.com/?sig=1&password=[redacted]#top' ],
+			'an encoded name'             => [ 'https://h.example.com/?api%5Fkey=SECRET', 'https://h.example.com/?api%5Fkey=[redacted]' ],
+			'camel case'                  => [ 'https://h.example.com/?apiKey=SECRET', 'https://h.example.com/?apiKey=[redacted]' ],
+			'inside a longer text'        => [ 'Ping https://h.example.com/?token=SECRET now', 'Ping https://h.example.com/?token=[redacted] now' ],
+			'with credentials before it'  => [ 'https://u:p@h.example.com/?token=SECRET', 'https://[redacted]@h.example.com/?token=[redacted]' ],
+			'escaped slashes'             => [ 'https:\/\/h.example.com\/hook?api_key=SECRET', 'https:\/\/h.example.com\/hook?api_key=[redacted]' ],
+			'a query without a url'       => [ 'sent ?token=SECRET&x=1', 'sent ?token=[redacted]&x=1' ],
+			'a url in a parameter'        => [ 'https://h.example.com/?return=https://o.example.com/?token=SECRET', 'https://h.example.com/?return=https://o.example.com/?token=[redacted]' ],
+		];
+	}
+
+	/**
+	 * @dataProvider urls_with_secret_parameters
+	 *
+	 * @param string $text     A text with a secret query parameter.
+	 * @param string $reported What may be reported.
+	 */
+	public function test_secret_query_parameters_are_masked( string $text, string $reported ): void {
+		$this->assertSame( $reported, ChangeSet::stringify( $text ) );
+		$this->assertSame( $reported, ChangeSet::redact_text( $text ) );
+	}
+
+	public function test_ordinary_query_parameters_are_untouched(): void {
+		foreach ( [ 'https://h.example.com/?page=2&author=5&s=key', 'https://h.example.com/?token=', 'https://h.example.com/?token&x=1', 'a & b = c' ] as $text ) {
+			$this->assertSame( $text, ChangeSet::stringify( $text ), $text );
+		}
+	}
+
+	public function test_secret_query_parameters_are_masked_inside_a_json_text_and_a_string_literal(): void {
+		$this->assertSame( '{"endpoint":"https://h.example.com/?token=[redacted]"}', ChangeSet::stringify( '{"endpoint":"https://h.example.com/?token=SECRET"}' ) );
+		$this->assertSame( '"https://h.example.com/?token=[redacted]"', ChangeSet::stringify( '"https:\/\/h.example.com\/?token=SECRET"' ) );
+		$this->assertSame( '{"url":"https://h.example.com/?token=[redacted]"}', ChangeSet::stringify( [ 'url' => 'https://h.example.com/?token=SECRET' ] ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_without_pcre_jit_a_long_query_like_text_is_read_in_linear_time(): void {
+		ini_set( 'pcre.jit', '0' );
+		set_time_limit( 10 );
+
+		foreach ( [ str_repeat( '?a', 150000 ), str_repeat( '&', 300000 ) . 'x', '?' . str_repeat( 'a', 300000 ), str_repeat( '?a=b', 75000 ) ] as $text ) {
+			$start   = microtime( true );
+			$masked  = ChangeSet::redact_text( $text );
+			$elapsed = microtime( true ) - $start;
+
+			$this->assertSame( $text, $masked );
+			$this->assertLessThan( 0.5, $elapsed );
+		}
+	}
+
+	/**
+	 * Settings screens and gateways store fields as name/value pairs, so the
+	 * secret sits under `value` and only the name says what it is.
+	 */
+	public function test_the_value_of_a_secret_name_value_pair_is_masked(): void {
+		$this->assertSame(
+			'{"name":"secret_key","value":"[redacted]"}',
+			ChangeSet::stringify( [ [ 'name' => 'secret_key', 'value' => 'S' ] ] )
+		);
+		$this->assertSame(
+			'{"id":"api_password","label":"API password","value":"[redacted]"}, {"id":"title","label":"Title","value":"Card"}',
+			ChangeSet::stringify(
+				[
+					[ 'id' => 'api_password', 'label' => 'API password', 'value' => 'S' ],
+					[ 'id' => 'title', 'label' => 'Title', 'value' => 'Card' ],
+				]
+			)
+		);
+		$this->assertSame(
+			'[{"name":"secret_key","value":"[redacted]"}]',
+			ChangeSet::stringify( '[{"name":"secret_key","value":"S"}]' )
+		);
+		$this->assertSame(
+			'{"fields":[{"key":"[redacted]","value":"[redacted]"}]}',
+			ChangeSet::stringify( (object) [ 'fields' => [ (object) [ 'key' => 'webhook_url', 'value' => 'https://hooks.example.com/S' ] ] ] )
+		);
+	}
+
+	public function test_a_name_value_pair_with_an_ordinary_name_keeps_its_value(): void {
+		$this->assertSame(
+			'{"name":"color","value":"red"}',
+			ChangeSet::stringify( [ [ 'name' => 'color', 'value' => 'red' ] ] )
+		);
+	}
+
+	public function test_a_change_of_a_secret_pair_value_only_is_a_changed_flag(): void {
+		$this->assertSame(
+			[ self::item( 'gateway', null, null ) ],
+			ChangeSet::diff(
+				[ 'gateway' => [ [ 'name' => 'secret_key', 'value' => 'OLD' ] ] ],
+				[ 'gateway' => [ [ 'name' => 'secret_key', 'value' => 'NEW' ] ] ],
+				[ 'gateway' ]
+			)
+		);
+	}
+
 	public function test_a_change_of_a_url_password_only_is_a_changed_flag(): void {
 		$changes = ChangeSet::diff(
 			[ 'backup_target' => 'sftp://bob:OLDPASS@files.example.com/backups' ],

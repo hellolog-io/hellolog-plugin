@@ -288,4 +288,30 @@ final class OptionChangePolicyTest extends TestCase {
 		$this->assertSame( [ 'rank_math_modules' ], array_column( $changes, 'field' ) );
 		$this->assertSame( 'redirections, seo, sitemap', $changes[0]['new'] );
 	}
+
+	/**
+	 * @return array<string, array{0: string, 1: mixed, 2: mixed}> Option, old value, new value.
+	 */
+	public static function secrets_in_values(): array {
+		return [
+			'a key in a query string' => [ 'woocommerce_x_url', 'https://shop.example.com/', 'https://shop.example.com/hook?api_key=SECRET1' ],
+			'a webhook url'           => [ 'lw_seo_slack_webhook', '', 'https://hooks.example.com/services/T0/B0/SECRET2' ],
+			'name and value pairs'    => [ 'woocommerce_gw_settings', [], [ [ 'name' => 'secret_key', 'value' => 'SECRET3' ] ] ],
+			'pairs in a json text'    => [ 'woocommerce_gw_json', '', '[{"name":"secret_key","value":"SECRET4"}]' ],
+		];
+	}
+
+	/**
+	 * @dataProvider secrets_in_values
+	 *
+	 * @param string $option Option name.
+	 * @param mixed  $old    Value before.
+	 * @param mixed  $new    Value after.
+	 */
+	public function test_secrets_inside_a_value_never_reach_the_changes( string $option, $old, $new ): void {
+		$changes = OptionChangePolicy::changes( $option, $old, $new );
+
+		$this->assertCount( 1, $changes );
+		$this->assertDoesNotMatchRegularExpression( '/SECRET\d/', (string) json_encode( $changes, JSON_UNESCAPED_SLASHES ) );
+	}
 }

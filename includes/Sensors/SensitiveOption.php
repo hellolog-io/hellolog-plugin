@@ -36,13 +36,14 @@ final class SensitiveOption {
 	 *
 	 * Bank and card details and signatures count too (`iban`,
 	 * `account_number`, `sort_code`, `routing_number`, `card_number`,
-	 * `bank_account`, `swift`, `signature`), and so do `connection_string` and
-	 * `bearer`. Short abbreviations (`bic`, `cvv`, `cvv2`, `cvc`, `otp`, `jwt`,
-	 * `dsn`, `pem`, `cert`) sit inside ordinary words (bicycle, potpourri,
-	 * concert), so they only match as a whole `_`-separated word. `pin` is
-	 * left out on purpose: it is part of shipping and pinterest.
+	 * `bank_account`, `swift`, `signature`), and so do `connection_string`,
+	 * `bearer` and `webhook` (a webhook URL is a secret of its own: whoever
+	 * has it can post to it). Short abbreviations (`bic`, `cvv`, `cvv2`, `cvc`,
+	 * `otp`, `jwt`, `dsn`, `pem`, `cert`) sit inside ordinary words (bicycle,
+	 * potpourri, concert), so they only match as a whole `_`-separated word.
+	 * `pin` is left out on purpose: it is part of shipping and pinterest.
 	 */
-	private const PATTERN = '/key|secret|token|pass(word)?|pwd|credential|private|license|licence|salt|iban|account_number|sort_code|routing_number|card_number|bank_account|connection_string|bearer|swift|signature|(?<![a-z0-9])(?:bic|cvv2?|cvc|otp|jwt|dsn|pem|cert)(?![a-z0-9])|auth(?!ors?(?![a-z]))/';
+	private const PATTERN = '/key|secret|token|pass(word)?|pwd|credential|private|license|licence|salt|iban|account_number|sort_code|routing_number|card_number|bank_account|connection_string|bearer|swift|signature|webhook|(?<![a-z0-9])(?:bic|cvv2?|cvc|otp|jwt|dsn|pem|cert)(?![a-z0-9])|auth(?!ors?(?![a-z]))/';
 
 	/**
 	 * A name the regex engine gives up on (backtrack limit) counts as

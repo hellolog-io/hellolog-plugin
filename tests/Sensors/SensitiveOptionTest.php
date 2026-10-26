@@ -156,6 +156,11 @@ final class SensitiveOptionTest extends TestCase {
 			'pem'                 => [ 'ssl_pem' ],
 			'cert'                => [ 'client_cert' ],
 			'cert, start'         => [ 'cert_path' ],
+			// A webhook URL is its own secret: whoever has it can post to it.
+			'webhook'             => [ 'lw_seo_slack_webhook' ],
+			'webhook url'         => [ 'webhook_url' ],
+			'camel webhook url'   => [ 'webhookUrl' ],
+			'webhooks'            => [ 'woocommerce_webhooks' ],
 		];
 	}
 
