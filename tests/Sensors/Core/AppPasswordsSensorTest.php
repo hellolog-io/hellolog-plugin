@@ -150,6 +150,24 @@ final class AppPasswordsSensorTest extends TestCase {
 	}
 
 	/**
+	 * The name is a keyed hash with the site's salt: with IP anonymisation
+	 * on, a plain hash of user, application password and IP could be
+	 * reversed by trying every IP.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_remembered_sign_in_is_named_by_a_salted_hash(): void {
+		$recorder = $this->load_sign_in_stand_ins();
+		( new AppPasswordsSensor( $recorder ) )->on_authenticate( $this->user( 5 ), $this->app_password( 'u-1' ) );
+
+		$name = (string) array_key_first( WpState::$transients );
+		$this->assertSame( 'hellolog_app_login_' . wp_hash( '5|u-1|203.0.113.7' ), $name );
+		$this->assertNotSame( 'hellolog_app_login_' . substr( hash( 'sha256', '5|u-1|203.0.113.7' ), 0, 40 ), $name );
+		$this->assertStringNotContainsString( hash( 'sha256', '5|u-1|203.0.113.7' ), $name );
+	}
+
+	/**
 	 * Loads the stand-ins a sign-in needs and returns a recording dispatcher.
 	 */
 	private function load_sign_in_stand_ins(): EventDispatcher {

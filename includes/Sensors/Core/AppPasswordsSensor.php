@@ -107,7 +107,9 @@ final class AppPasswordsSensor extends AbstractSensor {
 	 * Whether no sign-in of this user with this application password from
 	 * this IP was logged on this site within {@see self::SIGN_IN_WINDOW};
 	 * when none was, this one is remembered. Kept in a transient (per site)
-	 * named by a hash, so the IP is not stored in the clear.
+	 * named by a keyed hash with the site's salt ({@see wp_hash()}): the IP
+	 * is not stored in the clear, and with IP anonymisation on it cannot be
+	 * recovered by hashing every possible address either.
 	 *
 	 * This runs inside `determine_current_user`: it reads the IP from the
 	 * request and never the current user.
@@ -116,7 +118,7 @@ final class AppPasswordsSensor extends AbstractSensor {
 	 * @param string $uuid    Id of the application password.
 	 */
 	private function first_sign_in_in_window( int $user_id, string $uuid ): bool {
-		$key = 'hellolog_app_login_' . substr( hash( 'sha256', $user_id . '|' . $uuid . '|' . (string) RequestContext::client_ip() ), 0, 40 );
+		$key = 'hellolog_app_login_' . wp_hash( $user_id . '|' . $uuid . '|' . (string) RequestContext::client_ip() );
 		if ( false !== get_transient( $key ) ) {
 			return false;
 		}
