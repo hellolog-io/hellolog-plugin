@@ -591,6 +591,88 @@ final class EventBuilderV2Test extends TestCase {
 		$this->assertSame( str_repeat( 'é', 511 ) . '…', $payload['vars']['long'] );
 	}
 
+	/**
+	 * A setting can hold hundreds of kilobytes; its value must not ride along
+	 * whole in every event's metadata.
+	 */
+	public function test_a_long_metadata_string_is_cut_to_1024_characters(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'metadata' => [
+					'option' => 'blogdescription',
+					'new'    => str_repeat( 'a', 300 * 1024 ),
+				],
+			]
+		);
+
+		$this->assertSame( 'blogdescription', $payload['metadata']['option'] );
+		$this->assertSame( str_repeat( 'a', 1023 ) . '…', $payload['metadata']['new'] );
+	}
+
+	public function test_metadata_strings_are_cut_at_every_depth_and_on_a_character_boundary(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[
+				'metadata' => [
+					'providers' => [
+						'outer' => [ 'inner' => str_repeat( 'é', 2000 ) ],
+						'list'  => [ str_repeat( 'ő', 1025 ), 'short' ],
+					],
+				],
+			]
+		);
+
+		$this->assertSame( str_repeat( 'é', 1023 ) . '…', $payload['metadata']['providers']['outer']['inner'] );
+		$this->assertSame( str_repeat( 'ő', 1023 ) . '…', $payload['metadata']['providers']['list'][0] );
+		$this->assertSame( 'short', $payload['metadata']['providers']['list'][1] );
+		$this->assertTrue( mb_check_encoding( (string) json_encode( $payload ), 'UTF-8' ) );
+	}
+
+	public function test_metadata_that_is_not_too_long_is_left_as_it_is(): void {
+		$metadata = [
+			'count'   => 3,
+			'ratio'   => 1.5,
+			'enabled' => false,
+			'nothing' => null,
+			'exact'   => str_repeat( 'x', 1024 ),
+			'nested'  => [ 'a' => 'b' ],
+		];
+
+		$payload = $this->build( $this->builder(), [ 'metadata' => $metadata ] );
+
+		$this->assertSame( $metadata, $payload['metadata'] );
+	}
+
+	public function test_metadata_that_refers_to_itself_ends_in_an_ellipsis(): void {
+		$metadata         = [ 'a' => 'b' ];
+		$metadata['self'] = &$metadata;
+
+		$payload = $this->build( $this->builder(), [ 'metadata' => $metadata ] );
+
+		$level = $payload['metadata'];
+		for ( $i = 0; $i < 32; $i++ ) {
+			$this->assertSame( 'b', $level['a'] );
+			$level = $level['self'];
+		}
+		$this->assertSame( '…', $level['self'] );
+	}
+
+	/**
+	 * The secret is masked first, then the text is cut: cut first, a URL
+	 * split at the limit would lose the `@` that marks its password.
+	 */
+	public function test_a_metadata_title_is_masked_before_it_is_cut(): void {
+		$payload = $this->build(
+			$this->builder(),
+			[ 'title' => str_repeat( 'x', 1000 ) . ' https://user:secretpw@example.com/' ],
+		);
+
+		$this->assertSame( 1024, mb_strlen( $payload['metadata']['post_title'], 'UTF-8' ) );
+		$this->assertStringNotContainsString( 'user:', $payload['metadata']['post_title'] );
+		$this->assertStringEndsWith( '…', $payload['metadata']['post_title'] );
+	}
+
 	public function test_v1_shape_when_no_v2_fields(): void {
 		$payload = $this->build( $this->builder() );
 

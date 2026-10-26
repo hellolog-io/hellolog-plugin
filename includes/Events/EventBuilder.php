@@ -39,6 +39,13 @@ class EventBuilder {
 	private const MAX_VAR_KEY      = 64;
 	private const MAX_VAR_VALUE    = 512;
 
+	/**
+	 * Deepest array level of `metadata` that is still looked into; anything
+	 * below becomes `…`. Keeps an array that refers to itself from recursing
+	 * forever.
+	 */
+	private const MAX_METADATA_DEPTH = 32;
+
 	/** Link keys that are sent, in the order they are emitted. */
 	private const LINK_KEYS = [ 'edit', 'view', 'revision' ];
 
@@ -81,7 +88,9 @@ class EventBuilder {
 	 *                                       - post (assoc id int, type string, status string): other keys and
 	 *                                         values of another type are dropped.
 	 *                                       - title (string): the `post_title` of the metadata, masked like a var.
-	 *                                       - message (string), metadata (assoc), client_event_id (string).
+	 *                                       - message (string), client_event_id (string).
+	 *                                       - metadata (assoc): every string in it, at any depth, is cut to
+	 *                                         {@see ChangeSet::MAX_VALUE_LENGTH} characters.
 	 *                                       Every other scalar whose key is a `{placeholder}` of the
 	 *                                       code's message template becomes a template var, and the
 	 *                                       English message is rendered from those vars.
@@ -171,7 +180,7 @@ class EventBuilder {
 		}
 
 		if ( ! empty( $metadata ) ) {
-			$payload['metadata'] = $metadata;
+			$payload['metadata'] = $this->clip_metadata( $metadata );
 		}
 		if ( isset( $fields['client_event_id'] ) && is_string( $fields['client_event_id'] ) ) {
 			$payload['client_event_id'] = $fields['client_event_id'];
@@ -491,6 +500,31 @@ class EventBuilder {
 		}
 
 		return array_slice( $clean, 0, self::MAX_VARS, true );
+	}
+
+	/**
+	 * The metadata with every string in it, at any depth, cut to
+	 * {@see ChangeSet::MAX_VALUE_LENGTH} characters the way change values
+	 * are. It runs after anything in the metadata is masked, so a secret is
+	 * never cut in a way that hides it from the masking. Other values are
+	 * left as they are.
+	 *
+	 * @param array<int|string, mixed> $metadata Metadata, or an array inside it.
+	 * @param int                      $depth    Array nesting level of `$metadata`.
+	 * @return array<int|string, mixed>
+	 */
+	private function clip_metadata( array $metadata, int $depth = 0 ): array {
+		$clipped = [];
+		foreach ( $metadata as $key => $value ) {
+			if ( is_string( $value ) ) {
+				$value = ChangeSet::truncate( $value );
+			} elseif ( is_array( $value ) ) {
+				$value = $depth < self::MAX_METADATA_DEPTH ? $this->clip_metadata( $value, $depth + 1 ) : self::ELLIPSIS;
+			}
+			$clipped[ $key ] = $value;
+		}
+
+		return $clipped;
 	}
 
 	/**
