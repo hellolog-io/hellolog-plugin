@@ -1540,9 +1540,47 @@ final class SuppressionRulesTest extends TestCase {
 			)
 		);
 
-		// An upload and its deletion are never folded or dropped.
+	}
+
+	/**
+	 * An upload that sets the alt text in the same request (the REST API
+	 * writes it right after the file) is one upload carrying the alt text;
+	 * edits of a file deleted in the same request are not worth keeping.
+	 * Uploads and deletes themselves are never folded or dropped.
+	 */
+	public function test_defaults_fold_media_edits_into_the_upload_and_drop_them_under_a_delete(): void {
+		$rules = SuppressionRules::defaults();
+		$file  = [
+			'type' => 'media',
+			'id'   => '7',
+		];
+		$other = [
+			'type' => 'media',
+			'id'   => '8',
+		];
+
+		$uploaded = $rules->apply(
+			[
+				self::event( 2010, $file ),
+				self::event( 2011, $file, [ self::change( 'alt', null, 'Logo' ) ] ),
+				self::event( 2011, $other, [ self::change( 'title', 'A', 'B' ) ] ),
+			]
+		);
+		$this->assertSame( [ 2010, 2011 ], self::codes( $uploaded ) );
+		$this->assertSame( [ self::change( 'alt', null, 'Logo' ) ], $uploaded[0]['changes'] );
+		$this->assertSame( '8', $uploaded[1]['target']['id'] );
+
+		$deleted = $rules->apply(
+			[
+				self::event( 2011, $file, [ self::change( 'title', 'IMG_0042', 'Logo' ) ] ),
+				self::event( 2012, $file ),
+			]
+		);
+		$this->assertSame( [ 2012 ], self::codes( $deleted ) );
+		$this->assertArrayNotHasKey( 'changes', $deleted[0] );
+
 		$this->assertSame(
-			[ 2010, 2011, 2012 ],
+			[ 2010, 2012 ],
 			self::codes(
 				$rules->apply(
 					[

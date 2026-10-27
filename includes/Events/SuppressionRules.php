@@ -149,6 +149,7 @@ final class SuppressionRules {
 				4005 => [ 4000, 9300 ],
 				4000 => [ 9300 ],
 				9103 => [ 9101 ],
+				2011 => [ 2010, 2012 ],
 			],
 			// Role changes are not merged: folding two of them would keep the
 			// message of the first and understate the final privilege.
@@ -182,6 +183,11 @@ final class SuppressionRules {
 				// of a post that is trashed or deleted says nothing that matters,
 				// so under those it is just dropped.
 				2006 => [ 2001, 2002, 2004, 2007, 2008, 2009, 2013 ],
+
+				// An upload that sets the alt text in the same request is one
+				// upload carrying it; the edits of a file deleted in the same
+				// request are just dropped.
+				2011 => [ 2010 ],
 			]
 		);
 	}

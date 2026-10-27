@@ -412,6 +412,40 @@ final class MediaSensorTest extends TestCase {
 	}
 
 	/**
+	 * An upload through the REST API with an alt text: core stores the file
+	 * (`add_attachment`), then writes the alt text (`added_post_meta`). What
+	 * is kept is one upload carrying the alt text.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_upload_with_an_alt_text_is_one_upload(): void {
+		$calls = $this->run_hook(
+			static function ( MediaSensor $sensor, callable $file ): void {
+				$sensor->boot();
+				self::upload( $file() );
+				self::add_alt( 7, 'Company logo' );
+			}
+		);
+
+		$this->assertSame( [ 2010, 2011 ], array_column( $calls, 0 ) );
+
+		$payloads = $this->survive_calls( $calls );
+		$this->assertSame( [ 2010 ], array_column( $payloads, 'code' ) );
+		$this->assertSame( 'Media "Logo" uploaded.', $payloads[0]['message'] );
+		$this->assertSame(
+			[
+				[
+					'field' => 'alt',
+					'old'   => null,
+					'new'   => 'Company logo',
+				],
+			],
+			$payloads[0]['changes']
+		);
+	}
+
+	/**
 	 * `wp_delete_attachment()` fires `delete_attachment` while the file and
 	 * its meta still exist. A deleted file is gone: nothing to open.
 	 *
