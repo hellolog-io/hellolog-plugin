@@ -34,7 +34,7 @@ defined( 'ABSPATH' ) || exit;
  * A plugin or theme zip uploaded through the installer is stored as an
  * attachment while the install runs and deleted again afterwards. It is no
  * file of the library and none of its events is logged, see
- * {@see self::is_upgrader_package()}.
+ * {@see self::is_installer_upload()}.
  */
 final class MediaSensor extends AbstractSensor {
 
@@ -46,6 +46,16 @@ final class MediaSensor extends AbstractSensor {
 
 	/** The context of a zip the plugin and theme installer uploaded. */
 	private const UPGRADER_CONTEXT = 'upgrader';
+
+	/** The cron hook core schedules to delete an installer's zip a failed install left behind. */
+	private const CLEANUP_HOOK = 'upgrader_scheduled_cleanup';
+
+	/**
+	 * The types a zip is stored under: browsers name it in different ways.
+	 *
+	 * @var array<int, string>
+	 */
+	private const ZIP_TYPES = [ 'application/zip', 'application/x-zip-compressed', 'application/x-zip', 'multipart/x-zip' ];
 
 	/**
 	 * Fields of a file an edit is compared on, in the order they are
@@ -86,7 +96,7 @@ final class MediaSensor extends AbstractSensor {
 		// must never reach the request that stored it.
 		try {
 			$post = get_post( $post_id );
-			if ( $post instanceof WP_Post && ! self::is_upgrader_package( $post_id ) ) {
+			if ( $post instanceof WP_Post && ! self::is_installer_upload( $post ) ) {
 				$this->emit_media( 2010, $post );
 			}
 		} catch ( Throwable $e ) {
@@ -110,7 +120,7 @@ final class MediaSensor extends AbstractSensor {
 
 		try {
 			$changes = self::field_changes( self::fields( $post_before ), self::fields( $post_after ) );
-			if ( [] !== $changes && ! self::is_upgrader_package( $post_id ) ) {
+			if ( [] !== $changes && ! self::is_installer_upload( $post_after ) ) {
 				$this->emit_media( 2011, $post_after, $changes );
 			}
 		} catch ( Throwable $e ) {
@@ -168,7 +178,7 @@ final class MediaSensor extends AbstractSensor {
 			if ( ! $post instanceof WP_Post ) {
 				$post = get_post( $post_id );
 			}
-			if ( $post instanceof WP_Post && ! self::is_upgrader_package( $post_id ) ) {
+			if ( $post instanceof WP_Post && ! self::is_installer_upload( $post ) ) {
 				$this->emit_media( 2012, $post );
 			}
 		} catch ( Throwable $e ) {
@@ -235,17 +245,42 @@ final class MediaSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Whether an attachment is a plugin or theme zip uploaded through the
-	 * installer: core stores it with the context `upgrader` (before
-	 * `add_attachment` fires; it is still there when `delete_attachment`
-	 * fires) and deletes it once the install is done, or two hours later.
-	 * Browsers name the type of a zip in different ways, so only the context
-	 * tells.
+	 * Whether a file with this context and type can be a zip the plugin and
+	 * theme installer keeps: core stores it with the context `upgrader` and,
+	 * as it skips the type check for it, without a type; a browser's name
+	 * for a zip is accepted too. Anything else is no package, whatever
+	 * context it claims.
 	 *
-	 * @param int $id Attachment id.
+	 * @param string $context   The context the file was stored with.
+	 * @param string $mime_type Its type.
 	 */
-	public static function is_upgrader_package( int $id ): bool {
-		return self::UPGRADER_CONTEXT === get_post_meta( $id, self::CONTEXT_KEY, true );
+	public static function is_installer_package( string $context, string $mime_type ): bool {
+		return self::UPGRADER_CONTEXT === $context && ( '' === $mime_type || in_array( $mime_type, self::ZIP_TYPES, true ) );
+	}
+
+	/**
+	 * Whether an attachment is a plugin or theme zip the installer keeps
+	 * while it installs it: a package (see {@see self::is_installer_package()})
+	 * that the installer is at work on. Any upload through the media screens
+	 * can choose its own context, so the context is believed only while
+	 * somebody who may upload plugins or themes is at work (the upload and
+	 * the clean-up right after the install), while core's clean-up of a
+	 * failed install runs (in cron, nobody logged in), or while that
+	 * clean-up is still scheduled for this zip.
+	 *
+	 * @param WP_Post $post The attachment.
+	 */
+	public static function is_installer_upload( WP_Post $post ): bool {
+		$id      = (int) $post->ID;
+		$context = get_post_meta( $id, self::CONTEXT_KEY, true );
+		if ( ! self::is_installer_package( is_string( $context ) ? $context : '', (string) $post->post_mime_type ) ) {
+			return false;
+		}
+
+		return current_user_can( 'upload_plugins' )
+			|| current_user_can( 'upload_themes' )
+			|| doing_action( self::CLEANUP_HOOK )
+			|| false !== wp_next_scheduled( self::CLEANUP_HOOK, [ $id ] );
 	}
 
 	/**
@@ -262,7 +297,7 @@ final class MediaSensor extends AbstractSensor {
 		}
 
 		$post = get_post( $post_id );
-		if ( $post instanceof WP_Post && 'attachment' === $post->post_type && ! self::is_upgrader_package( $post_id ) ) {
+		if ( $post instanceof WP_Post && 'attachment' === $post->post_type && ! self::is_installer_upload( $post ) ) {
 			$this->emit_media( 2011, $post, $changes );
 		}
 	}

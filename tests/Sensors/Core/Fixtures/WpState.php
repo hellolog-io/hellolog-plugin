@@ -167,4 +167,19 @@ final class WpState {
 
 	/** Whether `get_post_meta()` fails the way a broken filter on it would. */
 	public static bool $post_meta_throws = false;
+
+	/**
+	 * The capabilities `current_user_can()` grants the current user.
+	 *
+	 * @var array<int, string>
+	 */
+	public static array $caps = [];
+
+	/**
+	 * Hook => the argument lists of its scheduled events, which
+	 * `wp_next_scheduled()` finds.
+	 *
+	 * @var array<string, array<int, array<int, mixed>>>
+	 */
+	public static array $scheduled = [];
 }

@@ -2355,14 +2355,23 @@ final class ContentSensorTest extends TestCase {
 
 				WpState::$posts[7] = $post(
 					[
-						'post_type'   => 'attachment',
-						'post_title'  => 'plugin.zip',
-						'post_status' => 'trash',
+						'post_type'      => 'attachment',
+						'post_title'     => 'plugin.zip',
+						'post_mime_type' => '',
+						'post_status'    => 'trash',
 					]
 				);
+
+				// The clean-up right after an install, by the admin who installed.
+				WpState::$caps = [ 'upload_plugins' ];
 				self::fire( 'trashed_post', 7, 'private' );
 				self::fire( 'untrash_post', 7, 'private' );
 				self::fire( 'untrashed_post', 7, 'private' );
+
+				// The clean-up core schedules for a failed install, in cron.
+				WpState::$caps         = [];
+				WpState::$doing_action = 'upgrader_scheduled_cleanup';
+				self::fire( 'trashed_post', 7, 'private' );
 			}
 		);
 

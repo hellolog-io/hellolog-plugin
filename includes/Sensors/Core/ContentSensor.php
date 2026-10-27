@@ -531,7 +531,7 @@ final class ContentSensor extends AbstractSensor {
 	/**
 	 * Whether an event about this post is logged, see {@see self::is_tracked_type()}.
 	 * A plugin or theme zip the installer keeps as an attachment is no file
-	 * of the media library and never logged, see {@see MediaSensor::is_upgrader_package()}.
+	 * of the media library and never logged, see {@see MediaSensor::is_installer_upload()}.
 	 *
 	 * @param WP_Post $post Post the event is about.
 	 * @param int     $code Code of the event.
@@ -547,22 +547,23 @@ final class ContentSensor extends AbstractSensor {
 			PostTypeOwnership::owner_active( $type )
 		);
 
-		return $tracked && ( 'attachment' !== $type || ! $this->is_upgrader_package( (int) $post->ID, $code ) );
+		return $tracked && ( 'attachment' !== $type || ! $this->is_installer_upload( $post, $code ) );
 	}
 
 	/**
-	 * Whether an attachment is a zip the plugin and theme installer keeps.
-	 * When that can not be read the failure is reported and the attachment
-	 * taken for a file of the library: its event is logged.
+	 * Whether an attachment is a zip the plugin and theme installer keeps,
+	 * see {@see MediaSensor::is_installer_upload()}. When that can not be
+	 * read the failure is reported and the attachment taken for a file of
+	 * the library: its event is logged.
 	 *
-	 * @param int $post_id Attachment id.
-	 * @param int $code    Code of the event.
+	 * @param WP_Post $post The attachment.
+	 * @param int     $code Code of the event.
 	 */
-	private function is_upgrader_package( int $post_id, int $code ): bool {
+	private function is_installer_upload( WP_Post $post, int $code ): bool {
 		try {
-			return MediaSensor::is_upgrader_package( $post_id );
+			return MediaSensor::is_installer_upload( $post );
 		} catch ( Throwable $e ) {
-			$this->report_failure( $e, $code, [ 'post_id' => $post_id ] );
+			$this->report_failure( $e, $code, [ 'post_id' => (int) $post->ID ] );
 
 			return false;
 		}

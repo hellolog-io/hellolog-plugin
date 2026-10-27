@@ -441,10 +441,40 @@ final class MediaSensorTest extends TestCase {
 	}
 
 	/**
+	 * @return array<string, array{0: string, 1: string, 2: bool}> context, mime type, expected.
+	 */
+	public static function installer_packages(): array {
+		return [
+			'installer upload, no type'  => [ 'upgrader', '', true ],
+			'zip'                        => [ 'upgrader', 'application/zip', true ],
+			'zip from windows'           => [ 'upgrader', 'application/x-zip-compressed', true ],
+			'old zip type'               => [ 'upgrader', 'application/x-zip', true ],
+			'multipart zip'              => [ 'upgrader', 'multipart/x-zip', true ],
+			'image claiming the context' => [ 'upgrader', 'image/png', false ],
+			'pdf claiming the context'   => [ 'upgrader', 'application/pdf', false ],
+			'zip of another context'     => [ 'site-icon', 'application/zip', false ],
+			'no context'                 => [ '', '', false ],
+			'wrong case context'         => [ 'Upgrader', '', false ],
+		];
+	}
+
+	/**
+	 * Core stores the installer's zip with no type (it skips the type check)
+	 * and the context `upgrader`; anything that is not a zip is no package,
+	 * whatever context it claims.
+	 *
+	 * @dataProvider installer_packages
+	 */
+	public function test_is_installer_package( string $context, string $mime_type, bool $expected ): void {
+		$this->assertSame( $expected, MediaSensor::is_installer_package( $context, $mime_type ) );
+	}
+
+	/**
 	 * The plugin and theme installer keeps an uploaded zip as an attachment
-	 * with the context `upgrader` (stored before `add_attachment` fires, still
-	 * there when `delete_attachment` fires) and deletes it once the install
-	 * is done: neither is a file of the media library.
+	 * (no type, the context `upgrader`, stored before `add_attachment` fires
+	 * and still there when `delete_attachment` fires) and deletes it once the
+	 * install is done, in the same request: neither is a file of the media
+	 * library. Only somebody who may upload plugins or themes gets there.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
@@ -452,23 +482,109 @@ final class MediaSensorTest extends TestCase {
 	public function test_an_installers_upload_and_its_clean_up_are_not_logged(): void {
 		$calls = $this->run_hook(
 			static function ( MediaSensor $sensor, callable $file ): void {
-				$zip = $file(
-					[
-						'post_title'     => 'plugin.zip',
-						'post_mime_type' => 'application/x-zip-compressed',
-						'post_status'    => 'private',
-					]
-				);
-				WpState::$post_meta[7]['_wp_attachment_context'] = 'upgrader';
+				$zip = self::installer_zip( $file );
 
 				$sensor->boot();
-				self::upload( $zip );
-				self::edit( $zip, $file( [ 'post_title' => 'renamed.zip' ] ) );
+				foreach ( [ 'upload_plugins', 'upload_themes' ] as $cap ) {
+					WpState::$caps = [ 'upload_files', $cap ];
+					self::upload( $zip );
+					self::edit( $zip, $file( [ 'post_title' => 'renamed.zip', 'post_mime_type' => '' ] ) );
+					self::fire( 'delete_attachment', 7, $zip );
+				}
+			}
+		);
+
+		$this->assertSame( [], $calls );
+	}
+
+	/**
+	 * A failed install leaves the zip to the clean-up core schedules two
+	 * hours later, which runs in cron with nobody logged in; while that
+	 * clean-up is still scheduled, the zip is the installer's too.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_installers_scheduled_clean_up_is_not_logged(): void {
+		$calls = $this->run_hook(
+			static function ( MediaSensor $sensor, callable $file ): void {
+				$zip = self::installer_zip( $file );
+
+				$sensor->boot();
+				WpState::$doing_action = 'upgrader_scheduled_cleanup';
+				self::fire( 'delete_attachment', 7, $zip );
+
+				WpState::$doing_action                            = null;
+				WpState::$scheduled['upgrader_scheduled_cleanup'] = [ [ 7 ] ];
 				self::fire( 'delete_attachment', 7, $zip );
 			}
 		);
 
 		$this->assertSame( [], $calls );
+	}
+
+	/**
+	 * Any upload through the media screens can carry a context of its own
+	 * choosing, so the context alone hides nothing: a zip of somebody who may
+	 * not install plugins or themes, outside the installer's clean-up, is a
+	 * file of the library on every path.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_forged_installer_context_is_logged_on_every_path(): void {
+		$calls = $this->run_hook(
+			static function ( MediaSensor $sensor, callable $file, EventDispatcher $dispatcher ): void {
+				$zip = $file(
+					[
+						'post_title'     => 'archive.zip',
+						'post_mime_type' => 'application/zip',
+					]
+				);
+				WpState::$post_meta[7]['_wp_attachment_context'] = 'upgrader';
+				WpState::$caps                                   = [ 'upload_files' ];
+				WpState::$scheduled['upgrader_scheduled_cleanup'] = [ [ 8 ] ];
+
+				$sensor->boot();
+				( new ContentSensor( $dispatcher ) )->boot();
+
+				self::upload( $zip );
+				self::edit( $zip, $file( [ 'post_title' => 'renamed.zip', 'post_mime_type' => 'application/zip' ] ) );
+				self::add_alt( 7, 'Archive' );
+
+				WpState::$posts[7] = $file( [ 'post_mime_type' => 'application/zip', 'post_status' => 'trash' ] );
+				self::fire( 'trashed_post', 7, 'inherit' );
+				WpState::$posts[7] = $zip;
+				self::fire( 'untrash_post', 7, 'inherit' );
+				self::fire( 'untrashed_post', 7, 'inherit' );
+
+				self::fire( 'delete_attachment', 7, $zip );
+			}
+		);
+
+		$this->assertSame( [ 2010, 2011, 2011, 2003, 2004, 2012 ], array_column( $calls, 0 ) );
+	}
+
+	/**
+	 * Somebody who may install plugins uploading an image that claims the
+	 * installer's context: an image is no package.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_image_claiming_the_installer_context_is_logged(): void {
+		$calls = $this->run_hook(
+			static function ( MediaSensor $sensor, callable $file ): void {
+				WpState::$post_meta[7]['_wp_attachment_context'] = 'upgrader';
+				WpState::$caps                                   = [ 'upload_files', 'upload_plugins', 'upload_themes' ];
+
+				$sensor->boot();
+				self::upload( $file() );
+				self::fire( 'delete_attachment', 7, $file() );
+			}
+		);
+
+		$this->assertSame( [ 2010, 2012 ], array_column( $calls, 0 ) );
 	}
 
 	/**
@@ -620,6 +736,24 @@ final class MediaSensorTest extends TestCase {
 		foreach ( $callbacks as $registered ) {
 			( $registered['callback'] )( ...array_slice( $args, 0, $registered['accepted_args'] ) );
 		}
+	}
+
+	/**
+	 * The zip the plugin and theme installer stores: no type (core skips the
+	 * type check for it), private, the context `upgrader`.
+	 *
+	 * @param callable(array<string, mixed>): \WP_Post $file Builds a file.
+	 */
+	private static function installer_zip( callable $file ): \WP_Post {
+		WpState::$post_meta[7]['_wp_attachment_context'] = 'upgrader';
+
+		return $file(
+			[
+				'post_title'     => 'plugin.zip',
+				'post_mime_type' => '',
+				'post_status'    => 'private',
+			]
+		);
 	}
 
 	/**

@@ -173,6 +173,24 @@ namespace {
 		return WpState::$post_meta[ $post_id ][ $key ] ?? '';
 	}
 
+	/**
+	 * @param string $capability Capability name; object capabilities are not stubbed.
+	 */
+	function current_user_can( string $capability ): bool {
+		return in_array( $capability, WpState::$caps, true );
+	}
+
+	/**
+	 * Like core, the arguments must match exactly.
+	 *
+	 * @param string            $hook Hook name.
+	 * @param array<int, mixed> $args Arguments of the event.
+	 * @return int|false
+	 */
+	function wp_next_scheduled( string $hook, array $args = [] ) {
+		return in_array( $args, WpState::$scheduled[ $hook ] ?? [], true ) ? 1700000000 : false;
+	}
+
 	function get_comment( int $id ): ?WP_Comment {
 		return WpState::$comment;
 	}
