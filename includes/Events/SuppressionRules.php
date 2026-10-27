@@ -151,11 +151,12 @@ final class SuppressionRules {
 				9103 => [ 9101 ],
 				2011 => [ 2010, 2012 ],
 
-				// An order's trash or restore that WooCommerce tells itself hides
-				// the post event of the same order; the post event stays for the
-				// screens that fire no WooCommerce hook.
+				// An order's trash, restore or permanent delete that WooCommerce
+				// tells itself hides the post event of the same order; the post
+				// event stays for the screens that fire no WooCommerce hook.
 				2003 => [ 9109 ],
 				2004 => [ 9110 ],
+				2005 => [ 9102 ],
 
 				// An order edit says nothing of its own next to the order's
 				// creation, status change, restore, trash or delete in the same

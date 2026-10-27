@@ -44,9 +44,9 @@ defined( 'ABSPATH' ) || exit;
  * events another sensor reports itself (see {@see PostTypeOwnership}); the
  * site editor's types are always logged (see {@see self::SITE_EDITOR_TYPES}).
  * Every event names the post it is about as its target and links to its
- * edit screen. The trash, restore or revert of an order, product or coupon
- * is named by the shop's target of that object (see
- * {@see self::object_target()}).
+ * edit screen. The trash, restore or revert of an order, product or coupon,
+ * and the permanent delete of an order, are named by the shop's target of
+ * that object (see {@see self::object_target()}).
  *
  * Of a file of the media library only its trash and restore are logged here
  * (the rest is {@see MediaSensor}'s), on the file's media target. Core moves

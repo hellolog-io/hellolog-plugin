@@ -67,7 +67,7 @@ final class OrderNoteState {
 	/**
 	 * Hook name => how it was registered with `add_action()`.
 	 *
-	 * @var array<string, array{priority: int, accepted_args: int}>
+	 * @var array<string, array{callback: mixed, priority: int, accepted_args: int}>
 	 */
 	public static array $actions = [];
 

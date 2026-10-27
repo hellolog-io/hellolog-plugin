@@ -247,6 +247,8 @@ final class ContentSensorTest extends TestCase {
 				$cases[ $type . ' ' . $code ] = [ $type, $code, false ];
 			}
 		}
+		$cases['shop_order 2005']           = [ 'shop_order', 2005, true ];
+		$cases['shop_order_placehold 2005'] = [ 'shop_order_placehold', 2005, true ];
 
 		return $cases;
 	}
@@ -255,7 +257,8 @@ final class ContentSensorTest extends TestCase {
 	 * The store sensors report products, coupons and orders in their own
 	 * words, the media sensor files of the library, and the internal records
 	 * are nobody's: only their trash, restore and revert to auto-draft stay
-	 * with this sensor.
+	 * with this sensor, and the permanent delete of an order (the classic
+	 * order screens delete it without a hook of the shop).
 	 *
 	 * @dataProvider owned_type_codes
 	 */
@@ -730,6 +733,39 @@ final class ContentSensorTest extends TestCase {
 		);
 
 		$this->assertSame( [ 2013 ], array_column( $calls, 0 ) );
+	}
+
+	/**
+	 * The classic order screens delete an order for good ("Delete
+	 * permanently", "Empty Trash") with WordPress's own delete, which fires
+	 * no hook of the shop: this sensor logs it, on the order's target. A
+	 * product or coupon deleted that way stays the store sensors'.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_order_deleted_for_good_on_the_classic_screens_is_logged_on_its_target(): void {
+		require_once __DIR__ . '/Fixtures/woocommerce-class.php';
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->on_delete( 9, $post( [ 'ID' => 9, 'post_type' => 'shop_order', 'post_status' => 'trash' ] ) );
+				$sensor->on_delete( 7, $post( [ 'post_type' => 'product', 'post_status' => 'trash' ] ) );
+				$sensor->on_delete( 8, $post( [ 'ID' => 8, 'post_type' => 'shop_coupon', 'post_status' => 'trash' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2005 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				'type'  => 'order',
+				'id'    => '9',
+				'label' => '#9',
+			],
+			$calls[0][1]['target']
+		);
+		$this->assertSame( 'shop_order', $calls[0][1]['post']['type'] );
+		$this->assertArrayNotHasKey( 'links', $calls[0][1] );
 	}
 
 	/**

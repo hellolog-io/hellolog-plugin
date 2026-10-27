@@ -18,7 +18,9 @@ defined( 'ABSPATH' ) || exit;
  * groups, and {@see MediaSensor} reports files of the media library. Each
  * of them takes exactly the post events it reports itself (its "owned"
  * codes); every other event of the type stays with {@see ContentSensor}. No
- * owner reports a trash, a restore or a revert to `auto-draft`.
+ * owner reports a trash, a restore or a revert to `auto-draft`, and the
+ * permanent delete of an order stays with the post sensor too (see
+ * {@see self::RELEASED_CODES}).
  *
  * A plugin's types are its own only while the plugin is active: without it
  * a type of that name belongs to some other plugin (a forum plugin is not
@@ -90,6 +92,19 @@ final class PostTypeOwnership {
 	private const ALWAYS_ACTIVE = [ 'media', 'internal' ];
 
 	/**
+	 * Post type => codes of its owner that stay with the post sensor for
+	 * this type. The classic order screens delete an order stored as a post
+	 * ("Delete permanently", "Empty Trash") with WordPress's own delete,
+	 * which fires no hook of the shop: only the post sensor sees it.
+	 *
+	 * @var array<string, array<int, int>>
+	 */
+	private const RELEASED_CODES = [
+		'shop_order'           => [ 2005 ],
+		'shop_order_placehold' => [ 2005 ],
+	];
+
+	/**
 	 * Whether an event about a post of a type is reported by the type's owner
 	 * instead of the post sensor.
 	 *
@@ -103,7 +118,7 @@ final class PostTypeOwnership {
 			return false;
 		}
 
-		return in_array( $code, self::OWNED_CODES[ $owner ], true );
+		return in_array( $code, self::OWNED_CODES[ $owner ], true ) && ! in_array( $code, self::RELEASED_CODES[ $post_type ] ?? [], true );
 	}
 
 	/**

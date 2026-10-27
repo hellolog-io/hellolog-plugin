@@ -1591,6 +1591,12 @@ final class SuppressionRulesTest extends TestCase {
 		$this->assertSame( [ 9109 ], self::codes( $rules->apply( [ self::event( 2003, self::order( 5 ) ), self::event( 9109, self::order( 5 ) ) ] ) ) );
 		$this->assertSame( [ 2003, 2004 ], self::codes( $rules->apply( [ self::event( 2003, self::order( 5 ) ), self::event( 2004, self::order( 6 ) ) ] ) ) );
 
+		// A delete WooCommerce tells itself hides the post event of the same
+		// order; the post event stays for the classic screens' delete.
+		$this->assertSame( [ 9102 ], self::codes( $rules->apply( [ self::event( 2005, self::order( 5 ) ), self::event( 9102, self::order( 5 ) ) ] ) ) );
+		$this->assertSame( [ 2005, 9102 ], self::codes( $rules->apply( [ self::event( 2005, self::order( 6 ) ), self::event( 9102, self::order( 5 ) ) ] ) ) );
+		$this->assertSame( [ 2005 ], self::codes( $rules->apply( [ self::event( 2005, self::order( 5 ) ) ] ) ) );
+
 		$status = $rules->apply(
 			[
 				self::event( 9110, self::order( 5 ), null, $restored ),

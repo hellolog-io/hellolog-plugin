@@ -96,6 +96,7 @@ namespace {
 	 */
 	function add_action( string $hook_name, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
 		OrderNoteState::$actions[ $hook_name ] = [
+			'callback'      => $callback,
 			'priority'      => $priority,
 			'accepted_args' => $accepted_args,
 		];

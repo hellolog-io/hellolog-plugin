@@ -312,10 +312,12 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * A new order: its total and currency go into `vars`, how it was placed
 	 * (`created_via`) and paid into `metadata`.
 	 *
-	 * @param mixed $order Order object the hook passed, if any.
+	 * @param mixed $order_id Order id.
+	 * @param mixed $order    Order object the hook passed, if any.
 	 */
-	public function on_created( int $order_id, $order = null ): void {
+	public function on_created( $order_id, $order = null ): void {
 		try {
+			$order_id = self::id_of( $order_id );
 			$order    = $this->order_object( $order_id, $order );
 			$vars     = array_filter(
 				[
@@ -344,7 +346,7 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 				)
 			);
 		} catch ( Throwable $e ) {
-			$this->report_failure( $e, 9100, [ 'order_id' => $order_id ] );
+			$this->report_failure( $e, 9100, [ 'order_id' => self::id_of( $order_id ) ] );
 		}
 	}
 
@@ -409,11 +411,17 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * status update through the REST API fires no restore hook); the rules
 	 * keep only the restore.
 	 *
-	 * @param mixed $order
+	 * @param mixed $order_id Order id.
+	 * @param mixed $old      Status before, without the `wc-` prefix.
+	 * @param mixed $new      Status after, without the `wc-` prefix.
+	 * @param mixed $order    The order.
 	 */
-	public function on_status_changed( int $order_id, string $old, string $new, $order ): void {
+	public function on_status_changed( $order_id, $old, $new, $order = null ): void {
 		try {
-			$fields = $this->order_fields( $order_id, $order );
+			$order_id = self::id_of( $order_id );
+			$old      = self::text_of( $old );
+			$new      = self::text_of( $new );
+			$fields   = $this->order_fields( $order_id, $order );
 
 			$this->emit(
 				9101,
@@ -443,15 +451,18 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 				$this->emit_restored( $order_id, $new, $fields );
 			}
 		} catch ( Throwable $e ) {
-			$this->report_failure( $e, 9101, [ 'order_id' => $order_id ] );
+			$this->report_failure( $e, 9101, [ 'order_id' => self::id_of( $order_id ) ] );
 		}
 	}
 
 	/**
 	 * WooCommerce moved an order to the trash.
+	 *
+	 * @param mixed $order_id Order id.
 	 */
-	public function on_trashed( int $order_id ): void {
+	public function on_trashed( $order_id ): void {
 		try {
+			$order_id = self::id_of( $order_id );
 			$this->emit(
 				9109,
 				array_merge(
@@ -463,21 +474,22 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 				)
 			);
 		} catch ( Throwable $e ) {
-			$this->report_failure( $e, 9109, [ 'order_id' => $order_id ] );
+			$this->report_failure( $e, 9109, [ 'order_id' => self::id_of( $order_id ) ] );
 		}
 	}
 
 	/**
 	 * WooCommerce is restoring an order from the trash.
 	 *
-	 * @param int   $order_id        Order id.
+	 * @param mixed $order_id        Order id.
 	 * @param mixed $previous_status Status the order had before the trash, as stored (`wc-processing`).
 	 */
-	public function on_untrashed( int $order_id, $previous_status = '' ): void {
+	public function on_untrashed( $order_id, $previous_status = '' ): void {
 		try {
-			$this->emit_restored( $order_id, is_string( $previous_status ) ? $previous_status : '', $this->order_fields( $order_id, null ) );
+			$order_id = self::id_of( $order_id );
+			$this->emit_restored( $order_id, self::text_of( $previous_status ), $this->order_fields( $order_id, null ) );
 		} catch ( Throwable $e ) {
-			$this->report_failure( $e, 9110, [ 'order_id' => $order_id ] );
+			$this->report_failure( $e, 9110, [ 'order_id' => self::id_of( $order_id ) ] );
 		}
 	}
 
@@ -486,17 +498,18 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * (the classic order screen restores it this way, firing no hook of
 	 * WooCommerce) it is the restore of the order.
 	 *
-	 * @param int   $post_id         Post id.
+	 * @param mixed $post_id         Post id.
 	 * @param mixed $previous_status Status the post had before the trash (`wc-processing`).
 	 */
-	public function on_post_untrashed( int $post_id, $previous_status = '' ): void {
+	public function on_post_untrashed( $post_id, $previous_status = '' ): void {
 		try {
-			if ( ! function_exists( 'get_post_type' ) || 'shop_order' !== get_post_type( $post_id ) ) {
+			$post_id = self::id_of( $post_id );
+			if ( $post_id <= 0 || ! function_exists( 'get_post_type' ) || 'shop_order' !== get_post_type( $post_id ) ) {
 				return;
 			}
-			$this->emit_restored( $post_id, is_string( $previous_status ) ? $previous_status : '', $this->order_fields( $post_id, null ) );
+			$this->emit_restored( $post_id, self::text_of( $previous_status ), $this->order_fields( $post_id, null ) );
 		} catch ( Throwable $e ) {
-			$this->report_failure( $e, 9110, [ 'order_id' => $post_id ] );
+			$this->report_failure( $e, 9110, [ 'order_id' => self::id_of( $post_id ) ] );
 		}
 	}
 
@@ -504,17 +517,18 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * An order is about to be deleted for good: read its number while it can
 	 * still be loaded, for the delete event that follows.
 	 *
-	 * @param int   $order_id Order id.
+	 * @param mixed $order_id Order id.
 	 * @param mixed $order    The order WooCommerce is about to delete.
 	 */
-	public function on_before_delete( int $order_id, $order = null ): void {
+	public function on_before_delete( $order_id, $order = null ): void {
 		try {
-			$number = is_object( $order ) && method_exists( $order, 'get_order_number' ) ? (string) $order->get_order_number() : '';
+			$order_id = self::id_of( $order_id );
+			$number   = is_object( $order ) && method_exists( $order, 'get_order_number' ) ? (string) $order->get_order_number() : '';
 			if ( '' !== $number ) {
 				$this->deleting[ self::state_key( $order_id ) ] = $number;
 			}
 		} catch ( Throwable $e ) {
-			$this->report_failure( $e, 9102, [ 'order_id' => $order_id ] );
+			$this->report_failure( $e, 9102, [ 'order_id' => self::id_of( $order_id ) ] );
 		}
 	}
 
@@ -522,11 +536,14 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * An order was deleted for good. It can no longer be loaded: it is named
 	 * by the number read just before the delete, else by its id, and there is
 	 * nothing left to open.
+	 *
+	 * @param mixed $order_id Order id.
 	 */
-	public function on_deleted( int $order_id ): void {
+	public function on_deleted( $order_id ): void {
 		try {
-			$key    = self::state_key( $order_id );
-			$number = $this->deleting[ $key ] ?? '';
+			$order_id = self::id_of( $order_id );
+			$key      = self::state_key( $order_id );
+			$number   = $this->deleting[ $key ] ?? '';
 			unset( $this->deleting[ $key ] );
 
 			$this->emit(
@@ -545,10 +562,12 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	}
 
 	/**
-	 * @param mixed $order
+	 * @param mixed $note_id Comment id of the note.
+	 * @param mixed $order   The order.
 	 */
-	public function on_note_added( int $note_id, $order ): void {
+	public function on_note_added( $note_id, $order = null ): void {
 		try {
+			$note_id  = self::id_of( $note_id );
 			$order_id = is_object( $order ) && method_exists( $order, 'get_id' ) ? (int) $order->get_id() : 0;
 			$note     = function_exists( 'get_comment' ) ? get_comment( $note_id ) : null;
 			$content  = is_object( $note ) ? (string) ( $note->comment_content ?? '' ) : '';
@@ -576,14 +595,20 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 				)
 			);
 		} catch ( Throwable $e ) {
-			$this->report_failure( $e, 9103, [ 'note_id' => $note_id ] );
+			$this->report_failure( $e, 9103, [ 'note_id' => self::id_of( $note_id ) ] );
 		}
 	}
 
-	public function on_refunded( int $order_id, int $refund_id ): void {
+	/**
+	 * @param mixed $order_id  Id of the refunded order.
+	 * @param mixed $refund_id Id of the refund.
+	 */
+	public function on_refunded( $order_id, $refund_id ): void {
 		try {
-			$refund = function_exists( 'wc_get_order' ) ? wc_get_order( $refund_id ) : null;
-			$amount = $refund && method_exists( $refund, 'get_amount' ) ? (string) $refund->get_amount() : '';
+			$order_id  = self::id_of( $order_id );
+			$refund_id = self::id_of( $refund_id );
+			$refund    = function_exists( 'wc_get_order' ) ? wc_get_order( $refund_id ) : null;
+			$amount    = $refund && method_exists( $refund, 'get_amount' ) ? (string) $refund->get_amount() : '';
 			$this->emit(
 				9104,
 				array_merge(
@@ -600,7 +625,7 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 				)
 			);
 		} catch ( Throwable $e ) {
-			$this->report_failure( $e, 9104, [ 'order_id' => $order_id ] );
+			$this->report_failure( $e, 9104, [ 'order_id' => self::id_of( $order_id ) ] );
 		}
 	}
 
@@ -767,6 +792,34 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		}
 
 		return in_array( self::status_slug( (string) $data['status'] ), self::CREATION_STATUSES, true );
+	}
+
+	/**
+	 * An id as a hook passes it: an integer, or a string of digits (some
+	 * callers pass ids as text); 0 for anything else.
+	 *
+	 * @param mixed $value What the hook passed.
+	 */
+	private static function id_of( $value ): int {
+		if ( is_int( $value ) ) {
+			return $value;
+		}
+
+		return is_string( $value ) && ctype_digit( $value ) ? (int) $value : 0;
+	}
+
+	/**
+	 * A text a hook passes (a status): a string as it is, an integer as text,
+	 * '' for anything else.
+	 *
+	 * @param mixed $value What the hook passed.
+	 */
+	private static function text_of( $value ): string {
+		if ( is_string( $value ) ) {
+			return $value;
+		}
+
+		return is_int( $value ) ? (string) $value : '';
 	}
 
 	/**

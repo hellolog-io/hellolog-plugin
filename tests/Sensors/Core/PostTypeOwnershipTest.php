@@ -29,14 +29,18 @@ final class PostTypeOwnershipTest extends TestCase {
 	 * @return array<string, array{0: string, 1: array<int, int>}> type => [ type, owned codes ].
 	 */
 	public static function owned_codes(): array {
-		$store = [ 2000, 2001, 2002, 2005, 2006, 2007, 2008, 2009 ];
+		$store  = [ 2000, 2001, 2002, 2005, 2006, 2007, 2008, 2009 ];
+		$orders = [ 2000, 2001, 2002, 2006, 2007, 2008, 2009 ];
 
 		return [
-			// The store sensors report products, orders and coupons in full.
+			// The store sensors report products, orders and coupons in full,
+			// but for the permanent delete of an order: the classic order
+			// screens delete it with WordPress's own delete, which fires no
+			// hook of the shop.
 			'product'              => [ 'product', $store ],
 			'product_variation'    => [ 'product_variation', $store ],
-			'shop_order'           => [ 'shop_order', $store ],
-			'shop_order_placehold' => [ 'shop_order_placehold', $store ],
+			'shop_order'           => [ 'shop_order', $orders ],
+			'shop_order_placehold' => [ 'shop_order_placehold', $orders ],
 			'shop_order_refund'    => [ 'shop_order_refund', $store ],
 			'shop_coupon'          => [ 'shop_coupon', $store ],
 			// bbPress: published (8000) and deleted (8001).
@@ -88,6 +92,15 @@ final class PostTypeOwnershipTest extends TestCase {
 	public function test_trash_restore_and_revert_are_never_owned( string $post_type ): void {
 		foreach ( [ 2003, 2004, 2013 ] as $code ) {
 			$this->assertFalse( PostTypeOwnership::is_owned_elsewhere( $post_type, $code, true ), $post_type . ' ' . $code );
+		}
+	}
+
+	public function test_the_permanent_delete_of_an_order_stays_with_the_post_sensor(): void {
+		$this->assertFalse( PostTypeOwnership::is_owned_elsewhere( 'shop_order', 2005, true ) );
+		$this->assertFalse( PostTypeOwnership::is_owned_elsewhere( 'shop_order_placehold', 2005, true ) );
+		// A refund is deleted with its order; products and coupons have their own delete events.
+		foreach ( [ 'shop_order_refund', 'product', 'product_variation', 'shop_coupon' ] as $type ) {
+			$this->assertTrue( PostTypeOwnership::is_owned_elsewhere( $type, 2005, true ), $type );
 		}
 	}
 

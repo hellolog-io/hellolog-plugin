@@ -17,6 +17,7 @@ use HelloLog\Events\RequestContext;
 use HelloLog\Events\RequestSource;
 use HelloLog\Events\SuppressionRules;
 use HelloLog\Sensors\CatalogSeeder;
+use HelloLog\Sensors\Core\ContentSensor;
 use HelloLog\Sensors\Integrations\WooCommerceOrderSensor;
 use HelloLog\Tests\Sensors\Integrations\Fixtures\FakeOrder;
 use HelloLog\Tests\Sensors\Integrations\Fixtures\OrderNoteState;
@@ -978,29 +979,168 @@ final class WooCommerceOrderSensorTest extends TestCase {
 	}
 
 	/**
+	 * Each hook reaches its handler with the arguments WooCommerce and
+	 * WordPress pass.
+	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
 	public function test_the_sensor_listens_to_the_order_hooks_with_their_arguments(): void {
 		$this->stubs();
 
-		( new WooCommerceOrderSensor( $this->recorder() ) )->boot();
+		$sensor = new WooCommerceOrderSensor( $this->recorder() );
+		$sensor->boot();
 
 		$this->assertSame(
 			[
-				'woocommerce_new_order'                => 2,
-				'woocommerce_before_order_object_save' => 1,
-				'woocommerce_order_status_changed'     => 4,
-				'woocommerce_trash_order'              => 1,
-				'woocommerce_untrash_order'            => 2,
-				'untrashed_post'                       => 2,
-				'woocommerce_before_delete_order'      => 2,
-				'woocommerce_delete_order'             => 1,
-				'woocommerce_order_note_added'         => 2,
-				'woocommerce_order_refunded'           => 2,
+				'woocommerce_new_order'                => [ 'on_created', 2 ],
+				'woocommerce_before_order_object_save' => [ 'on_before_save', 1 ],
+				'woocommerce_order_status_changed'     => [ 'on_status_changed', 4 ],
+				'woocommerce_trash_order'              => [ 'on_trashed', 1 ],
+				'woocommerce_untrash_order'            => [ 'on_untrashed', 2 ],
+				'untrashed_post'                       => [ 'on_post_untrashed', 2 ],
+				'woocommerce_before_delete_order'      => [ 'on_before_delete', 2 ],
+				'woocommerce_delete_order'             => [ 'on_deleted', 1 ],
+				'woocommerce_order_note_added'         => [ 'on_note_added', 2 ],
+				'woocommerce_order_refunded'           => [ 'on_refunded', 2 ],
 			],
-			array_map( static fn( array $action ): int => $action['accepted_args'], OrderNoteState::$actions )
+			array_map( static fn( array $action ): array => [ $action['callback'][1], $action['accepted_args'] ], OrderNoteState::$actions )
 		);
+		foreach ( OrderNoteState::$actions as $hook => $action ) {
+			$this->assertSame( $sensor, $action['callback'][0], $hook );
+		}
+	}
+
+	/**
+	 * WooCommerce's own delete also deletes the order's post with
+	 * WordPress's delete (an order stored as a post): the shop's delete event
+	 * is the one kept.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_delete_by_woocommerce_is_one_delete_event(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_before_delete( 5, $this->order( 5 ) );
+		// What the post sensor dispatches for the order's post, on its target.
+		$recorder->dispatch(
+			2005,
+			[
+				'post'      => [
+					'id'     => 5,
+					'type'   => 'shop_order',
+					'status' => 'trash',
+				],
+				'target'    => ContentSensor::object_target( 'shop_order', 5, 'Order', true ),
+				'title'     => 'Order',
+				'post_type' => 'Shop order',
+			]
+		);
+		$sensor->on_deleted( 5 );
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 9102 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( WooCommerceOrderSensor::order_target( 5, 'A-17' ), $survivors[0]['target'] );
+	}
+
+	/**
+	 * Ids come as text from some callers (the REST API's note routes, other
+	 * plugins); a handler takes them, and never fails on an argument of
+	 * another type before it can report.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_hooks_take_ids_as_text_and_never_fail_on_an_argument(): void {
+		$this->stubs();
+		OrderNoteState::$orders[5]     = $this->order( 5 );
+		OrderNoteState::$post_types[5] = 'shop_order';
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$order    = $this->order( 5, self::stored(), [ 'total' => '30.00' ] );
+		$sensor->on_created( '5', $order );
+		$sensor->on_status_changed( '5', 'pending', 'processing', $order );
+		$sensor->on_trashed( '5' );
+		$sensor->on_untrashed( '5', 'wc-processing' );
+		$sensor->on_post_untrashed( '5', 'wc-processing' );
+		$sensor->on_before_delete( '5', $order );
+		$sensor->on_deleted( '5' );
+		$sensor->on_note_added( '11', $order );
+		$sensor->on_refunded( '5', '900' );
+
+		$this->assertSame( [ 9100, 9101, 9109, 9110, 9110, 9102, 9103, 9104 ], array_column( $recorder->calls, 0 ) );
+		foreach ( $recorder->calls as [ $code, $fields ] ) {
+			$this->assertSame( 5, $fields['id'], (string) $code );
+			$this->assertSame( '5', $fields['target']['id'], (string) $code );
+		}
+		$this->assertSame( '#A-17', $recorder->calls[5][1]['target']['label'] );
+		$this->assertSame( 11, $recorder->calls[6][1]['metadata']['note_id'] );
+		$this->assertSame( 900, $recorder->calls[7][1]['metadata']['refund_id'] );
+
+		$recorder->calls = [];
+		foreach ( [ null, [ 5 ], new \stdClass(), 5.0, true ] as $odd ) {
+			$sensor->on_created( $odd, $odd );
+			$sensor->on_status_changed( $odd, $odd, $odd, $odd );
+			$sensor->on_trashed( $odd );
+			$sensor->on_untrashed( $odd, $odd );
+			$sensor->on_post_untrashed( $odd, $odd );
+			$sensor->on_before_delete( $odd, $odd );
+			$sensor->on_deleted( $odd );
+			$sensor->on_note_added( $odd, $odd );
+			$sensor->on_refunded( $odd, $odd );
+		}
+		$this->assertSame( [], OrderNoteState::$fired );
+		foreach ( $recorder->calls as [ $code, $fields ] ) {
+			$this->assertSame( 0, $fields['id'], (string) $code );
+			$this->assertArrayNotHasKey( 'target', $fields, (string) $code );
+		}
+	}
+
+	/**
+	 * Reading the stored order can fail too: it is reported, never thrown.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_stored_order_that_fails_to_be_read_never_breaks_its_save(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceOrderSensor( $recorder ) )->on_before_save( $this->unreadable_order( [ 'total' => '30.00' ] ) );
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertSame( 'hellolog_dispatch_failed', OrderNoteState::$fired[0][0] ?? null );
+		$this->assertSame( 9105, OrderNoteState::$fired[0][1][1] ?? null );
+		$this->assertSame( [ 'order_id' => 5 ], OrderNoteState::$fired[0][1][2] ?? null );
+	}
+
+	/**
+	 * A save that changes none of the order's fields never reads the stored
+	 * order (that loads every item of the order).
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_save_without_field_changes_never_reads_the_stored_order(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceOrderSensor( $recorder ) )->on_before_save(
+			$this->unreadable_order(
+				[
+					'date_modified' => new \DateTimeImmutable( '2026-10-26T10:00:00+00:00' ),
+					'version'       => '11.2.1',
+				]
+			)
+		);
+
+		$this->assertSame( [], OrderNoteState::$fired );
+		$this->assertSame( [ 9105 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [], $recorder->calls[0][1]['changes'] );
 	}
 
 	/**
@@ -1033,6 +1173,19 @@ final class WooCommerceOrderSensorTest extends TestCase {
 	 */
 	private function order( int $id, array $data = [], array $changes = [], array $details = [] ): FakeOrder {
 		return new FakeOrder( $id, 'A-17', null, $data, $changes, $details );
+	}
+
+	/**
+	 * Order 5, whose stored values cannot be read (`get_data()` throws).
+	 *
+	 * @param array<string, mixed> $changes Values the save is about to write.
+	 */
+	private function unreadable_order( array $changes ): FakeOrder {
+		return new class( 5, 'A-17', null, [], $changes ) extends FakeOrder {
+			public function get_data(): array {
+				throw new \RuntimeException( 'The stored order could not be read.' );
+			}
+		};
 	}
 
 	/**
