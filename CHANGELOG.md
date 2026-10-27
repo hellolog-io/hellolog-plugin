@@ -93,6 +93,8 @@
   version change.
 - A deleted plugin or theme is named by its real name instead of its file or
   folder name.
+- A plugin or theme that was already up to date in a bulk update, and an
+  update that failed, are no longer logged as updated.
 - Menu events name the menu also when only its items were saved or when it
   was deleted; the name used to be empty.
 - With the media trash turned on, moving a file to the trash is logged; it

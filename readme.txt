@@ -133,6 +133,8 @@ This version requires the HelloLog service release from October 2026 or later.
 * Fix: Plugin and theme installs are logged; uploading over an installed one
   is logged as an update.
 * Fix: Deleted plugins and themes are named by their real name.
+* Fix: Up-to-date plugins and themes of a bulk update, and failed updates,
+  are no longer logged as updated.
 * Fix: Menu events name the menu also on item-only saves and deletions.
 * Fix: With the media trash turned on, moving a file to the trash is logged.
 * Fix: bbPress, LearnDash, Easy Digital Downloads and ACF content is no

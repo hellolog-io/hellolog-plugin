@@ -31,8 +31,11 @@ defined( 'ABSPATH' ) || exit;
  * version is read from the plugin's file once the upgrade is complete, since
  * an automatic update leaves core's plugin list of the request as it was.
  * Uploading a plugin over an installed one runs the install, and is told as
- * the update it is. A deletion keeps the name and version read just before
- * the files go.
+ * the update it is. Core reports an update with every plugin it was asked to
+ * update, whatever came of it (one that was up to date, a failed download, a
+ * failed install that removed the old files): only a plugin whose version
+ * moved to a new one is logged as updated ({@see self::was_updated()}). A
+ * deletion keeps the name and version read just before the files go.
  *
  * helloLOG's own deactivation is not logged here: helloLOG logs and sends it
  * from its own deactivation hook ({@see \HelloLog\Plugin::deliver_own_deactivation()},
@@ -318,6 +321,18 @@ final class PluginsSensor extends AbstractSensor {
 	}
 
 	/**
+	 * Whether an update job updated a plugin or theme: it was noted before
+	 * the job (its package got to the install step), and its version now is
+	 * another one, not empty. The theme sensor uses it too.
+	 *
+	 * @param array{Name: string, Version: string}|null $before Headers before the job; null when not noted.
+	 * @param array{Name: string, Version: string}      $after  Headers now.
+	 */
+	public static function was_updated( ?array $before, array $after ): bool {
+		return null !== $before && '' !== $after['Version'] && $after['Version'] !== $before['Version'];
+	}
+
+	/**
 	 * What a write to an automatic-updates list turned on and off: first the
 	 * entries turned on, in the order of the new list, then the ones turned
 	 * off, in the order of the old one. Only non-empty strings count, and a
@@ -388,8 +403,11 @@ final class PluginsSensor extends AbstractSensor {
 	 */
 	private function emit_upgrade( int $code, string $file, string $action, ?array $before ): void {
 		$after = self::headers( self::plugin_data( $file ) );
-		$name  = '' !== $after['Name'] ? $after['Name'] : ( $before['Name'] ?? '' );
-		$name  = '' !== $name ? $name : $file;
+		if ( 'update' === $action && ! self::was_updated( $before, $after ) ) {
+			return;
+		}
+		$name = '' !== $after['Name'] ? $after['Name'] : ( $before['Name'] ?? '' );
+		$name = '' !== $name ? $name : $file;
 
 		$metadata = [
 			'plugin_file' => $file,

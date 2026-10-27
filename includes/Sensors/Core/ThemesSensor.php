@@ -26,7 +26,10 @@ defined( 'ABSPATH' ) || exit;
  * installed the sensor notes the version of every installed theme, per site,
  * and reads the new one afresh once the upgrade is complete. Uploading a
  * theme over an installed one runs the install, and is told as the update it
- * is. A deletion keeps the name and version read just before the files go.
+ * is. Core reports an update with every theme it was asked to update,
+ * whatever came of it: only a theme whose version moved to a new one is
+ * logged as updated ({@see PluginsSensor::was_updated()}). A deletion keeps
+ * the name and version read just before the files go.
  */
 final class ThemesSensor extends AbstractSensor {
 
@@ -296,7 +299,10 @@ final class ThemesSensor extends AbstractSensor {
 	 */
 	private function emit_upgrade( int $code, string $stylesheet, string $action, ?array $before ): void {
 		$after = self::headers( self::fresh_theme( $stylesheet ) );
-		$name  = self::resolve_theme_name( '' !== $after['Name'] ? $after['Name'] : ( $before['Name'] ?? '' ), $stylesheet );
+		if ( 'update' === $action && ! PluginsSensor::was_updated( $before, $after ) ) {
+			return;
+		}
+		$name = self::resolve_theme_name( '' !== $after['Name'] ? $after['Name'] : ( $before['Name'] ?? '' ), $stylesheet );
 
 		$metadata = [
 			'stylesheet' => $stylesheet,

@@ -400,6 +400,63 @@ final class PluginsSensorTest extends TestCase {
 	}
 
 	/**
+	 * Core reports a bulk update with every plugin it was asked to update,
+	 * also one that was up to date (its install step never ran): only the
+	 * plugins whose version moved were updated.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_bulk_update_logs_only_the_plugins_whose_version_moved(): void {
+		$this->put_plugin( 'akismet/akismet.php', 'Akismet Anti-spam', '5.0' );
+		$this->put_plugin( 'hello.php', 'Hello Dolly', '1.7.2' );
+		$recorder = $this->recorder();
+		$sensor   = new PluginsSensor( $recorder );
+
+		$sensor->on_pre_install( true, [ 'plugin' => 'akismet/akismet.php' ] );
+		$this->put_plugin( 'akismet/akismet.php', 'Akismet Anti-spam', '5.1' );
+		$sensor->on_upgrader(
+			$this->upgrader( false ),
+			[
+				'action'  => 'update',
+				'type'    => 'plugin',
+				'bulk'    => true,
+				'plugins' => [ 'akismet/akismet.php', 'hello.php' ],
+			]
+		);
+
+		$this->assertSame( [ 5003 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'akismet', $recorder->calls[0][1]['target']['id'] );
+	}
+
+	/**
+	 * A single update is reported whatever its result: an update whose
+	 * package never got to the install step (a failed download), or one
+	 * that failed after removing the old files, updated nothing.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_failed_update_logs_nothing(): void {
+		$this->put_plugin( 'akismet/akismet.php', 'Akismet Anti-spam', '5.0' );
+		$recorder = $this->recorder();
+		$sensor   = new PluginsSensor( $recorder );
+		$job      = [
+			'plugin' => 'akismet/akismet.php',
+			'type'   => 'plugin',
+			'action' => 'update',
+		];
+
+		$sensor->on_upgrader( $this->upgrader( false ), $job );
+		$this->assertSame( [], $recorder->calls, 'Never installed.' );
+
+		$sensor->on_pre_install( true, $job );
+		$this->remove_plugin( 'akismet/akismet.php' );
+		$sensor->on_upgrader( $this->upgrader( false ), $job );
+		$this->assertSame( [], $recorder->calls, 'Old files removed, no new ones.' );
+	}
+
+	/**
 	 * "Replace current with uploaded" runs the install, not the update.
 	 *
 	 * @runInSeparateProcess

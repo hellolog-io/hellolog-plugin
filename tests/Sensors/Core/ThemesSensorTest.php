@@ -257,6 +257,65 @@ final class ThemesSensorTest extends TestCase {
 	}
 
 	/**
+	 * Core reports a bulk update with every theme it was asked to update,
+	 * also one that was up to date (its install step never ran): only the
+	 * themes whose version moved were updated.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_bulk_update_logs_only_the_themes_whose_version_moved(): void {
+		$this->put_theme( 'flavor', 'Flavor', '2.0' );
+		$this->put_theme( 'twentytwentyfive', 'Twenty Twenty-Five', '1.3' );
+		$recorder = $this->recorder();
+		$sensor   = new ThemesSensor( $recorder );
+
+		$sensor->on_pre_install( true, [ 'theme' => 'flavor' ] );
+		$this->put_theme( 'flavor', 'Flavor', '2.1' );
+		ExtensionState::$theme_cache = [];
+		$sensor->on_upgrader(
+			$this->upgrader( false ),
+			[
+				'action' => 'update',
+				'type'   => 'theme',
+				'bulk'   => true,
+				'themes' => [ 'flavor', 'twentytwentyfive' ],
+			]
+		);
+
+		$this->assertSame( [ 5102 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'flavor', $recorder->calls[0][1]['target']['id'] );
+	}
+
+	/**
+	 * A single update is reported whatever its result: an update whose
+	 * package never got to the install step (a failed download), or one
+	 * that failed after removing the old files, updated nothing.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_failed_theme_update_logs_nothing(): void {
+		$this->put_theme( 'flavor', 'Flavor', '2.0' );
+		$recorder = $this->recorder();
+		$sensor   = new ThemesSensor( $recorder );
+		$job      = [
+			'theme'  => 'flavor',
+			'type'   => 'theme',
+			'action' => 'update',
+		];
+
+		$sensor->on_upgrader( $this->upgrader( false ), $job );
+		$this->assertSame( [], $recorder->calls, 'Never installed.' );
+
+		$sensor->on_pre_install( true, $job );
+		unset( ExtensionState::$themes['flavor'] );
+		ExtensionState::$theme_cache = [];
+		$sensor->on_upgrader( $this->upgrader( false ), $job );
+		$this->assertSame( [], $recorder->calls, 'Old files removed, no new ones.' );
+	}
+
+	/**
 	 * "Replace active with uploaded" runs the install, not the update.
 	 *
 	 * @runInSeparateProcess
