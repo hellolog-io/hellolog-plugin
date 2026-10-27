@@ -138,9 +138,12 @@ final class Command {
 		if ( '' === $token ) {
 			WP_CLI::error( 'Empty token.' );
 		}
-		update_option( Options::KEY_TOKEN, sanitize_text_field( $token ) );
-		// New key — license must be re-verified before sensors run.
-		( new Options() )->mark_active( false );
+		// A new key must be verified before sensors run; the key already
+		// stored stays verified.
+		if ( ! ( new Options() )->set_token( sanitize_text_field( $token ) ) ) {
+			WP_CLI::success( 'Token unchanged (last 4: ' . substr( $token, -4 ) . '); it stays verified.' );
+			return;
+		}
 		WP_CLI::success(
 			'Token saved (last 4: ' . substr( $token, -4 ) . '). '
 			. 'Run `wp hellolog test` to verify and activate.'
@@ -158,8 +161,7 @@ final class Command {
 	 * @subcommand clear-token
 	 */
 	public function clear_token(): void {
-		delete_option( Options::KEY_TOKEN );
-		( new Options() )->mark_active( false );
+		( new Options() )->clear_token();
 		WP_CLI::success( 'Token cleared. Sensors detached.' );
 	}
 

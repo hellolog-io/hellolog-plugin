@@ -77,10 +77,9 @@ final class SettingsController {
 		// both `token` and `clearToken` are sent we treat the explicit clear
 		// as the operator's intent.
 		if ( ! empty( $body['clearToken'] ) ) {
-			delete_option( Options::KEY_TOKEN );
 			// Clearing the key invalidates the license — sensors stop on
 			// the next boot.
-			( new Options() )->mark_active( false );
+			( new Options() )->clear_token();
 		} elseif ( isset( $body['token'] ) && is_string( $body['token'] ) && '' !== trim( $body['token'] ) ) {
 			$candidate = sanitize_text_field( trim( $body['token'] ) );
 			if ( ! Options::is_valid_token( $candidate ) ) {
@@ -89,10 +88,10 @@ final class SettingsController {
 					400
 				);
 			}
-			update_option( Options::KEY_TOKEN, $candidate );
-			// New key → reset the verified flag. The SPA fires a test
-			// event right after Save; that's what flips it back on.
-			( new Options() )->mark_active( false );
+			// A new key resets the verified flag (the SPA fires a test event
+			// right after Save; that's what flips it back on). Saving the key
+			// already stored leaves the plugin running.
+			( new Options() )->set_token( $candidate );
 		}
 		if ( array_key_exists( 'anonymizeIp', $body ) ) {
 			update_option( Options::KEY_ANONYMIZE_IP, (bool) $body['anonymizeIp'] );

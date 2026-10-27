@@ -90,6 +90,33 @@ final class Options {
 	}
 
 	/**
+	 * Store an API key. A key other than the stored one has not been checked
+	 * yet, so the verified flag is reset and the sensors stop until it is;
+	 * storing the key already stored changes nothing, and the plugin keeps
+	 * running.
+	 *
+	 * @param string $token The key.
+	 * @return bool Whether the key changed.
+	 */
+	public function set_token( string $token ): bool {
+		if ( $token === $this->token() ) {
+			return false;
+		}
+		update_option( self::KEY_TOKEN, $token );
+		$this->mark_active( false );
+
+		return true;
+	}
+
+	/**
+	 * Remove the API key: the sensors stop until a new key is verified.
+	 */
+	public function clear_token(): void {
+		delete_option( self::KEY_TOKEN );
+		$this->mark_active( false );
+	}
+
+	/**
 	 * `false` only once the backend has explicitly said so. Defaulting to
 	 * `true` covers both a fresh install (option never written) and a
 	 * legacy backend whose `GET /verify` body predates the `api_access`

@@ -15,6 +15,7 @@ use HelloLog\Events\EventDispatcher;
 use HelloLog\Events\NullEventDispatcher;
 use HelloLog\Events\RequestContext;
 use HelloLog\Events\RequestSource;
+use HelloLog\Scheduler\FlushLock;
 use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\SelfAuditSensor;
 use HelloLog\Sensors\SensitiveOption;
@@ -22,6 +23,7 @@ use HelloLog\Sensors\SensorManager;
 use HelloLog\Settings\Options;
 use HelloLog\Tests\Events\Fixtures\WpCalls;
 use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
+use HelloLog\Transport\FinalDelivery;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -248,7 +250,56 @@ final class SelfAuditSensorTest extends TestCase {
 
 	public function test_other_options_are_not_helloLOG_settings(): void {
 		$this->assertSame( [], SelfAuditSensor::changes_for( 'blogname', 'Old', 'New' ) );
-		$this->assertSame( [], SelfAuditSensor::changes_for( Options::KEY_TOKEN_VERIFIED, 0, 1 ) );
+		$this->assertSame( [], SelfAuditSensor::changes_for( Options::KEY_API_ACCESS, 1, 0 ) );
+	}
+
+	/**
+	 * A verified key that is no longer verified stops the sensors; a key
+	 * turned on, or a flag written again, is not a change to report.
+	 */
+	public function test_the_verified_flag_is_a_change_only_when_it_turns_off(): void {
+		$this->assertSame(
+			[
+				[
+					'field' => 'key_verified',
+					'old'   => 'yes',
+					'new'   => 'no',
+				],
+			],
+			SelfAuditSensor::changes_for( Options::KEY_TOKEN_VERIFIED, '1', 0 )
+		);
+		$this->assertSame( [], SelfAuditSensor::changes_for( Options::KEY_TOKEN_VERIFIED, '0', 1 ) );
+		$this->assertSame( [], SelfAuditSensor::changes_for( Options::KEY_TOKEN_VERIFIED, '1', 1 ) );
+		$this->assertSame( [], SelfAuditSensor::changes_for( Options::KEY_TOKEN_VERIFIED, '0', 0 ) );
+	}
+
+	/**
+	 * The delivery sends the queue of the site it was made on, under that
+	 * site's key: a key written on another site of the network is queued
+	 * there like any event, never sent under this key.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_key_change_on_another_site_is_only_queued(): void {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+		WpState::$blog_id = 1;
+		$sends            = 0;
+		$delivery         = new FinalDelivery(
+			new NullEventDispatcher(),
+			static function () use ( &$sends ): int {
+				++$sends;
+				return 0;
+			},
+			new FlushLock()
+		);
+		$recorder         = $this->recorder();
+
+		switch_to_blog( 2 );
+		( new SelfAuditSensor( $recorder, $delivery ) )->on_update( Options::KEY_TOKEN, self::OLD_TOKEN, self::NEW_TOKEN );
+
+		$this->assertSame( [ 6600 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 0, $sends );
 	}
 
 	public function test_the_self_audit_can_not_be_turned_off(): void {

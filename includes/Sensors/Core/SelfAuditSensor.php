@@ -9,11 +9,14 @@ declare(strict_types=1);
 
 namespace HelloLog\Sensors\Core;
 
+use HelloLog\Events\EventDispatcher;
+use HelloLog\Scheduler\VerifyScheduleBridge;
 use HelloLog\Sensors\AbstractSensor;
 use HelloLog\Sensors\OptionChangePolicy;
 use HelloLog\Sensors\SensitiveOption;
 use HelloLog\Sensors\SensorManager;
 use HelloLog\Settings\Options;
+use HelloLog\Transport\FinalDelivery;
 use Throwable;
 
 defined( 'ABSPATH' ) || exit;
@@ -39,9 +42,22 @@ defined( 'ABSPATH' ) || exit;
  *     A flag for a sensor that can not be turned off changes nothing and is
  *     not reported.
  *
+ *   - the API key no longer verified (`key_verified`, `yes` to `no`): a new
+ *     key, a cleared one, a failed connection test. The daily recheck
+ *     turning it off is the backend's answer, not a change somebody made,
+ *     and is not reported; neither is a key turned on.
+ *
  * Only the API key is told on its first write and on its deletion: the
  * other settings are first written with the defaults helloLOG seeds on a
  * site, which is not a change.
+ *
+ * A changed key and a key no longer verified are sent at once, through the
+ * delivery the plugin hands over ({@see FinalDelivery}), bound to the key the
+ * request started with. From the next request on the sensors stop and the
+ * queue is no longer sent, and anything queued would go out under the new
+ * key, or never: these events must reach the account the site was verified
+ * for. A write made on another site of a network (after `switch_to_blog()`)
+ * is queued there like any event.
  *
  * This sensor can not be turned off ({@see SensorManager::ALWAYS_ON}) and is
  * not offered as a switch in the settings. Like every sensor it runs only
@@ -49,7 +65,7 @@ defined( 'ABSPATH' ) || exit;
  * not (the first key saved on a new install, settings changed after the key
  * was cleared) is not logged, since nothing queued then would be accepted.
  * Clearing the key is logged, as the sensor still runs in that request, and
- * the event leaves the site once a key is verified again.
+ * sent at once.
  *
  * helloLOG's own deactivation is not seen here; it is logged and sent by
  * {@see \HelloLog\Plugin::deliver_own_deactivation()}.
@@ -63,7 +79,26 @@ final class SelfAuditSensor extends AbstractSensor {
 	 *
 	 * @var array<int, string>
 	 */
-	private const WATCHED = [ Options::KEY_TOKEN, Options::KEY_ANONYMIZE_IP, Options::KEY_SENSOR_FILTERS ];
+	private const WATCHED = [ Options::KEY_TOKEN, Options::KEY_TOKEN_VERIFIED, Options::KEY_ANONYMIZE_IP, Options::KEY_SENSOR_FILTERS ];
+
+	/**
+	 * Settings whose change is sent at once: after it the sensors stop.
+	 *
+	 * @var array<int, string>
+	 */
+	private const SENT_AT_ONCE = [ Options::KEY_TOKEN, Options::KEY_TOKEN_VERIFIED ];
+
+	/**
+	 * @param EventDispatcher    $dispatcher Where events are dispatched.
+	 * @param FinalDelivery|null $delivery   Sends events at once, bound to the key the request started with;
+	 *                                       without it every event is only dispatched.
+	 */
+	public function __construct(
+		EventDispatcher $dispatcher,
+		private ?FinalDelivery $delivery = null
+	) {
+		parent::__construct( $dispatcher );
+	}
 
 	public function key(): string {
 		return self::KEY;
@@ -80,6 +115,9 @@ final class SelfAuditSensor extends AbstractSensor {
 	 * @param mixed $value
 	 */
 	public function on_update( string $option, $old_value, $value ): void {
+		if ( Options::KEY_TOKEN_VERIFIED === $option && self::in_recheck() ) {
+			return; // The backend's answer to the daily recheck.
+		}
 		$this->log( $option, $old_value, $value );
 	}
 
@@ -118,6 +156,7 @@ final class SelfAuditSensor extends AbstractSensor {
 	public static function changes_for( string $option, mixed $old, mixed $new ): array {
 		return match ( $option ) {
 			Options::KEY_TOKEN          => self::token_changes( $old, $new ),
+			Options::KEY_TOKEN_VERIFIED => self::verified_changes( $old, $new ),
 			Options::KEY_ANONYMIZE_IP   => self::anonymize_changes( $old, $new ),
 			Options::KEY_SENSOR_FILTERS => self::sensor_changes( $old, $new ),
 			default                     => [],
@@ -143,17 +182,47 @@ final class SelfAuditSensor extends AbstractSensor {
 				return;
 			}
 
-			$this->emit(
-				6600,
-				[
-					'target'   => OptionChangePolicy::target( $option ),
-					'changes'  => $changes,
-					'metadata' => [ 'option' => $option ],
-				]
-			);
+			$fields = [
+				'target'   => OptionChangePolicy::target( $option ),
+				'changes'  => $changes,
+				'metadata' => [ 'option' => $option ],
+			];
+			if ( in_array( $option, self::SENT_AT_ONCE, true ) && null !== $this->delivery && $this->delivery->serves_current_site() ) {
+				$this->delivery->deliver( 6600, $fields );
+			} else {
+				$this->emit( 6600, $fields );
+			}
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 6600, [ 'option' => $option ] );
 		}
+	}
+
+	/**
+	 * Whether the daily recheck of the key is running.
+	 */
+	private static function in_recheck(): bool {
+		return function_exists( 'doing_action' ) && doing_action( VerifyScheduleBridge::HOOK );
+	}
+
+	/**
+	 * Only a verified key that is no longer verified is a change to report.
+	 *
+	 * @param mixed $old Flag before the write.
+	 * @param mixed $new Flag after the write.
+	 * @return array<int, array{field: string, old: ?string, new: ?string}>
+	 */
+	private static function verified_changes( $old, $new ): array {
+		if ( ! (bool) $old || (bool) $new ) {
+			return [];
+		}
+
+		return [
+			[
+				'field' => 'key_verified',
+				'old'   => 'yes',
+				'new'   => 'no',
+			],
+		];
 	}
 
 	/**

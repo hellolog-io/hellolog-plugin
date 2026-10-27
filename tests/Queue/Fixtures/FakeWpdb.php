@@ -18,6 +18,10 @@ namespace HelloLog\Tests\Queue\Fixtures;
  * and a statement on a queue table, or a delete from an options table, that
  * does not exist is an error, kept in {@see self::$errors}. An options table
  * exists when {@see self::$option_rows} has it.
+ *
+ * With {@see self::$live} on, the queue tables keep their rows: an insert
+ * adds one, a pick returns them, a delete by id removes them. The advisory
+ * lock (`GET_LOCK`) is always granted.
  */
 final class FakeWpdb {
 
@@ -94,6 +98,16 @@ final class FakeWpdb {
 	 */
 	public array $queue_rows = [];
 
+	/** Whether the queue tables keep the rows written to them. */
+	public bool $live = false;
+
+	/**
+	 * Rows of the queue tables while {@see self::$live}: table => id => payload.
+	 *
+	 * @var array<string, array<int, string>>
+	 */
+	public array $rows = [];
+
 	public function get_blog_prefix( ?int $blog_id = null ): string {
 		if ( null === $blog_id ) {
 			return $this->prefix;
@@ -119,6 +133,9 @@ final class FakeWpdb {
 			return false;
 		}
 		++$this->insert_id;
+		if ( $this->live ) {
+			$this->rows[ $table ][ $this->insert_id ] = (string) ( $data['payload'] ?? '' );
+		}
 
 		return 1;
 	}
@@ -162,6 +179,11 @@ final class FakeWpdb {
 		}
 		if ( 1 === preg_match( '/^DELETE FROM (\S+_options) WHERE (.+)$/s', $query, $m ) ) {
 			return $this->delete_options_like( $m[1], $m[2] );
+		}
+		if ( $this->live && 1 === preg_match( '/^DELETE FROM (\S+) WHERE id IN \(([\d,]+)\)$/', $query, $m ) ) {
+			foreach ( explode( ',', $m[2] ) as $id ) {
+				unset( $this->rows[ $m[1] ][ (int) $id ] );
+			}
 		}
 
 		return 0;
@@ -216,7 +238,28 @@ final class FakeWpdb {
 	public function get_results( string $query, $output = null ): array {
 		$this->run( $query );
 
-		return str_starts_with( $query, 'SELECT * FROM ' ) ? $this->queue_rows : [];
+		if ( ! str_starts_with( $query, 'SELECT * FROM ' ) ) {
+			return [];
+		}
+		if ( ! $this->live ) {
+			return $this->queue_rows;
+		}
+
+		preg_match( '/^SELECT \* FROM (\S+)/', $query, $m );
+		$rows = [];
+		foreach ( $this->rows[ $m[1] ] ?? [] as $id => $payload ) {
+			$rows[] = (object) [
+				'id'         => $id,
+				'payload'    => $payload,
+				'attempts'   => 0,
+				'next_try'   => '2026-10-26 12:00:00',
+				'status'     => 'pending',
+				'last_error' => null,
+				'created_at' => '2026-10-26 12:00:00',
+			];
+		}
+
+		return $rows;
 	}
 
 	/**
@@ -239,6 +282,10 @@ final class FakeWpdb {
 	 * @param string $query Query.
 	 */
 	public function get_var( string $query ): ?string {
+		if ( str_starts_with( $query, 'SELECT GET_LOCK(' ) ) {
+			$this->run( $query );
+			return '1';
+		}
 		if ( 1 !== preg_match( "/^SHOW TABLES LIKE '(.*)'$/", $query, $m ) ) {
 			$this->run( $query );
 			return null;

@@ -86,6 +86,12 @@ final class Plugin {
 
 	private SensorManager $sensors;
 
+	/** Sends the queue, bound to the key the request started with. */
+	private QueueFlusher $flusher;
+
+	/** Sends helloLOG's own critical events at once, with that flusher. */
+	private FinalDelivery $delivery;
+
 	public static function instance(): self {
 		if ( null === self::$instance ) {
 			self::$instance = new self();
@@ -215,19 +221,19 @@ final class Plugin {
 	 * deactivation is logged for helloLOG like any plugin's (5002), whether or
 	 * not the plugin sensor is on, and sent right away with everything the
 	 * request has collected, then once more at the very end of the request,
-	 * see {@see FinalDelivery}: no job will send the queue once the plugin
-	 * stops. Nothing happens before boot or while the plugin is not active
-	 * (no verified API key: nothing queued would be accepted).
+	 * under the key the request started with, see {@see FinalDelivery}: no job
+	 * will send the queue once the plugin stops. It is sent whenever a key is
+	 * stored, verified or not (a re-saved or failed key must not hide it);
+	 * nothing happens before boot or without a key.
 	 *
 	 * @param bool $network_wide Whether helloLOG is deactivated on every site of the network.
 	 */
 	public function deliver_own_deactivation( bool $network_wide = false ): void {
-		if ( ! $this->booted || ! $this->options->is_active() ) {
+		if ( ! $this->booted || ! $this->options->is_configured() ) {
 			return;
 		}
 
-		$delivery = new FinalDelivery( $this->dispatcher, [ $this->build_flusher(), 'run' ], new FlushLock( FinalDelivery::LOCK_WAIT ) );
-		$delivery->deliver( 5002, PluginsSensor::deactivation_fields( plugin_basename( HELLOLOG_FILE ), $network_wide ) );
+		$this->delivery->deliver( 5002, PluginsSensor::deactivation_fields( plugin_basename( HELLOLOG_FILE ), $network_wide ) );
 	}
 
 	private function load_textdomain(): void {
@@ -247,6 +253,12 @@ final class Plugin {
 		$this->builder    = new EventBuilder( $this->catalog, $this->options->anonymize_ip() );
 		$this->dispatcher = $this->build_dispatcher();
 		$this->sensors    = new SensorManager();
+
+		// Built now, with the key the request starts with: when the key is
+		// changed or cleared later in the request, helloLOG's events about it
+		// still reach the account the site was verified for.
+		$this->flusher  = $this->build_flusher();
+		$this->delivery = new FinalDelivery( $this->dispatcher, [ $this->flusher, 'run' ], new FlushLock( FinalDelivery::LOCK_WAIT ) );
 
 		// License gate: nothing attaches its hooks until the operator has
 		// stored a valid-format key AND the plugin has confirmed at least
@@ -282,7 +294,7 @@ final class Plugin {
 		$this->sensors->register( new PluginsSensor( $this->dispatcher ) );
 		$this->sensors->register( new ThemesSensor( $this->dispatcher ) );
 		$this->sensors->register( new SettingsSensor( $this->dispatcher ) );
-		$this->sensors->register( new SelfAuditSensor( $this->dispatcher ) );
+		$this->sensors->register( new SelfAuditSensor( $this->dispatcher, $this->delivery ) );
 		$this->sensors->register( new SystemSensor( $this->dispatcher ) );
 		$this->sensors->register( new FilesSensor( $this->dispatcher ) );
 		$this->sensors->register( new DatabaseSensor( $this->dispatcher ) );
@@ -329,7 +341,7 @@ final class Plugin {
 	 */
 	private function register_flush_scheduler(): void {
 		( new ActionSchedulerBridge(
-			$this->build_flusher(),
+			$this->flusher,
 			$this->options,
 			new FlushLock(),
 			new AsLogPruner(),

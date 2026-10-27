@@ -31,7 +31,8 @@ defined( 'ABSPATH' ) || exit;
  */
 final class VerifyScheduleBridge {
 
-	private const HOOK  = 'hellolog_verify_token';
+	/** The daily recheck's action. */
+	public const HOOK   = 'hellolog_verify_token';
 	private const GROUP = 'hellolog';
 	/** One day, in seconds — matches `ActionSchedulerBridge`'s literal-constant style. */
 	private const INTERVAL = 86400;
