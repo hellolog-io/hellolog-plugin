@@ -53,6 +53,11 @@ final class StoreTargetsTest extends TestCase {
 			],
 			StoreTargets::coupon( 8, 'summer10' )
 		);
+		// WordPress's title of an editor placeholder; the shop reads every
+		// code in lower case.
+		$this->assertSame( '#8', StoreTargets::coupon( 8, StoreTargets::COUPON_PLACEHOLDER )['label'] );
+		$this->assertSame( '#8', StoreTargets::coupon( 8, '' )['label'] );
+		$this->assertSame( 'auto draft', StoreTargets::coupon( 8, 'auto draft' )['label'] );
 	}
 
 	/**

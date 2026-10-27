@@ -24,6 +24,13 @@ final class StoreTargets {
 	public const PRODUCT_PLACEHOLDER = 'AUTO-DRAFT';
 
 	/**
+	 * The title WordPress gives a coupon it keeps as an editor placeholder
+	 * (WooCommerce keeps it). The shop reads every code in lower case, so a
+	 * code it knows never reads like this.
+	 */
+	public const COUPON_PLACEHOLDER = 'Auto Draft';
+
+	/**
 	 * An order, labelled with its number, which differs from the id on shops
 	 * with sequential numbering; with the id when there is no number (an
 	 * order's post has none of its own).
@@ -58,7 +65,8 @@ final class StoreTargets {
 	}
 
 	/**
-	 * A coupon, labelled with its code.
+	 * A coupon, labelled with its code. A coupon without a real code (none,
+	 * or WordPress's placeholder title) is labelled `#<id>`.
 	 *
 	 * @param int    $id   Coupon id.
 	 * @param string $code Its code.
@@ -68,7 +76,7 @@ final class StoreTargets {
 		return [
 			'type'  => 'coupon',
 			'id'    => (string) $id,
-			'label' => $code,
+			'label' => '' === $code || self::COUPON_PLACEHOLDER === $code ? '#' . $id : $code,
 		];
 	}
 }
