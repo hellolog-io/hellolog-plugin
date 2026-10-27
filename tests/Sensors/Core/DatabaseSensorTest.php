@@ -361,6 +361,37 @@ final class DatabaseSensorTest extends TestCase {
 	}
 
 	/**
+	 * A word that only starts like one of those is not one: MariaDB runs a
+	 * labelled block (`SELECT_1: BEGIN NOT ATOMIC … END`), and the label can
+	 * be any name.
+	 *
+	 * @return array<string, array{0: string, 1: int}>
+	 */
+	public static function labels_like_row_statements(): array {
+		return [
+			'an underscore'        => [ 'SELECT_1: BEGIN NOT ATOMIC DROP TABLE wp_users; END', 7101 ],
+			'a digit'              => [ 'INSERT1: BEGIN NOT ATOMIC DROP TABLE wp_users; END', 7101 ],
+			'a dollar sign'        => [ 'DESC$x: LOOP DROP TABLE wp_users; LEAVE DESC$x; END LOOP', 7101 ],
+			'a multibyte letter'   => [ "UPDATE\xC3\xA9: BEGIN NOT ATOMIC CREATE TABLE wp_users (a int); END", 7100 ],
+		];
+	}
+
+	/**
+	 * @dataProvider labels_like_row_statements
+	 *
+	 * @param string $query The statement.
+	 * @param int    $code  The event it must leave.
+	 */
+	public function test_a_label_that_starts_like_a_row_statement_is_logged( string $query, int $code ): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( $query );
+
+		$this->assertSame( [ $code ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'wp_users', $recorder->calls[0][1]['name'] );
+		$this->assertSame( 'yes', $recorder->calls[0][1]['metadata']['unparsed'] );
+	}
+
+	/**
 	 * Anything else that holds the words (a statement prepared to run later,
 	 * a variable holding one) is logged, unparsed.
 	 *

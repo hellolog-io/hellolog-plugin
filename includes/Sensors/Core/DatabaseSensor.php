@@ -46,9 +46,10 @@ defined( 'ABSPATH' ) || exit;
  *   - a statement that only reads or writes rows (`SELECT`, `INSERT`,
  *     `UPDATE`, `DELETE`, `REPLACE`) or describes a table (`SHOW`, `DESCRIBE`,
  *     `DESC`, `EXPLAIN`), read from its first word after nothing but
- *     whitespace and plain comments: a search for the words, a post about
- *     them, helloLOG queueing one of these events. One statement per query,
- *     as wpdb runs them;
+ *     whitespace and plain comments, the whole word (`SELECT_1` is a name,
+ *     not `SELECT`): a search for the words, a post about them, helloLOG
+ *     queueing one of these events. One statement per query, as wpdb runs
+ *     them;
  *   - a temporary table (`CREATE` or `DROP TEMPORARY TABLE`): it never
  *     outlives its connection;
  *   - helloLOG's own queue table (on activation, for a new site, on a site's
@@ -293,7 +294,9 @@ final class DatabaseSensor extends AbstractSensor {
 	/**
 	 * The first word of a statement, upper-cased, after nothing but
 	 * whitespace and plain comments; null when what comes first is not
-	 * certain (a comment MySQL runs, one that is never closed).
+	 * certain (a comment MySQL runs, one that is never closed) or is a name
+	 * that only starts with letters (`SELECT_1`, `INSERT1`: a label of a
+	 * block MariaDB runs, say).
 	 *
 	 * @param string $sql The statement as run.
 	 */
@@ -318,6 +321,9 @@ final class DatabaseSensor extends AbstractSensor {
 				$i    = false === $line ? $len : $line + 1;
 			} else {
 				$word = strspn( $sql, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', $i );
+				if ( self::is_name_char( $sql[ $i + $word ] ?? '' ) ) {
+					return null; // A longer name, not a keyword.
+				}
 				return strtoupper( substr( $sql, $i, $word ) );
 			}
 		}
