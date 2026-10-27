@@ -181,8 +181,12 @@ final class CatalogSeeder {
 		$c->register( new EventDefinition( 9103, ObjectType::ORDER, EventType::UPDATED, Severity::INFO, 'Note added to WC order #{id}: {note}' ) );
 		$c->register( new EventDefinition( 9104, ObjectType::ORDER, EventType::UPDATED, Severity::MEDIUM, 'Refund issued on WC order #{id}: {amount}.' ) );
 		$c->register( new EventDefinition( 9105, ObjectType::ORDER, EventType::UPDATED, Severity::MEDIUM, 'WC order #{id} edited.' ) );
+		$c->register( new EventDefinition( 9106, ObjectType::ORDER, EventType::UPDATED, Severity::LOW, 'Item "{name}" added to WC order #{id}.' ) );
+		$c->register( new EventDefinition( 9107, ObjectType::ORDER, EventType::UPDATED, Severity::MEDIUM, 'Item removed from WC order #{id}.' ) );
+		$c->register( new EventDefinition( 9108, ObjectType::ORDER, EventType::UPDATED, Severity::LOW, 'Item "{name}" changed on WC order #{id}.' ) );
 		$c->register( new EventDefinition( 9109, ObjectType::ORDER, EventType::TRASHED, Severity::MEDIUM, 'WC order #{id} moved to trash.' ) );
 		$c->register( new EventDefinition( 9110, ObjectType::ORDER, EventType::RESTORED, Severity::LOW, 'WC order #{id} restored from trash.' ) );
+		$c->register( new EventDefinition( 9111, ObjectType::ORDER, EventType::UPDATED, Severity::LOW, 'Note deleted from WC order #{id}.' ) );
 
 		// Coupons
 		$c->register( new EventDefinition( 9200, ObjectType::COUPON, EventType::CREATED, Severity::INFO, 'WC coupon "{code}" created.' ) );

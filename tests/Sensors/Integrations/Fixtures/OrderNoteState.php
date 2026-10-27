@@ -38,6 +38,23 @@ final class OrderNoteState {
 	 */
 	public static array $orders = [];
 
+	/**
+	 * Item id => the order item `WC_Order_Factory::get_order_item()` finds
+	 * (`woocommerce-order-factory-class.php`). An id that is not listed has
+	 * no such item.
+	 *
+	 * @var array<int, object>
+	 */
+	public static array $items = [];
+
+	/**
+	 * Order id => the type `OrderUtil::get_order_type()` answers
+	 * (`woocommerce-order-util-class.php`). An id that is not listed has none.
+	 *
+	 * @var array<int, string>
+	 */
+	public static array $order_types = [];
+
 	/** The statuses a shop starts with, as `wc_get_order_statuses()` lists them. */
 	public const DEFAULT_STATUSES = [
 		'wc-pending'    => 'Pending payment',

@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Sensors\Integrations;
 
+use Automattic\WooCommerce\Utilities\OrderUtil;
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
 use HelloLog\Sensors\StoreTargets;
@@ -17,13 +18,21 @@ use Throwable;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Order lifecycle (9100–9105, 9109, 9110). Uses WC's high-level hooks so
- * HPOS-mode stores work identically — no direct `$wpdb` reads.
+ * Order lifecycle (9100–9111). Uses WC's high-level hooks so HPOS-mode
+ * stores work identically — no direct `$wpdb` reads.
  *
  * Every event names its order as `target` (labelled with the order number)
  * and, while the order still exists, links to its edit screen. An order note
  * event also carries the text of the note and its kind, see
- * {@see self::note_type()}.
+ * {@see self::note_type()}; a deleted note (9111) its text, unless the note
+ * goes with the erasure of the customer's personal data.
+ *
+ * An item added to an order (9106), changed (9108, one event per item and
+ * save, see {@see self::ITEM_FIELDS}) or removed (9107) is told on its order.
+ * The items a refund copies onto itself are not (the refund event, 9104,
+ * tells the refund), nor are the items of an order that is still being
+ * created. A refund tells its amount, currency and reason, and whether the
+ * gateway returned the money.
  *
  * A save of an existing order tells which of {@see self::ORDER_FIELDS}
  * changed (9105), read from the order before WooCommerce writes it; the
@@ -87,6 +96,32 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	private const MONEY_FIELDS = [ 'total', 'discount_total', 'shipping_total' ];
 
 	/**
+	 * The fields of an order item whose changes are told, in this order: its
+	 * name (a product's, a fee's, the shipping method's, a coupon's code, a
+	 * tax rate's code), its quantity and its amounts.
+	 *
+	 * @var array<int, string>
+	 */
+	public const ITEM_FIELDS = [ 'name', 'quantity', 'subtotal', 'total', 'total_tax' ];
+
+	/**
+	 * The fields of {@see self::ITEM_FIELDS} that hold a number: `10.00` and
+	 * `10` are the same, and so are an empty amount and `0`.
+	 *
+	 * @var array<int, string>
+	 */
+	private const ITEM_NUMBER_FIELDS = [ 'quantity', 'subtotal', 'total', 'total_tax' ];
+
+	/** The type of a refund, which WooCommerce keeps as an order of its own. */
+	private const REFUND_TYPE = 'shop_order_refund';
+
+	/** The type of an item that is a line of a product, the only one with a quantity. */
+	private const LINE_ITEM = 'line_item';
+
+	/** What `metadata.context` of a note deleted with a customer's personal data says. */
+	public const PRIVACY_ERASURE = 'privacy-erasure';
+
+	/**
 	 * Stored statuses of an order that is still being created: not set yet,
 	 * WordPress's and WooCommerce's placeholders, and the drafts of the admin
 	 * screen and the checkout. A save of such an order fills its fields in.
@@ -120,6 +155,14 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 */
 	private array $deleting = [];
 
+	/**
+	 * The orders whose customer's personal data WooCommerce is erasing, from
+	 * the start of the erasure to its end: `site:order id` => true.
+	 *
+	 * @var array<string, true>
+	 */
+	private array $erasing = [];
+
 	public function key(): string {
 		return 'woocommerce-order';
 	}
@@ -139,6 +182,15 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		add_action( 'woocommerce_delete_order', [ $this, 'on_deleted' ], 10, 1 );
 		add_action( 'woocommerce_order_note_added', [ $this, 'on_note_added' ], 10, 2 );
 		add_action( 'woocommerce_order_refunded', [ $this, 'on_refunded' ], 10, 2 );
+		add_action( 'woocommerce_new_order_item', [ $this, 'on_item_added' ], 10, 3 );
+		// Every type of item fires this hook.
+		add_action( 'woocommerce_before_order_item_object_save', [ $this, 'on_item_saving' ], 10, 1 );
+		add_action( 'woocommerce_before_delete_order_item', [ $this, 'on_item_deleting' ], 10, 1 );
+		add_action( 'woocommerce_order_note_deleted', [ $this, 'on_note_deleted' ], 10, 2 );
+		// The erasure of a customer's personal data deletes every note of the
+		// order between these two.
+		add_action( 'woocommerce_privacy_before_remove_order_personal_data', [ $this, 'on_privacy_erasing' ], 10, 1 );
+		add_action( 'woocommerce_privacy_remove_order_personal_data', [ $this, 'on_privacy_erased' ], 10, 1 );
 	}
 
 	/**
@@ -598,6 +650,12 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	}
 
 	/**
+	 * A refund was issued: its amount as stored (the message's), its
+	 * currency and reason (`vars`, a reason only when one was given) and
+	 * whether the gateway returned the money (`metadata.refunded_payment`;
+	 * false when the shop only recorded the refund). What the refund cannot
+	 * tell is left out.
+	 *
 	 * @param mixed $order_id  Id of the refunded order.
 	 * @param mixed $refund_id Id of the refund.
 	 */
@@ -605,25 +663,273 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		try {
 			$order_id  = self::id_of( $order_id );
 			$refund_id = self::id_of( $refund_id );
-			$refund    = function_exists( 'wc_get_order' ) ? wc_get_order( $refund_id ) : null;
-			$amount    = $refund && method_exists( $refund, 'get_amount' ) ? (string) $refund->get_amount() : '';
+			$refund    = $this->order_object( $refund_id, null );
+			$amount    = null !== $refund && method_exists( $refund, 'get_amount' ) ? (string) $refund->get_amount() : '';
+			$vars      = array_filter(
+				[
+					'currency' => self::read( $refund, 'get_currency' ),
+					'reason'   => self::read( $refund, 'get_reason' ),
+				],
+				'is_string'
+			);
+			$metadata  = [
+				'order_id'  => $order_id,
+				'refund_id' => $refund_id,
+				'amount'    => $amount,
+			];
+			if ( null !== $refund && method_exists( $refund, 'get_refunded_payment' ) ) {
+				$metadata['refunded_payment'] = (bool) $refund->get_refunded_payment();
+			}
+
 			$this->emit(
 				9104,
 				array_merge(
 					[
 						'id'       => $order_id,
 						'amount'   => $amount,
-						'metadata' => [
-							'order_id'  => $order_id,
-							'refund_id' => $refund_id,
-							'amount'    => $amount,
-						],
+						'vars'     => $vars,
+						'metadata' => $metadata,
 					],
 					$this->order_fields( $order_id, null )
 				)
 			);
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9104, [ 'order_id' => self::id_of( $order_id ) ] );
+		}
+	}
+
+	/**
+	 * An item was added to an order: told on the order with its name and
+	 * type, and the quantity of a product line. The hook also fires for the
+	 * copies a refund makes of the refunded items and for the items of an
+	 * order still being created; neither is told, see
+	 * {@see self::item_order_fields()}.
+	 *
+	 * @param mixed $item_id  Item id.
+	 * @param mixed $item     The item; `wc_add_order_item()` may pass none, then it is read by its id.
+	 * @param mixed $order_id Id of the order; the item's own when the hook passes none.
+	 */
+	public function on_item_added( $item_id, $item = null, $order_id = 0 ): void {
+		$ids = [
+			'order_id' => 0,
+			'item_id'  => 0,
+		];
+		try {
+			$ids['item_id'] = self::id_of( $item_id );
+			if ( $ids['item_id'] <= 0 ) {
+				return;
+			}
+			$item = is_object( $item ) ? $item : self::stored_item( $ids['item_id'] );
+			if ( null === $item ) {
+				return;
+			}
+			$ids['order_id'] = self::id_of( $order_id );
+			if ( $ids['order_id'] <= 0 ) {
+				$ids['order_id'] = self::item_order_id( $item );
+			}
+
+			$fields = $this->item_order_fields( $ids['order_id'], $item );
+			if ( null === $fields ) {
+				return;
+			}
+
+			$type = self::item_type( $item );
+			$vars = [ 'name' => self::item_name( $item ) ];
+			$qty  = self::LINE_ITEM === $type && method_exists( $item, 'get_quantity' ) ? self::number_text( $item->get_quantity() ) : null;
+			if ( null !== $qty ) {
+				$vars['qty'] = $qty;
+			}
+
+			$this->emit(
+				9106,
+				array_merge(
+					[
+						'id'       => $ids['order_id'],
+						'vars'     => $vars,
+						'metadata' => self::item_metadata( $ids['order_id'], $ids['item_id'], $type ),
+					],
+					$fields
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9106, $ids );
+		}
+	}
+
+	/**
+	 * An existing item of an order is about to be saved: tell which of
+	 * {@see self::ITEM_FIELDS} change, from the values it has stored
+	 * (`get_data()`) and those the save is about to write (`get_changes()`),
+	 * one event per item. Every save of an order saves its items again,
+	 * mostly without a change: such a save reads nothing more and tells
+	 * nothing. An item without an id is being inserted (its addition tells
+	 * it).
+	 *
+	 * @param mixed $item The item WooCommerce is about to save.
+	 */
+	public function on_item_saving( $item ): void {
+		$ids = [
+			'order_id' => 0,
+			'item_id'  => 0,
+		];
+		try {
+			if ( ! is_object( $item ) || ! method_exists( $item, 'get_id' ) || ! method_exists( $item, 'get_data' ) || ! method_exists( $item, 'get_changes' ) ) {
+				return;
+			}
+			$ids['item_id'] = self::id_of( $item->get_id() );
+			if ( $ids['item_id'] <= 0 ) {
+				return;
+			}
+			$ids['order_id'] = self::item_order_id( $item );
+
+			$pending = self::item_values( $item->get_changes() );
+			if ( [] === $pending ) {
+				return;
+			}
+			$changes = self::item_changes( self::item_values( $item->get_data() ), $pending );
+			if ( [] === $changes ) {
+				return;
+			}
+
+			$fields = $this->item_order_fields( $ids['order_id'], $item );
+			if ( null === $fields ) {
+				return;
+			}
+
+			$this->emit(
+				9108,
+				array_merge(
+					[
+						'id'       => $ids['order_id'],
+						'changes'  => $changes,
+						'vars'     => [ 'name' => self::item_name( $item ) ],
+						'metadata' => self::item_metadata( $ids['order_id'], $ids['item_id'], self::item_type( $item ) ),
+					],
+					$fields
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9108, $ids );
+		}
+	}
+
+	/**
+	 * An item of an order is about to be deleted: read while it still can
+	 * be, and told on its order with its name. An item that cannot be read
+	 * has no order to tell it on.
+	 *
+	 * @param mixed $item_id Item id.
+	 */
+	public function on_item_deleting( $item_id ): void {
+		$ids = [
+			'order_id' => 0,
+			'item_id'  => 0,
+		];
+		try {
+			$ids['item_id'] = self::id_of( $item_id );
+			if ( $ids['item_id'] <= 0 ) {
+				return;
+			}
+			$item = self::stored_item( $ids['item_id'] );
+			if ( null === $item ) {
+				return;
+			}
+			$ids['order_id'] = self::item_order_id( $item );
+
+			$fields = $this->item_order_fields( $ids['order_id'], $item );
+			if ( null === $fields ) {
+				return;
+			}
+
+			$this->emit(
+				9107,
+				array_merge(
+					[
+						'id'       => $ids['order_id'],
+						'vars'     => [ 'name' => self::item_name( $item ) ],
+						'metadata' => self::item_metadata( $ids['order_id'], $ids['item_id'], self::item_type( $item ) ),
+					],
+					$fields
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9107, $ids );
+		}
+	}
+
+	/**
+	 * A note of an order was deleted. WooCommerce read it before the delete:
+	 * it is told on its order with its text (see {@see self::note_text()}).
+	 * A note deleted with the customer's personal data (WooCommerce deletes
+	 * every note of the order then, as notes can hold it) is tagged as such
+	 * in `metadata.context` and keeps its text to itself. A note of no order
+	 * is not told; one whose text is unknown is told without.
+	 *
+	 * @param mixed $note_id Comment id of the note; text when it comes from the REST API.
+	 * @param mixed $note    The note as WooCommerce read it (`id`, `content`, `order_id`, …).
+	 */
+	public function on_note_deleted( $note_id, $note = null ): void {
+		$ids = [
+			'order_id' => 0,
+			'note_id'  => 0,
+		];
+		try {
+			$ids['note_id']  = self::id_of( $note_id );
+			$ids['order_id'] = is_object( $note ) ? self::id_of( $note->order_id ?? null ) : 0;
+			if ( $ids['order_id'] <= 0 ) {
+				return;
+			}
+
+			$erased  = isset( $this->erasing[ self::state_key( $ids['order_id'] ) ] );
+			$content = isset( $note->content ) && is_scalar( $note->content ) ? (string) $note->content : null;
+
+			$this->emit(
+				9111,
+				array_merge(
+					[
+						'id'       => $ids['order_id'],
+						'vars'     => null === $content || $erased ? [] : [ 'note' => self::note_text( $content ) ],
+						'metadata' => $ids + ( $erased ? [ 'context' => self::PRIVACY_ERASURE ] : [] ),
+					],
+					$this->order_fields( $ids['order_id'], null )
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9111, $ids );
+		}
+	}
+
+	/**
+	 * WooCommerce is about to erase the personal data of an order's customer
+	 * (asked by the customer, from the order list, or for old orders on a
+	 * schedule): the notes it deletes until the erasure ends go with it.
+	 *
+	 * @param mixed $order The order.
+	 */
+	public function on_privacy_erasing( $order ): void {
+		try {
+			$order_id = is_object( $order ) && method_exists( $order, 'get_id' ) ? self::id_of( $order->get_id() ) : 0;
+			if ( $order_id > 0 ) {
+				$this->erasing[ self::state_key( $order_id ) ] = true;
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9111 );
+		}
+	}
+
+	/**
+	 * WooCommerce erased the personal data of an order's customer.
+	 *
+	 * @param mixed $order The order.
+	 */
+	public function on_privacy_erased( $order ): void {
+		try {
+			$order_id = is_object( $order ) && method_exists( $order, 'get_id' ) ? self::id_of( $order->get_id() ) : 0;
+			if ( $order_id > 0 ) {
+				unset( $this->erasing[ self::state_key( $order_id ) ] );
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9111 );
 		}
 	}
 
@@ -718,6 +1024,221 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		$value = $order->$method();
 
 		return is_scalar( $value ) && '' !== (string) $value ? (string) $value : null;
+	}
+
+	/**
+	 * The `target` and `links` an event about an item of the order is told
+	 * with, see {@see self::order_fields()}; null when the items of that
+	 * order are not told: there is no order (no id), it is a refund (the
+	 * refund event tells what it holds), or it is still being created (its
+	 * items are part of making it, whichever request adds them, see
+	 * {@see self::CREATION_STATUSES}). An order that cannot be loaded is
+	 * asked for its type by its id, and its items are told.
+	 *
+	 * @param int         $order_id Id of the item's order.
+	 * @param object|null $item     The item, which may hold on to its order.
+	 * @return array<string, mixed>|null
+	 */
+	private function item_order_fields( int $order_id, ?object $item ): ?array {
+		if ( $order_id <= 0 ) {
+			return null;
+		}
+
+		$order = self::held_order( $item, $order_id ) ?? $this->order_object( $order_id, null );
+		if ( self::REFUND_TYPE === self::order_type( $order_id, $order ) || self::is_in_creation( $order ) ) {
+			return null;
+		}
+
+		return $this->order_fields( $order_id, $order );
+	}
+
+	/**
+	 * The order an item holds on to (WooCommerce's items keep the order they
+	 * were read or added with, so a save of the order does not load it again
+	 * for every item), when it is the order of that id; null otherwise.
+	 *
+	 * @param object|null $item     The item.
+	 * @param int         $order_id Id of the item's order.
+	 */
+	private static function held_order( ?object $item, int $order_id ): ?object {
+		if ( null === $item || ! method_exists( $item, 'get_order' ) ) {
+			return null;
+		}
+
+		$order = $item->get_order();
+
+		return is_object( $order ) && method_exists( $order, 'get_id' ) && self::id_of( $order->get_id() ) === $order_id ? $order : null;
+	}
+
+	/**
+	 * The type of an order (`shop_order`, `shop_order_refund`): asked of the
+	 * order, else of WooCommerce by the id; '' when neither tells.
+	 *
+	 * @param int         $order_id Order id.
+	 * @param object|null $order    The order, if it could be loaded.
+	 */
+	private static function order_type( int $order_id, ?object $order ): string {
+		if ( null !== $order && method_exists( $order, 'get_type' ) ) {
+			$type = $order->get_type();
+		} elseif ( class_exists( OrderUtil::class ) && method_exists( OrderUtil::class, 'get_order_type' ) ) {
+			$type = OrderUtil::get_order_type( $order_id );
+		} else {
+			$type = '';
+		}
+
+		return is_string( $type ) ? $type : '';
+	}
+
+	/**
+	 * Whether an order, as stored, is still being created, see
+	 * {@see self::CREATION_STATUSES}. An order that cannot tell is not.
+	 *
+	 * @param object|null $order The order.
+	 */
+	private static function is_in_creation( ?object $order ): bool {
+		if ( null === $order || ! method_exists( $order, 'get_status' ) ) {
+			return false;
+		}
+
+		// `edit` reads the status as stored: for display an unset one reads `pending`.
+		$status = $order->get_status( 'edit' );
+
+		return ( null === $status || is_string( $status ) ) && in_array( self::status_slug( (string) $status ), self::CREATION_STATUSES, true );
+	}
+
+	/**
+	 * The order item WooCommerce finds for an id; null when there is none.
+	 *
+	 * @param int $item_id Item id.
+	 */
+	private static function stored_item( int $item_id ): ?object {
+		if ( ! class_exists( 'WC_Order_Factory' ) || ! method_exists( 'WC_Order_Factory', 'get_order_item' ) ) {
+			return null;
+		}
+
+		$item = \WC_Order_Factory::get_order_item( $item_id );
+
+		return is_object( $item ) ? $item : null;
+	}
+
+	/**
+	 * The id of the order an item belongs to; 0 when it does not tell.
+	 *
+	 * @param object $item The item.
+	 */
+	private static function item_order_id( object $item ): int {
+		return method_exists( $item, 'get_order_id' ) ? self::id_of( $item->get_order_id() ) : 0;
+	}
+
+	/**
+	 * The name of an item (a tax item's is the code of its rate); '' when it
+	 * has none to tell.
+	 *
+	 * @param object $item The item.
+	 */
+	private static function item_name( object $item ): string {
+		$name = method_exists( $item, 'get_name' ) ? $item->get_name() : '';
+
+		return is_scalar( $name ) ? (string) $name : '';
+	}
+
+	/**
+	 * The type of an item (`line_item`, `fee`, `shipping`, `coupon`, `tax`);
+	 * '' when it does not tell.
+	 *
+	 * @param object $item The item.
+	 */
+	private static function item_type( object $item ): string {
+		$type = method_exists( $item, 'get_type' ) ? $item->get_type() : '';
+
+		return is_string( $type ) ? $type : '';
+	}
+
+	/**
+	 * The `metadata` of an item event.
+	 *
+	 * @param int    $order_id Id of the item's order.
+	 * @param int    $item_id  Item id.
+	 * @param string $type     Type of the item.
+	 * @return array{order_id: int, item_id: int, item_type: string}
+	 */
+	private static function item_metadata( int $order_id, int $item_id, string $type ): array {
+		return [
+			'order_id'  => $order_id,
+			'item_id'   => $item_id,
+			'item_type' => $type,
+		];
+	}
+
+	/**
+	 * The values of an item (stored or pending) that hold one of
+	 * {@see self::ITEM_FIELDS}: its taxes by rate and its meta are never
+	 * read.
+	 *
+	 * @param mixed $values Values of the item by key.
+	 * @return array<string, mixed>
+	 */
+	private static function item_values( $values ): array {
+		return is_array( $values ) ? array_intersect_key( $values, array_flip( self::ITEM_FIELDS ) ) : [];
+	}
+
+	/**
+	 * The changes between an item's stored and pending values, in the order
+	 * of {@see self::ITEM_FIELDS}, without those that only write the stored
+	 * value in another form (`10` for `10.00`, `0` for an empty amount, an
+	 * empty name where there was none).
+	 *
+	 * @param array<string, mixed> $stored  Stored values.
+	 * @param array<string, mixed> $pending Values the save is about to write.
+	 * @return array<int, array{field: string, old: ?string, new: ?string}>
+	 */
+	private static function item_changes( array $stored, array $pending ): array {
+		$real = [];
+		foreach ( $pending as $key => $value ) {
+			$old = $stored[ $key ] ?? null;
+			if ( self::is_blank( $old ) && self::is_blank( $value ) ) {
+				continue;
+			}
+			if ( in_array( $key, self::ITEM_NUMBER_FIELDS, true ) && self::same_number( $old, $value ) ) {
+				continue;
+			}
+
+			$real[ $key ] = $value;
+		}
+
+		return [] === $real ? [] : WcObjectDiff::changes( $stored, $real, self::ITEM_FIELDS );
+	}
+
+	/**
+	 * Whether two values are the same number, an empty one being 0.
+	 *
+	 * @param mixed $a A value.
+	 * @param mixed $b Another value.
+	 */
+	private static function same_number( $a, $b ): bool {
+		$a = self::is_blank( $a ) ? 0 : $a;
+		$b = self::is_blank( $b ) ? 0 : $b;
+
+		return is_numeric( $a ) && is_numeric( $b ) && (float) $a === (float) $b;
+	}
+
+	/**
+	 * Whether a value is none: null or an empty string.
+	 *
+	 * @param mixed $value Any value.
+	 */
+	private static function is_blank( $value ): bool {
+		return null === $value || '' === $value;
+	}
+
+	/**
+	 * A number as text, without trailing zeros (`2` for `2.0`); null for
+	 * anything that is no number.
+	 *
+	 * @param mixed $value Any value.
+	 */
+	private static function number_text( $value ): ?string {
+		return is_numeric( $value ) ? (string) ( $value + 0 ) : null;
 	}
 
 	/**

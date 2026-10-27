@@ -191,6 +191,37 @@ final class ExportCatalogTest extends TestCase {
 		$this->assertSame( $severity, $by_code[ $code ]['severity'] );
 	}
 
+	/**
+	 * @return array<string, array{0: int, 1: string, 2: array<int, string>, 3: string}> Code, label, vars, severity.
+	 */
+	public static function order_item_and_note_codes(): array {
+		return [
+			'item added'   => [ 9106, 'Item "{name}" added to WC order #{id}.', [ 'name', 'id' ], 'low' ],
+			'item removed' => [ 9107, 'Item removed from WC order #{id}.', [ 'id' ], 'medium' ],
+			'item changed' => [ 9108, 'Item "{name}" changed on WC order #{id}.', [ 'name', 'id' ], 'low' ],
+			'note deleted' => [ 9111, 'Note deleted from WC order #{id}.', [ 'id' ], 'low' ],
+		];
+	}
+
+	/**
+	 * @dataProvider order_item_and_note_codes
+	 *
+	 * @param int                $code     Code.
+	 * @param string             $label    Message template.
+	 * @param array<int, string> $vars     Template vars.
+	 * @param string             $severity Severity.
+	 */
+	public function test_order_item_and_note_codes_are_seeded( int $code, string $label, array $vars, string $severity ): void {
+		$by_code = array_column( $this->seeded_export(), null, 'code' );
+
+		$this->assertArrayHasKey( $code, $by_code );
+		$this->assertSame( $label, $by_code[ $code ]['label'] );
+		$this->assertSame( $vars, $by_code[ $code ]['vars'] );
+		$this->assertSame( 'order', $by_code[ $code ]['object'] );
+		$this->assertSame( 'updated', $by_code[ $code ]['event_type'] );
+		$this->assertSame( $severity, $by_code[ $code ]['severity'] );
+	}
+
 	public function test_the_role_capabilities_code_is_seeded(): void {
 		$by_code = array_column( $this->seeded_export(), null, 'code' );
 

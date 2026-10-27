@@ -1536,6 +1536,29 @@ final class SuppressionRulesTest extends TestCase {
 	}
 
 	/**
+	 * Every item changed in a request is an event of its own: the items of
+	 * one order are never folded into one (their quantities would mix, and
+	 * only the first item's name would stay). An item event that changed
+	 * nothing is none.
+	 */
+	public function test_defaults_keep_one_item_change_per_item_and_drop_empty_ones(): void {
+		$rules = SuppressionRules::defaults();
+
+		$kept = $rules->apply(
+			[
+				self::event( 9108, self::order( 5 ), [ self::change( 'quantity', '1', '3' ) ], [ 'metadata' => [ 'item_id' => 31 ] ] ),
+				self::event( 9108, self::order( 5 ), [ self::change( 'quantity', '2', '1' ) ], [ 'metadata' => [ 'item_id' => 32 ] ] ),
+				self::event( 9108, self::order( 5 ), [], [ 'metadata' => [ 'item_id' => 33 ] ] ),
+				self::event( 9108, self::order( 5 ), null, [ 'metadata' => [ 'item_id' => 34 ] ] ),
+			]
+		);
+
+		$this->assertSame( [ 9108, 9108 ], self::codes( $kept ) );
+		$this->assertSame( [ self::change( 'quantity', '1', '3' ) ], $kept[0]['changes'] );
+		$this->assertSame( [ self::change( 'quantity', '2', '1' ) ], $kept[1]['changes'] );
+	}
+
+	/**
 	 * The edits of an order in one request are one event; an edit that
 	 * changed nothing is none.
 	 */

@@ -24,7 +24,8 @@ class FakeOrder {
 	 * @param array<string, mixed> $data    What `get_data()` returns: the values as stored.
 	 * @param array<string, mixed> $changes What `get_changes()` returns: the values the save is about to write.
 	 * @param array<string, mixed> $details Getter name without `get_` => what it returns (`total`, `currency`,
-	 *                                      `created_via`, `payment_method`); a getter not listed returns ''.
+	 *                                      `created_via`, `payment_method`, `status`, `type`); a getter not
+	 *                                      listed returns '' (the status and type have defaults of their own).
 	 */
 	public function __construct(
 		private int $id,
@@ -88,5 +89,25 @@ class FakeOrder {
 	 */
 	public function get_payment_method() {
 		return $this->details['payment_method'] ?? '';
+	}
+
+	/**
+	 * The status as stored (`edit`), `processing` when the details give none.
+	 * Like WooCommerce's, an unset status reads `pending` for display.
+	 *
+	 * @param string $context `view` or `edit`.
+	 * @return mixed
+	 */
+	public function get_status( string $context = 'view' ) {
+		$status = $this->details['status'] ?? 'processing';
+
+		return 'view' === $context && '' === $status ? 'pending' : $status;
+	}
+
+	/**
+	 * `shop_order` unless the details say otherwise (`shop_order_refund`).
+	 */
+	public function get_type(): string {
+		return $this->details['type'] ?? 'shop_order';
 	}
 }

@@ -197,11 +197,14 @@ final class SuppressionRules {
 			// message of the first and understate the final privilege. A
 			// restore can arrive from up to three hooks of one request. A
 			// product edit can arrive from WordPress's write of the post, its
-			// terms, its status change and two saves of the shop.
+			// terms, its status change and two saves of the shop. Item changes
+			// are not merged either: every item of an order is on the order's
+			// target, and folding two would mix their quantities under the
+			// first one's name.
 			[ 2006, 4001, 2121, 2401, 2011, 9105, 9110, 9001 ],
 			// A menu save without changes of its own stays: it saved the
 			// menu's items.
-			[ 2006, 4001, 2121, 2011, 9105, 9001 ],
+			[ 2006, 4001, 2121, 2011, 9105, 9001, 9108 ],
 			[
 				// Only the note that is nothing but WooCommerce's sentence about the
 				// status change repeats it, whoever it is filed under. Everything
