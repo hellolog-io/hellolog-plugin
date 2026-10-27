@@ -1,5 +1,144 @@
 # Changelog
 
+## [0.7.0] - 2026-10-27
+
+### Added
+- WooCommerce order edits list what changed, with the old and the new
+  value: the order total, the discount and shipping totals, the currency,
+  the payment method, the customer account, the transaction ID and the
+  created, paid and completed dates. The customer's personal details are
+  reported as changed, without their values (see Changed). A status change
+  event lists the status as a change, together with the edits saved with
+  it.
+- Moving an order to the trash, restoring it and deleting it for good are
+  logged on the order's own history, whether the shop keeps its orders in
+  WooCommerce's order tables (HPOS) or as posts, from the order screens or
+  through the REST API. Edits saved in the same request are listed on that
+  event.
+- A new order records its total and currency, the payment method, and where
+  it was created (checkout, the admin screen, the REST API and so on), as
+  WooCommerce records it.
+- Order items are logged on the order: an item added (with the quantity for
+  a product), an item changed (its name, quantity, subtotal, total or total
+  tax; one event per item) and an item removed. Items of refunds and of
+  orders that are still being created are not listed. A checkout retried
+  after a failed payment does not list the order's items again, and an item
+  just added is not also listed as changed by the recalculation that follows
+  it.
+- A deleted order note is logged with its text. Notes WooCommerce deletes
+  while it erases a customer's personal data are marked as such and keep no
+  text.
+- Refunds also record the currency, the reason given and whether the
+  payment gateway returned the money.
+- WooCommerce product and variation edits list what changed, with the old
+  and the new value: the name, status, slug and SKU; the regular and sale
+  price and the sale dates; stock management, the stock quantity, the stock
+  status, backorders and the low stock amount; the catalog visibility, the
+  featured flag, the tax status and the tax class; the weight and the
+  dimensions; the shipping class, the categories and tags, the product image
+  and the gallery images (by name); virtual, downloadable and the purchase
+  note. The short description and the description are reported as changed,
+  without their text. Edits made on the classic product screen are included:
+  a rename, publishing or unpublishing, the slug, the descriptions, the
+  categories and tags, and the product image.
+- Product events name the product as their target (each variation as its
+  own) and link to the product's edit screen. Moving a product to the
+  trash, restoring it and reverting it to auto-draft are recorded on the
+  same history and list the edits saved in the same request. Trashing,
+  restoring or deleting a variable product is one event for the product,
+  not one per variation. A variation deleted for good on its own is logged.
+- Stock reduced by an order is a new event on the product whose stock moved,
+  with the order it belongs to. Stock written without a product save (the
+  restock of a cancelled or failed order or of a refund, an item edited on
+  the order screen, a bulk or quick edit) is logged as a stock quantity
+  change of the product.
+- WooCommerce coupon edits list what changed, with the old and the new
+  value: the code, status, amount, discount type and expiry date; the usage
+  limits per coupon and per user, and the item limit; free shipping,
+  individual use and the exclusion of sale items; the minimum and maximum
+  spend; and the products and categories it applies to or excludes (by
+  name). The description is reported as changed, without its text, and so
+  are the allowed e-mail addresses (see Changed). How often a coupon was
+  used, and by whom, is not logged. Renames, description edits and
+  publishing or unpublishing on the classic coupon screen are included.
+- Coupon events name the coupon by its code, the way WooCommerce stores it
+  (in lower case), so one coupon keeps one name in every event, and link to
+  its edit screen. Moving a coupon to the trash, restoring it and reverting
+  it to auto-draft are recorded on the same history and list the edits saved
+  in the same request.
+- Changes to the bank accounts of the direct bank transfer (BACS) payment
+  method are a new critical event, logged whatever made the change, a
+  visitor's request or a background task included (with that source and no
+  user). Each account is named by the last four digits of its number, never
+  the full number. Added and removed accounts are listed; on a changed
+  account the bank name and the account name show the old and the new value,
+  the account number, sort code, IBAN and BIC only that they changed.
+  Reordering the accounts, or writing a number with other spacing or
+  capitals, is no change.
+- The first save of a payment gateway's settings and the first bank account
+  are logged; they used to be missed because the setting did not exist yet.
+  What WooCommerce writes while it installs is not logged.
+- Tax rates added, changed and deleted are logged as high-severity events.
+  A rate is named by its country, state, rate and name. A change records the
+  rate as it is after the change and which of its columns were written;
+  WooCommerce does not pass the earlier values.
+- Shipping methods added to a shipping zone, removed from it, and turned on
+  or off are logged, named by the method's type and the zone.
+- Webhooks created, changed and deleted are logged as high-severity events,
+  with the name, status, topic, API version, user and the host of the
+  delivery URL. The rest of the URL and the secret never leave the site: a
+  new secret, and a new URL on the same host, are reported only as changed.
+  What WooCommerce saves with each delivery is not logged; a webhook
+  WooCommerce turns off after failed deliveries is logged as a status change
+  with that reason.
+- Product attributes created, changed (the label, slug, type, sort order and
+  archives) and deleted are logged.
+- Tax rates, shipping methods, webhooks and attributes are logged by a new
+  sensor, `woocommerce-config`, which is on by default and can be switched
+  off like the others.
+
+### Changed
+- The customer's personal details on an order (the billing and shipping
+  names, company, addresses, e-mail address and phone number, and the
+  customer's note) are logged as changed, without their values, so no
+  contact detail leaves the site; a new order records none of them. A
+  coupon's allowed e-mail addresses are logged the same way.
+- The product "price changed" (9003) and "stock changed" (9004) events are
+  no longer sent: price and stock changes appear in the product update's
+  list of changes, and stock reduced by an order has its own event.
+- The product update message no longer lists "Fields:"; the event's changes
+  say what changed. A product or coupon save that changes nothing is no
+  longer logged as an update.
+- WooCommerce settings that hold several values, such as a payment
+  gateway's settings, list each changed key as a change of its own
+  (`enabled: no → yes`) instead of one value for the whole setting. Keys
+  that hold credentials (secret and API keys, webhook secrets, private keys,
+  passwords) are reported only as changed, never with their value. Keys
+  starting with an underscore hold bookkeeping (a gateway's own, for
+  instance) and are not listed. List settings, and settings whose name
+  looks like a credential, stay one change.
+- The bank accounts of the bank transfer payment method are reported by the
+  new bank account event instead of as a WooCommerce setting change.
+
+### Fixed
+- An order deleted for good on the classic order screens (orders kept as
+  posts) is logged; it never was.
+- A product or coupon created on the classic screen is logged as created;
+  its first save used to be logged as an update.
+- A product reverted to auto-draft is named by its title instead of
+  WooCommerce's "AUTO-DRAFT" placeholder.
+- WordPress' cleanup of abandoned product and coupon drafts is no longer
+  logged as a deletion.
+
+### Known limitations
+- A deleted tax rate is named by its ID: WooCommerce no longer has the rate
+  when it reports the deletion.
+- A tax rate change that only touches its postcodes or cities is not logged;
+  WooCommerce reports no change for it.
+- A payment gateway's settings saved for the very first time before
+  WooCommerce has loaded its payment gateways (from WP-CLI, for instance)
+  are not logged; later changes are.
+
 ## [0.6.0] - 2026-10-27
 
 ### Added
