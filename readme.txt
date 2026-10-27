@@ -113,11 +113,13 @@ This version requires the HelloLog service release from October 2026 or later.
   menu save reports a rename.
 * New: Changes to helloLOG's own settings (the API key, never its value; IP
   anonymization; sensors turned on or off) are logged as a critical event
-  that can not be turned off. Key changes are sent at once, under the key
-  the site was verified with.
-* New: Deactivating helloLOG is logged and sent right away, before the
-  plugin stops; deactivated network-wide, from every site with a key, within
-  a time limit.
+  that can not be turned off. Key changes are sent at once, with the key in
+  use before the change.
+* Change: Deactivating helloLOG is now sent right away, before the plugin
+  stops, instead of waiting in the queue until the plugin is turned on
+  again; it is logged even when the plugin sensor is off. Deactivated
+  network-wide, it is also sent from the other sites with a key, within a
+  time limit.
 * Change: A status event lists the other changes of the same save; a post
   sent back to draft is logged as an update.
 * Change: A new post saved straight as pending, scheduled or private is
@@ -138,9 +140,10 @@ This version requires the HelloLog service release from October 2026 or later.
   per table; dropping helloLOG's own queue table is not logged.
 * Fix: Saving the API key that is already stored no longer switches logging
   off.
-* Security: Comments, unusual whitespace or the plural DROP TABLES no longer
-  hide a CREATE or DROP TABLE statement; every table a DROP TABLE names is
-  logged, and a statement that can not be read is logged as it is.
+* Security: Comments, unusual whitespace and the plural DROP TABLES no
+  longer hide a CREATE TABLE or DROP TABLE statement from the database
+  sensor; each table a DROP TABLE names is logged, and a statement the sensor
+  can not read precisely is logged as it is, marked as unparsed.
 
 = 0.5.0 =
 * Note: This version requires the HelloLog service release from October

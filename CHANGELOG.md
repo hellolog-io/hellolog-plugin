@@ -43,10 +43,10 @@
   reported as changed, without their words. A watched setting saved for the
   first time is logged too.
 - Role capability edits are a new critical event: which roles were added or
-  removed and which capabilities each role gained or lost, one event per
-  site and request. The capabilities that run the site (settings, users,
-  plugins, themes, code, the network) are listed first. The roles WordPress
-  sets up for a new site are not logged.
+  removed and which capabilities each role gained or lost; edits made
+  together are reported as one event. The capabilities that run the site
+  (settings, users, plugins, themes, code, the network) are listed first.
+  The roles WordPress sets up for a new site are not logged.
 - Term edits (categories, tags, custom taxonomies) list what changed: the
   name, the slug, the parent and the description (as changed, without its
   text). A menu save reports a rename. Term and menu events name the term or
@@ -58,15 +58,14 @@
   verified API key; clearing the key is still logged.
 - A replaced or cleared API key, and a key that is no longer verified (a new
   key, a cleared one, a failed connection test), are reported and sent right
-  away, under the key the site was verified with, so the record reaches the
-  account the site belonged to.
-- Deactivating helloLOG is logged and sent right away, before the plugin
-  stops, together with what is still in the queue (for up to two seconds);
-  events queued later in the same request are sent at its end. Deactivated
-  for a whole network, every other active site that has a key sends its own
-  deactivation as well, as many sites as five seconds allow.
+  away, with the key that was in use before the change.
 
 ### Changed
+- Deactivating helloLOG is now sent right away, before the plugin stops,
+  instead of waiting in the queue until the plugin is turned on again; it is
+  logged even when the plugin sensor is switched off. Deactivated for a whole
+  network, it is also sent from the other sites that have an API key, within
+  a time limit.
 - A status event (published, scheduled, made private and the others) lists
   the other changes made in the same save, including a sticky flag that the
   classic editor, quick edit or bulk edit sets right after the status
@@ -113,11 +112,10 @@
   verified.
 
 ### Security
-- A CREATE TABLE or DROP TABLE statement can no longer slip past the
-  database sensor: comments, unusual whitespace and the plural DROP TABLES
-  no longer hide it, every table a DROP TABLE names is logged (not only the
-  first), and a statement the sensor can not read precisely is logged as it
-  is, marked as unparsed.
+- Comments, unusual whitespace and the plural DROP TABLES no longer hide a
+  CREATE TABLE or DROP TABLE statement from the database sensor; each table
+  a DROP TABLE names is logged (not only the first), and a statement the
+  sensor can not read precisely is logged as it is, marked as unparsed.
 
 ## [0.5.0] - 2026-10-26
 
