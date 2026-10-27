@@ -51,6 +51,63 @@ final class SensorManager {
 		'core-failed-login' => true,
 	];
 
+	/**
+	 * The key ({@see AbstractSensor::key()}) of every sensor the plugin
+	 * ships, core and integrations, in the order they are registered. Known
+	 * without setting any sensor up: until the API key is verified no sensor
+	 * is registered, and the switches are still checked against these.
+	 *
+	 * @var array<int, string>
+	 */
+	public const KEYS = [
+		'core-auth',
+		'core-failed-login',
+		'core-user-profile',
+		'core-content',
+		'core-media',
+		'core-comments',
+		'core-taxonomy',
+		'core-plugins',
+		'core-themes',
+		'core-settings',
+		SelfAuditSensor::KEY,
+		'core-system',
+		'core-files',
+		'core-database',
+		'core-menus',
+		'core-widgets',
+		'core-multisite',
+		'core-request',
+		'core-2fa',
+		'core-app-passwords',
+		'woocommerce-product',
+		'woocommerce-order',
+		'woocommerce-coupon',
+		'woocommerce-customer',
+		'woocommerce-settings',
+		'gravity-forms',
+		'wpforms',
+		'contact-form-7',
+		'fluent-forms',
+		'yoast-seo',
+		'rank-math',
+		'acf',
+		'bbpress',
+		'learndash',
+		'memberpress',
+		'paid-memberships-pro',
+		'edd',
+		'tablepress',
+		'redirection',
+		'mainwp',
+		'termly',
+		'lw-firewall',
+		'lw-seo',
+		'lw-disable',
+		'lw-cookie',
+		'lw-zenadmin',
+	];
+
 	/** @var array<string, AbstractSensor> */
 	private array $sensors = [];
 
@@ -144,8 +201,21 @@ final class SensorManager {
 	}
 
 	/**
-	 * The stored-settings flags of the sensors an operator can switch here
-	 * ({@see self::toggleable()}); flags of any other key are dropped. Made-up
+	 * The keys of the sensors an operator can turn on and off, whether or not
+	 * they are set up in this request: the plugin's own ({@see self::KEYS}),
+	 * then any other registered one, but none that is always on.
+	 *
+	 * @return array<int, string>
+	 */
+	public function switchable(): array {
+		$keys = array_unique( array_merge( self::KEYS, array_map( 'strval', array_keys( $this->sensors ) ) ) );
+
+		return array_values( array_diff( $keys, self::ALWAYS_ON ) );
+	}
+
+	/**
+	 * The stored-settings flags of the sensors an operator can switch
+	 * ({@see self::switchable()}); flags of any other key are dropped. Made-up
 	 * keys saved with real ones would otherwise crowd the real changes out of
 	 * the settings event.
 	 *
@@ -153,6 +223,6 @@ final class SensorManager {
 	 * @return array<string, bool>
 	 */
 	public function known_flags( array $flags ): array {
-		return array_intersect_key( $flags, $this->toggleable() );
+		return array_intersect_key( $flags, array_flip( $this->switchable() ) );
 	}
 }

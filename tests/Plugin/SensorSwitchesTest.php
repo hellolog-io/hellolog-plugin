@@ -13,6 +13,7 @@ namespace HelloLog\Tests\Plugin;
 use HelloLog\Cli\Command;
 use HelloLog\Plugin;
 use HelloLog\Rest\SettingsController;
+use HelloLog\Sensors\SensorManager;
 use HelloLog\Settings\Options;
 use HelloLog\Tests\Support\BootsPlugin;
 use HelloLog\Tests\Support\Wp;
@@ -85,15 +86,71 @@ final class SensorSwitchesTest extends TestCase {
 	}
 
 	/**
-	 * Without a verified key no sensor is set up, so there is nothing to
-	 * switch: the stored switches are left as they are.
+	 * The plugin's sensors are known before any is set up: the list the
+	 * switches are checked against is every sensor the plugin registers.
 	 */
-	public function test_switches_are_left_alone_while_no_sensor_is_set_up(): void {
+	public function test_the_known_sensors_are_the_ones_the_plugin_registers(): void {
+		$this->boot_with( self::key() );
+
+		$registered = array_keys( Plugin::instance()->sensors()->sensors() );
+		$known      = SensorManager::KEYS;
+		sort( $registered );
+		sort( $known );
+
+		$this->assertSame( $registered, $known );
+	}
+
+	/**
+	 * Without a verified key no sensor is set up, yet the settings screen
+	 * offers the switches and saves them, still only the plugin's own.
+	 */
+	public function test_switches_are_offered_and_saved_before_the_key_is_verified(): void {
 		$this->boot_with( self::key(), false, [ Options::KEY_SENSOR_FILTERS => [ 'core-media' => true ] ] );
+		$controller = new SettingsController();
 
-		( new SettingsController() )->save_settings( new \WP_REST_Request( [ 'sensorFilters' => [ 'core-auth' => true ] ] ) );
+		$listed = array_column( $controller->get_settings()->get_data()['sensors'], 'key' );
+		$this->assertContains( 'core-auth', $listed );
+		$this->assertContains( 'woocommerce-order', $listed );
+		$this->assertNotContains( 'core-self-audit', $listed );
 
-		$this->assertSame( [ 'core-media' => true ], Wp::$options[1][ Options::KEY_SENSOR_FILTERS ] );
+		$controller->save_settings(
+			new \WP_REST_Request(
+				[
+					'sensorFilters' => [
+						'core-auth' => true,
+						'junk-1'    => true,
+					],
+				]
+			)
+		);
+
+		$this->assertSame( [ 'core-auth' => true ], Wp::$options[1][ Options::KEY_SENSOR_FILTERS ] );
+	}
+
+	public function test_the_command_line_switches_a_sensor_before_the_key_is_verified(): void {
+		$this->boot_with( self::key(), false );
+
+		( new Command() )->disable_sensor( [ 'core-media' ] );
+		( new Command() )->enable_sensor( [ 'core-request' ] );
+
+		$this->assertTrue( Wp::$options[1][ Options::KEY_SENSOR_FILTERS ]['core-media'] );
+		$this->assertFalse( Wp::$options[1][ Options::KEY_SENSOR_FILTERS ]['core-request'] );
+		$this->assertSame( [ 'Sensor core-media disabled.', 'Sensor core-request enabled.' ], \WP_CLI::$successes );
+	}
+
+	/**
+	 * A sensor that is off by default runs only when the settings say so:
+	 * turning it on stores that, instead of forgetting the switch.
+	 */
+	public function test_the_command_line_turns_on_a_sensor_that_is_off_by_default(): void {
+		$this->boot_with( self::key() );
+
+		( new Command() )->enable_sensor( [ 'core-failed-login' ] );
+
+		$stored = Wp::$options[1][ Options::KEY_SENSOR_FILTERS ];
+		$this->assertFalse( $stored['core-failed-login'] );
+		$this->assertNotContains( 'core-failed-login', SensorManager::disabled_by( $stored ) );
+		$this->assertSame( [ 'Sensor core-failed-login enabled.' ], \WP_CLI::$successes );
 	}
 
 	public function test_the_command_line_refuses_a_sensor_the_plugin_does_not_have(): void {

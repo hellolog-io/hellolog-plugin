@@ -80,6 +80,32 @@ final class SensorManagerTest extends TestCase {
 		);
 	}
 
+	/**
+	 * Until the API key is verified no sensor is registered, yet the
+	 * plugin's own can be switched; a sensor registered by other code joins
+	 * them.
+	 */
+	public function test_the_plugins_sensors_can_be_switched_before_any_is_registered(): void {
+		$manager = new SensorManager();
+
+		$this->assertContains( 'core-auth', $manager->switchable() );
+		$this->assertContains( 'woocommerce-order', $manager->switchable() );
+		$this->assertNotContains( 'core-self-audit', $manager->switchable() );
+		$this->assertSame(
+			[ 'core-auth' => true ],
+			$manager->known_flags(
+				[
+					'core-auth'       => true,
+					'junk-1'          => true,
+					'core-self-audit' => true,
+				]
+			)
+		);
+
+		$manager->register( $this->sensor( 'extra-sensor' ) );
+		$this->assertContains( 'extra-sensor', $manager->switchable() );
+	}
+
 	public function test_the_noisy_sensors_are_off_by_default(): void {
 		$this->assertSame(
 			[

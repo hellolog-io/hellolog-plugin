@@ -292,14 +292,13 @@ final class Command {
 		if ( $disable && in_array( $key, SensorManager::ALWAYS_ON, true ) ) {
 			WP_CLI::error( sprintf( 'Sensor %s logs changes to helloLOG itself and can not be turned off.', $key ) );
 		}
-		if ( ! array_key_exists( $key, Plugin::instance()->sensors()->toggleable() ) ) {
+		if ( ! in_array( $key, Plugin::instance()->sensors()->switchable(), true ) ) {
 			WP_CLI::error( sprintf( 'Unknown sensor %s. Run `wp hellolog sensors` to list them.', $key ) );
 		}
+		// Stored either way: a sensor that is off by default runs only when
+		// the settings say so (false).
 		$filters         = (array) get_option( Options::KEY_SENSOR_FILTERS, [] );
 		$filters[ $key ] = $disable;
-		if ( ! $disable ) {
-			unset( $filters[ $key ] );
-		}
 		update_option( Options::KEY_SENSOR_FILTERS, $filters );
 		WP_CLI::success( sprintf( 'Sensor %s %s.', $key, $disable ? 'disabled' : 'enabled' ) );
 	}

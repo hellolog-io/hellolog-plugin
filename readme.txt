@@ -128,7 +128,8 @@ This version requires the HelloLog service release from October 2026 or later.
   their own; the password is never recorded.
 * Change: A term save that changed nothing is no longer logged.
 * Change: The settings screen and WP-CLI accept only the plugin's own
-  sensors; `wp hellolog sensors` shows which sensors run, defaults included.
+  sensors, also before the key is verified; `wp hellolog sensors` shows
+  which sensors run, defaults included.
 * Fix: Plugin and theme installs are logged; uploading over an installed one
   is logged as an update.
 * Fix: Deleted plugins and themes are named by their real name.
@@ -140,6 +141,7 @@ This version requires the HelloLog service release from October 2026 or later.
   per table; dropping helloLOG's own queue table is not logged.
 * Fix: Saving the API key that is already stored no longer switches logging
   off.
+* Fix: `wp hellolog enable-sensor` turns on a sensor that is off by default.
 * Security: Comments (version comments included), unusual whitespace (a
   no-break space included) and the plural DROP TABLES no longer hide a
   CREATE TABLE or DROP TABLE statement from the database sensor; each table

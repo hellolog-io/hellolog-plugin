@@ -108,12 +108,9 @@ final class SettingsController {
 					$clean[ sanitize_key( $key ) ] = (bool) $disabled;
 				}
 			}
-			// Only the sensors the plugin has can be switched; without a
-			// verified key none is set up, and the stored switches stay.
-			$sensors = Plugin::instance()->sensors();
-			if ( [] !== $sensors->toggleable() ) {
-				update_option( Options::KEY_SENSOR_FILTERS, $sensors->known_flags( $clean ) );
-			}
+			// Only the sensors the plugin has can be switched, known also
+			// before the key is verified and any sensor is set up.
+			update_option( Options::KEY_SENSOR_FILTERS, Plugin::instance()->sensors()->known_flags( $clean ) );
 		}
 
 		return $this->get_settings();
@@ -124,9 +121,8 @@ final class SettingsController {
 	 */
 	private function sensor_descriptions( Options $opts ): array {
 		$disabled = $opts->sensor_filters();
-		$sensors  = Plugin::instance()->sensors()->toggleable();
 		$out      = [];
-		foreach ( $sensors as $key => $_sensor ) {
+		foreach ( Plugin::instance()->sensors()->switchable() as $key ) {
 			$out[] = [
 				'key'     => $key,
 				'label'   => ucwords( str_replace( [ '-', '_' ], ' ', $key ) ),

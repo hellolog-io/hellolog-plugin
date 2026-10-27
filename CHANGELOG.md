@@ -82,9 +82,10 @@
 - A term save that changed nothing is no longer logged, and several edits of
   one term in a request are one event.
 - The settings screen, `wp hellolog enable-sensor` and
-  `wp hellolog disable-sensor` accept only the plugin's own sensors.
-  `wp hellolog sensors` shows whether each sensor runs, including the ones
-  that are off by default.
+  `wp hellolog disable-sensor` accept only the plugin's own sensors, also
+  before the API key is verified, when the settings screen now offers the
+  switches too. `wp hellolog sensors` shows whether each sensor runs,
+  including the ones that are off by default.
 
 ### Fixed
 - Installing a plugin or theme is logged; it never was. Uploading a zip over
@@ -110,6 +111,9 @@
   `wp hellolog set-token`) no longer switches logging off until the key is
   verified again, and `wp hellolog set-token` then says whether that key is
   verified.
+- `wp hellolog enable-sensor` turns on a sensor that is off by default (the
+  request and failed-login sensors); it used to leave it off while saying it
+  was enabled.
 
 ### Security
 - Comments (including the version comments MySQL and MariaDB run, with or
