@@ -27,7 +27,8 @@ defined( 'ABSPATH' ) || exit;
  * (9100) is told when the request, or the Action Scheduler job that created
  * it, ends, with the total, currency, payment method and channel it has
  * then: WooCommerce announces an order made through its REST API or
- * `wc_create_order()` before it calculates its totals. An order note
+ * `wc_create_order()` before it calculates its totals. A long run that
+ * creates more than 50 tells the oldest at once. An order note
  * event also carries the text of the note and its kind, see
  * {@see self::note_type()}; a deleted note (9111) its text, unless the note
  * goes with the erasure of the customer's personal data.
@@ -145,6 +146,14 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	/** What WooCommerce puts in front of a status where it stores it as a post status. */
 	private const STATUS_PREFIX = 'wc-';
 
+	/**
+	 * Most new orders held at once (see {@see self::on_created()}). A long
+	 * run (a bulk import from the command line) tells the oldest at once
+	 * beyond it: by the time this many more orders were created, it is
+	 * finished.
+	 */
+	private const MAX_HELD_ORDERS = 50;
+
 	/** Longest note text sent, in characters, the ellipsis included. */
 	private const MAX_NOTE_LENGTH = 500;
 
@@ -197,7 +206,8 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 
 	/**
 	 * New orders, held until the request (or the job that created them)
-	 * ends: `site:order id` => the site, how many Action Scheduler jobs were
+	 * ends, oldest first, at most {@see self::MAX_HELD_ORDERS}:
+	 * `site:order id` => the site, how many Action Scheduler jobs were
 	 * running (see {@see ActionSchedulerContext::depth()}) and the creation
 	 * as the order told it when it was announced.
 	 *
@@ -420,7 +430,9 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * held until the request (or the Action Scheduler job that created it)
 	 * ends, and told then with what the order holds at that point, see
 	 * {@see self::flush_new_orders()}. What the order holds now is kept for
-	 * an order that can no longer be loaded then.
+	 * an order that can no longer be loaded then. Beyond
+	 * {@see self::MAX_HELD_ORDERS} held orders the oldest is told at once,
+	 * with what it holds then, so a long run never holds thousands of them.
 	 *
 	 * @param mixed $order_id Order id.
 	 * @param mixed $order    Order object the hook passed, if any.
@@ -435,12 +447,21 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 				return;
 			}
 
-			$this->created[ self::state_key( $order_id ) ] = [
+			// An order announced again is the newest.
+			$key = self::state_key( $order_id );
+			unset( $this->created[ $key ] );
+			$this->created[ $key ] = [
 				'blog'     => self::blog_id(),
 				'depth'    => ActionSchedulerContext::depth(),
 				'order_id' => $order_id,
 				'fields'   => $fields,
 			];
+
+			$over = count( $this->created ) - self::MAX_HELD_ORDERS;
+			foreach ( array_slice( $this->created, 0, max( 0, $over ), true ) as $oldest => $held ) {
+				unset( $this->created[ $oldest ] );
+				$this->tell_held( $held );
+			}
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9100, [ 'order_id' => self::id_of( $order_id ) ] );
 		}
@@ -1127,12 +1148,22 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 				continue;
 			}
 			unset( $this->created[ $key ] );
+			$this->tell_held( $held );
+		}
+	}
 
-			try {
-				$this->on_site( $held['blog'], fn() => $this->emit( 9100, $this->final_creation_fields( $held['order_id'], $held['fields'] ) ) );
-			} catch ( Throwable $e ) {
-				$this->report_failure( $e, 9100, [ 'order_id' => $held['order_id'] ] );
-			}
+	/**
+	 * Tell one held new order on its site, read as it is now (see
+	 * {@see self::final_creation_fields()}); a failure is reported, never
+	 * thrown.
+	 *
+	 * @param array{blog: int, depth: int, order_id: int, fields: array<string, mixed>} $held The held order.
+	 */
+	private function tell_held( array $held ): void {
+		try {
+			$this->on_site( $held['blog'], fn() => $this->emit( 9100, $this->final_creation_fields( $held['order_id'], $held['fields'] ) ) );
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9100, [ 'order_id' => $held['order_id'] ] );
 		}
 	}
 

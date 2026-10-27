@@ -268,6 +268,37 @@ final class WooCommerceOrderSensorTest extends TestCase {
 	}
 
 	/**
+	 * A long run (a bulk import from the command line) holds at most 50 new
+	 * orders: once more are held, the oldest is told at once, with the total
+	 * it has by then (it was finished long before 50 more orders were
+	 * created). The rest are told when the request ends.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_long_run_holds_at_most_fifty_new_orders(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		for ( $id = 1; $id <= 60; $id++ ) {
+			OrderNoteState::$orders[ $id ] = $this->order( $id, [], [], [ 'total' => $id . '.00' ] );
+			$sensor->on_created( $id, $this->order( $id, [], [], [ 'total' => '0' ] ) );
+		}
+
+		$this->assertSame( range( 1, 10 ), array_map( static fn( array $call ): int => $call[1]['id'], $recorder->calls ) );
+		$this->assertSame(
+			array_map( static fn( int $id ): string => $id . '.00', range( 1, 10 ) ),
+			array_map( static fn( array $call ): string => $call[1]['vars']['total'], $recorder->calls )
+		);
+
+		$sensor->flush_new_orders();
+		$this->assertSame( range( 1, 60 ), array_map( static fn( array $call ): int => $call[1]['id'], $recorder->calls ) );
+		$this->assertSame( '60.00', $recorder->calls[59][1]['vars']['total'] );
+		$this->assertSame( [], OrderNoteState::$fired );
+	}
+
+	/**
 	 * An order the request created before a job runs inside it is the
 	 * request's: the job's end does not tell it, the request's end does.
 	 *
