@@ -291,6 +291,53 @@ final class SelfAuditSensorTest extends TestCase {
 	}
 
 	/**
+	 * The flag is read before it is deleted, per site: what it held decides
+	 * whether its deletion turned a verified key off. A read that fails is
+	 * reported, and the deletion is taken for one that did.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_flag_that_can_not_be_read_before_its_deletion_is_reported_and_taken_as_on(): void {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+		require_once __DIR__ . '/Fixtures/wordpress-option-functions.php';
+		require_once __DIR__ . '/../../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../../Events/Fixtures/wordpress-functions.php';
+		WpState::$option_reads_throw = true;
+		$recorder                    = $this->recorder();
+		$sensor                      = new SelfAuditSensor( $recorder );
+
+		$sensor->on_delete( Options::KEY_TOKEN_VERIFIED );
+		$sensor->on_deleted( Options::KEY_TOKEN_VERIFIED );
+
+		$this->assertSame( 'hellolog_dispatch_failed', WpCalls::$actions[0][0] );
+		$this->assertSame( [ 'option' => Options::KEY_TOKEN_VERIFIED ], WpCalls::$actions[0][1][2] );
+		$this->assertSame( [ 6600 ], array_column( $recorder->calls, 0 ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_flag_noted_on_another_site_is_not_used(): void {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+		require_once __DIR__ . '/Fixtures/wordpress-option-functions.php';
+		WpState::$options[1][ Options::KEY_TOKEN_VERIFIED ] = '0';
+		WpState::$options[2][ Options::KEY_TOKEN_VERIFIED ] = '1';
+		$recorder = $this->recorder();
+		$sensor   = new SelfAuditSensor( $recorder );
+
+		$sensor->on_delete( Options::KEY_TOKEN_VERIFIED );
+		switch_to_blog( 2 );
+		$sensor->on_delete( Options::KEY_TOKEN_VERIFIED );
+		$sensor->on_deleted( Options::KEY_TOKEN_VERIFIED );
+		restore_current_blog();
+		$sensor->on_deleted( Options::KEY_TOKEN_VERIFIED );
+
+		$this->assertCount( 1, $recorder->calls, 'Site 2 held a verified flag; site 1 did not.' );
+	}
+
+	/**
 	 * The delivery sends the queue of the site it was made on, under that
 	 * site's key: a key written on another site of the network is queued
 	 * there like any event, never sent under this key.
@@ -444,6 +491,7 @@ final class SelfAuditSensorTest extends TestCase {
 		$this->assertSame( 3, WpState::$actions['updated_option']['accepted_args'] );
 		$this->assertSame( 2, WpState::$actions['added_option']['accepted_args'] );
 		$this->assertSame( 1, WpState::$actions['deleted_option']['accepted_args'] );
+		$this->assertSame( 1, WpState::$actions['delete_option']['accepted_args'] );
 	}
 
 	/**

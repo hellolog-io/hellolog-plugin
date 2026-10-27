@@ -56,6 +56,23 @@ final class SelfAuditDeliveryTest extends TestCase {
 
 		$this->assertSame( '1', Wp::$options[1][ Options::KEY_TOKEN_VERIFIED ] );
 		$this->assertSame( [], $this->sent() );
+		$this->assertStringContainsString( 'it is verified', \WP_CLI::$successes[0] );
+	}
+
+	/**
+	 * The command says what is true: the key it already has may not be
+	 * verified at all.
+	 */
+	public function test_setting_an_unverified_key_again_says_it_is_not_verified(): void {
+		$this->load_wordpress();
+		require_once __DIR__ . '/../Cli/Fixtures/wp-cli.php';
+		$this->boot_with( self::key(), false );
+
+		( new Command() )->set_token( [ self::key() ] );
+
+		$this->assertSame( '0', Wp::$options[1][ Options::KEY_TOKEN_VERIFIED ] );
+		$this->assertStringContainsString( 'it is not verified', \WP_CLI::$successes[0] );
+		$this->assertStringNotContainsString( 'it is verified', \WP_CLI::$successes[0] );
 	}
 
 	public function test_a_replaced_key_is_reported_under_the_key_it_replaced(): void {
@@ -155,11 +172,51 @@ final class SelfAuditDeliveryTest extends TestCase {
 		$this->assertSame( [], $this->sent() );
 	}
 
+	/**
+	 * With the sensors running (the request started verified), a flag that
+	 * is off being turned on is not reported, while turning it off again is.
+	 */
 	public function test_turning_the_key_on_is_not_reported(): void {
 		$this->load_wordpress();
-		$this->boot_with( self::key(), true, [ Options::KEY_TOKEN_VERIFIED => '0' ] );
+		$plugin = $this->boot_with( self::key() );
+		$this->assertArrayHasKey( 'core-self-audit', $plugin->sensors()->sensors() );
+		Wp::$options[1][ Options::KEY_TOKEN_VERIFIED ] = '0';
 
 		( new Options() )->mark_active( true );
+		$this->assertSame( [], $this->sent() );
+
+		( new Options() )->mark_active( false );
+		$this->assertSame( [ 6600 ], $this->codes_sent_with( self::key() ) );
+	}
+
+	/**
+	 * Deleting the flag stops the sensors as turning it off does.
+	 */
+	public function test_a_deleted_verified_flag_is_reported_at_once(): void {
+		$this->load_wordpress();
+		$this->boot_with( self::key() );
+
+		delete_option( Options::KEY_TOKEN_VERIFIED );
+
+		$this->assertSame( [ 6600 ], $this->codes_sent_with( self::key() ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'key_verified',
+					'old'   => 'yes',
+					'new'   => 'no',
+				],
+			],
+			$this->sent()[0]['events'][0]['changes']
+		);
+	}
+
+	public function test_deleting_a_flag_that_was_already_off_is_not_reported(): void {
+		$this->load_wordpress();
+		$this->boot_with( self::key() );
+		Wp::$options[1][ Options::KEY_TOKEN_VERIFIED ] = '0';
+
+		delete_option( Options::KEY_TOKEN_VERIFIED );
 
 		$this->assertSame( [], $this->sent() );
 	}

@@ -140,8 +140,12 @@ final class Command {
 		}
 		// A new key must be verified before sensors run; the key already
 		// stored stays verified.
-		if ( ! ( new Options() )->set_token( sanitize_text_field( $token ) ) ) {
-			WP_CLI::success( 'Token unchanged (last 4: ' . substr( $token, -4 ) . '); it stays verified.' );
+		$opts = new Options();
+		if ( ! $opts->set_token( sanitize_text_field( $token ) ) ) {
+			WP_CLI::success(
+				'Token unchanged (last 4: ' . substr( $token, -4 ) . '); '
+				. ( $opts->is_active() ? 'it is verified.' : 'it is not verified: run `wp hellolog test` to verify and activate.' )
+			);
 			return;
 		}
 		WP_CLI::success(

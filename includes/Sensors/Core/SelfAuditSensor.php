@@ -45,9 +45,11 @@ defined( 'ABSPATH' ) || exit;
  *     which keeps at most 50.
  *
  *   - the API key no longer verified (`key_verified`, `yes` to `no`): a new
- *     key, a cleared one, a failed connection test. The daily recheck
- *     turning it off is the backend's answer, not a change somebody made,
- *     and is not reported; neither is a key turned on.
+ *     key, a cleared one, a failed connection test, the flag deleted. The
+ *     daily recheck turning it off is the backend's answer, not a change
+ *     somebody made, and is not reported; neither is a key turned on. Before
+ *     the flag is deleted it is read, per site, so only a flag that was on is
+ *     reported; one that can not be read is taken as on.
  *
  * Only the API key is told on its first write and on its deletion: the
  * other settings are first written with the defaults helloLOG seeds on a
@@ -91,6 +93,14 @@ final class SelfAuditSensor extends AbstractSensor {
 	private const SENT_AT_ONCE = [ Options::KEY_TOKEN, Options::KEY_TOKEN_VERIFIED ];
 
 	/**
+	 * The verified flag read just before it is deleted, per site; null when
+	 * it could not be read.
+	 *
+	 * @var array<int, mixed>
+	 */
+	private array $deleting = [];
+
+	/**
 	 * @param EventDispatcher    $dispatcher Where events are dispatched.
 	 * @param FinalDelivery|null $delivery   Sends events at once, bound to the key the request started with;
 	 *                                       without it every event is only dispatched.
@@ -112,6 +122,7 @@ final class SelfAuditSensor extends AbstractSensor {
 	public function boot(): void {
 		add_action( 'updated_option', [ $this, 'on_update' ], 10, 3 );
 		add_action( 'added_option', [ $this, 'on_add' ], 10, 2 );
+		add_action( 'delete_option', [ $this, 'on_delete' ], 10, 1 );
 		add_action( 'deleted_option', [ $this, 'on_deleted' ], 10, 1 );
 	}
 
@@ -138,14 +149,42 @@ final class SelfAuditSensor extends AbstractSensor {
 	}
 
 	/**
-	 * An option deleted: only the API key is told. The hook fires only when
-	 * a row was removed, so a key was stored; its value is gone, and only
-	 * that there was one matters.
+	 * An option about to be deleted: the verified flag is read while it is
+	 * still there.
+	 */
+	public function on_delete( string $option ): void {
+		if ( Options::KEY_TOKEN_VERIFIED !== $option ) {
+			return;
+		}
+
+		$blog_id = self::blog_id();
+		try {
+			$this->deleting[ $blog_id ] = function_exists( 'get_option' ) ? get_option( $option, false ) : null;
+		} catch ( Throwable $e ) {
+			$this->deleting[ $blog_id ] = null;
+			$this->report_failure( $e, 6600, [ 'option' => $option ] );
+		}
+	}
+
+	/**
+	 * An option deleted: the API key and the verified flag are told. The hook
+	 * fires only when a row was removed, so a key was stored; its value is
+	 * gone, and only that there was one matters. The flag counts as what it
+	 * held just before; when that is not known, as on.
 	 */
 	public function on_deleted( string $option ): void {
 		if ( Options::KEY_TOKEN === $option ) {
 			$this->log( $option, SensitiveOption::REDACTED, null );
+			return;
 		}
+		if ( Options::KEY_TOKEN_VERIFIED !== $option || self::in_recheck() ) {
+			return;
+		}
+
+		$blog_id = self::blog_id();
+		$old     = $this->deleting[ $blog_id ] ?? null;
+		unset( $this->deleting[ $blog_id ] );
+		$this->log( $option, $old ?? true, null );
 	}
 
 	/**
@@ -201,6 +240,13 @@ final class SelfAuditSensor extends AbstractSensor {
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 6600, [ 'option' => $option ] );
 		}
+	}
+
+	/**
+	 * The current site; 0 outside WordPress.
+	 */
+	private static function blog_id(): int {
+		return function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
 	}
 
 	/**
