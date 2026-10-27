@@ -51,7 +51,9 @@ defined( 'ABSPATH' ) || exit;
  * leaves `new` or `auto-draft` is created, once per request whichever way it
  * is told. The creation tells nothing more: no save of that product in the
  * same request is an edit, nor any save of a product WordPress still keeps as
- * a placeholder, or of a variation of one.
+ * a placeholder, or of a variation of one. A variation the shop inserts is
+ * created on its own target, unless its product is being made in the same
+ * request: the product's creation says it.
  *
  * Trashing, restoring or deleting a variable product does the same to every
  * variation, before or after the product (the shop's REST API deletes the
@@ -310,6 +312,7 @@ final class WooCommerceProductSensor extends AbstractSensor {
 
 	public function boot(): void {
 		add_action( 'woocommerce_new_product', [ $this, 'on_created' ], 10, 2 );
+		add_action( 'woocommerce_new_product_variation', [ $this, 'on_variation_created' ], 10, 2 );
 		// Variations fire this hook too.
 		add_action( 'woocommerce_before_product_object_save', [ $this, 'on_before_save' ], 10, 1 );
 		add_action( 'pre_post_update', [ $this, 'on_before_post_update' ], 10, 2 );
@@ -372,6 +375,37 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			$this->emit_created( $product_id, null === $product ? '' : self::name_of( $product ), self::PRODUCT_TYPE );
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9000, [ 'product_id' => self::id_of( $product_id ) ] );
+		}
+	}
+
+	/**
+	 * WooCommerce inserted a variation (the "Add variation" button, the
+	 * variations generated from the attributes, the REST API, an import): a
+	 * creation on the variation's own target, unless its product is being
+	 * made in the same request (see {@see self::in_creation()}), whose
+	 * creation says it. The saves of the variation that follow in the
+	 * request are part of making it.
+	 *
+	 * @param mixed $variation_id Variation id.
+	 * @param mixed $variation    The variation, if the hook passed it.
+	 */
+	public function on_variation_created( $variation_id, $variation = null ): void {
+		$product_id = 0;
+		try {
+			$product_id = self::id_of( $variation_id );
+			if ( $product_id <= 0 || $this->is_created( $product_id ) ) {
+				return;
+			}
+
+			$variation = $this->product_object( $product_id, $variation );
+			$parent_id = null !== $variation && method_exists( $variation, 'get_parent_id' ) ? max( 0, (int) $variation->get_parent_id() ) : 0;
+			if ( $this->in_creation( $product_id, $parent_id ) ) {
+				return;
+			}
+
+			$this->emit_created( $product_id, null === $variation ? '' : self::name_of( $variation ), self::VARIATION_TYPE, $parent_id );
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9000, [ 'product_id' => $product_id ] );
 		}
 	}
 
@@ -982,15 +1016,17 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Note the product as created in this request and dispatch its creation.
+	 * Note the product or variation as created in this request and dispatch
+	 * its creation.
 	 *
-	 * @param int    $product_id Product id.
+	 * @param int    $product_id Product or variation id.
 	 * @param string $name       Its name.
 	 * @param string $type       Its post type.
+	 * @param int    $parent_id  Id of the variation's parent; 0 for a product.
 	 */
-	private function emit_created( int $product_id, string $name, string $type ): void {
+	private function emit_created( int $product_id, string $name, string $type, int $parent_id = 0 ): void {
 		$this->created[ self::state_key( $product_id ) ] = true;
-		$this->emit( 9000, $this->product_fields( $product_id, $name, 0, $type ) );
+		$this->emit( 9000, $this->product_fields( $product_id, $name, $parent_id, $type ) );
 	}
 
 	/**

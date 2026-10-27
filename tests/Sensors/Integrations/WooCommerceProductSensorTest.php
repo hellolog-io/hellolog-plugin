@@ -460,6 +460,75 @@ final class WooCommerceProductSensorTest extends TestCase {
 	}
 
 	/**
+	 * A variation the shop inserts (the "Add variation" button, variations
+	 * generated from the attributes, the REST API, an import) is a creation
+	 * on its own target, linked to its product's screen; the saves that
+	 * follow in the same request are part of making it.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_variation_inserted_by_the_shop_is_a_creation_on_its_own_target(): void {
+		$this->stubs();
+		WpState::$posts[50] = self::variable_product();
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceProductSensor( $recorder );
+		$sensor->on_variation_created( 55, new FakeProduct( 55, self::stored( [ 'name' => 'Hoodie - Blue' ] ), [], 50 ) );
+		$sensor->on_before_save( new FakeProduct( 55, self::stored( [ 'name' => 'Hoodie - Blue' ] ), [ 'regular_price' => '1500' ], 50 ) );
+
+		$this->assertSame( [ 9000 ], array_column( $recorder->calls, 0 ) );
+		$fields = $recorder->calls[0][1];
+		$this->assertSame( self::target( '55', 'Hoodie - Blue' ), $fields['target'] );
+		$this->assertSame( [ 'edit' => 'https://example.test/wp-admin/post.php?post=50&action=edit' ], $fields['links'] );
+		$this->assertSame(
+			[
+				'id'   => 55,
+				'type' => 'product_variation',
+			],
+			$fields['post']
+		);
+		$this->assertSame(
+			[
+				'product_id' => 55,
+				'parent_id'  => 50,
+			],
+			$fields['metadata']
+		);
+		$this->assertSame( 'WC product "Hoodie - Blue" created.', $this->build( $recorder )[0]['message'] );
+	}
+
+	/**
+	 * The variations of a product created in the same request (an import of
+	 * a variable product, the REST API) or of one WordPress still keeps as a
+	 * placeholder (variations added before the product's first save) are
+	 * part of making it: the product's creation says it.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_variation_of_a_product_being_created_is_no_creation_of_its_own(): void {
+		$this->stubs();
+		WpState::$posts[50] = self::variable_product();
+		WpState::$posts[60] = self::variable_product(
+			[
+				'ID'          => 60,
+				'post_status' => 'auto-draft',
+				'post_title'  => 'AUTO-DRAFT',
+			]
+		);
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceProductSensor( $recorder );
+		$sensor->on_created( 50, new FakeProduct( 50, self::stored( [ 'name' => 'Hoodie' ] ) ) );
+		$sensor->on_variation_created( 55, new FakeProduct( 55, self::stored( [ 'name' => 'Hoodie - Blue' ] ), [], 50 ) );
+		$sensor->on_variation_created( '65', new FakeProduct( 65, self::stored( [ 'name' => 'AUTO-DRAFT' ] ), [], 60 ) );
+
+		$this->assertSame( [ 9000 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( '50', $recorder->calls[0][1]['target']['id'] );
+	}
+
+	/**
 	 * Core gives no edit link when nobody who may edit the product is logged
 	 * in (a cron job, a gateway callback): the link is built anyway, to the
 	 * parent's screen for a variation.
@@ -1675,6 +1744,7 @@ final class WooCommerceProductSensorTest extends TestCase {
 	public static function product_hooks(): array {
 		return [
 			'created'      => [ 9000, 'on_created' ],
+			'variation'    => [ 9000, 'on_variation_created' ],
 			'status'       => [ 9001, 'on_post_status' ],
 			'post updated' => [ 9001, 'on_post_updated' ],
 			'terms set'    => [ 9001, 'on_terms_set' ],
@@ -1724,7 +1794,8 @@ final class WooCommerceProductSensorTest extends TestCase {
 		$sensor   = new WooCommerceProductSensor( $recorder );
 		switch ( $handler ) {
 			case 'on_created':
-				$sensor->on_created( 5, $product );
+			case 'on_variation_created':
+				$sensor->$handler( 5, $product );
 				break;
 			case 'on_post_status':
 				$sensor->on_post_status( 'draft', 'publish', $broken );
@@ -1791,8 +1862,11 @@ final class WooCommerceProductSensorTest extends TestCase {
 		$sensor   = new WooCommerceProductSensor( $recorder );
 		$sensor->on_created( '5', new FakeProduct( 5, self::stored() ) );
 		$sensor->on_delete_post( '6', self::post( [ 'ID' => 6 ] ) );
+		$sensor->on_variation_created( '7', new FakeProduct( 7, self::stored( [ 'name' => 'Hoodie - Blue' ] ), [], 50 ) );
 
 		$sensor->on_created( [], null );
+		$sensor->on_variation_created( null, null );
+		$sensor->on_variation_created( 1.5, new \stdClass() );
 		$sensor->on_before_save( null );
 		$sensor->on_before_save( 'product' );
 		$sensor->on_before_save(
@@ -1840,9 +1914,10 @@ final class WooCommerceProductSensorTest extends TestCase {
 		$sensor->flush_open_saves();
 		$sensor->flush_job_saves();
 
-		$this->assertSame( [ 9000, 9002 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ 9000, 9002, 9000 ], array_column( $recorder->calls, 0 ) );
 		$this->assertSame( '5', $recorder->calls[0][1]['target']['id'] );
 		$this->assertSame( '6', $recorder->calls[1][1]['target']['id'] );
+		$this->assertSame( '7', $recorder->calls[2][1]['target']['id'] );
 		$this->assertSame( [], WpCalls::$actions );
 	}
 
@@ -1862,6 +1937,7 @@ final class WooCommerceProductSensorTest extends TestCase {
 		// are written (priority 1).
 		$expected = [
 			'woocommerce_new_product'                => [ 'on_created', 2, 10 ],
+			'woocommerce_new_product_variation'      => [ 'on_variation_created', 2, 10 ],
 			'woocommerce_before_product_object_save' => [ 'on_before_save', 1, 10 ],
 			'pre_post_update'                        => [ 'on_before_post_update', 2, 10 ],
 			'transition_post_status'                 => [ 'on_post_status', 3, 10 ],
