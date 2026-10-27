@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Sensors\Core;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
@@ -18,6 +19,8 @@ use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\SettingsSensor;
 use HelloLog\Sensors\SensitiveOption;
 use HelloLog\Tests\Events\Fixtures\WpCalls;
+use HelloLog\Tests\Sensors\Core\Fixtures\BuildingRecorder;
+use HelloLog\Tests\Sensors\Core\Fixtures\Hooks;
 use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
 use HelloLog\Tests\Sensors\Fixtures\RequestState;
 use PHPUnit\Framework\TestCase;
@@ -953,6 +956,99 @@ final class SettingsSensorTest extends TestCase {
 		foreach ( $shutdown as $registration ) {
 			$this->assertSame( [ $sensor, 'emit_role_changes' ], $registration['callback'] );
 		}
+
+		// Before a job begins, and when it ends, before its context closes
+		// at PHP_INT_MAX.
+		$this->assertSame( [ 10, 0 ], array_values( WpState::$actions['action_scheduler_before_execute'] ) );
+		foreach ( [ 'action_scheduler_after_execute', 'action_scheduler_failed_execution' ] as $hook ) {
+			$this->assertSame( [ PHP_INT_MAX - 1, 0 ], array_values( WpState::$actions[ $hook ] ), $hook );
+		}
+	}
+
+	/**
+	 * @return array<string, array{0: string}>
+	 */
+	public static function job_ends(): array {
+		return [
+			'a job that succeeds' => [ 'action_scheduler_after_execute' ],
+			'a job that fails'    => [ 'action_scheduler_failed_execution' ],
+		];
+	}
+
+	/**
+	 * Role edits an Action Scheduler job makes go out when the job ends,
+	 * while the job is still the context: the event comes from the job and
+	 * keeps who set it in motion, instead of reading as the doing of whoever
+	 * loaded the page that started the queue runner.
+	 *
+	 * @dataProvider job_ends
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param string $end The hook that ends the job.
+	 */
+	public function test_role_edits_a_job_makes_go_out_when_the_job_ends_as_the_job( string $end ): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$recorder = new BuildingRecorder();
+		ActionSchedulerContext::register();
+		$sensor = new SettingsSensor( $recorder );
+		$sensor->boot();
+
+		$granted = self::ROLES;
+		$granted['editor']['capabilities']['manage_options'] = true;
+
+		Hooks::fire( 'action_scheduler_before_execute', 41, 'WP Cron' );
+		Hooks::fire( 'action_scheduler_begin_execute', 41, 'WP Cron' );
+		$sensor->on_update( 'wp_user_roles', self::ROLES, $granted );
+		Hooks::fire( $end, 41, 'action_scheduler_failed_execution' === $end ? new \RuntimeException( 'failed' ) : null, 'WP Cron' );
+
+		$this->assertSame( [ 6005 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertSame( 'action-scheduler', $recorder->payloads[0]['source'] );
+		$this->assertSame( 'admin', $recorder->payloads[0]['metadata']['initiated_by'] );
+		$this->assertArrayNotHasKey( 'user', $recorder->payloads[0] );
+
+		Hooks::fire( 'shutdown' );
+		$this->assertCount( 1, $recorder->payloads, 'Not again at shutdown.' );
+	}
+
+	/**
+	 * Edits made before a job are told on their own, before the job begins,
+	 * so the job's edits are not folded into them; edits made after it wait
+	 * for shutdown.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_role_edits_around_a_job_are_told_apart_from_the_jobs(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$recorder = new BuildingRecorder();
+		ActionSchedulerContext::register();
+		$sensor = new SettingsSensor( $recorder );
+		$sensor->boot();
+
+		$step1 = self::ROLES;
+		$step1['editor']['capabilities']['list_users'] = true;
+		$step2 = $step1;
+		$step2['editor']['capabilities']['manage_options'] = true;
+		$step3 = $step2;
+		$step3['editor']['capabilities']['moderate_comments'] = true;
+
+		$sensor->on_update( 'wp_user_roles', self::ROLES, $step1 );
+		Hooks::fire( 'action_scheduler_before_execute', 41, 'WP Cron' );
+		Hooks::fire( 'action_scheduler_begin_execute', 41, 'WP Cron' );
+		$sensor->on_update( 'wp_user_roles', $step1, $step2 );
+		Hooks::fire( 'action_scheduler_after_execute', 41, null, 'WP Cron' );
+		$sensor->on_update( 'wp_user_roles', $step2, $step3 );
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 6005, 6005, 6005 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertSame(
+			[ 'list_users', 'manage_options', 'moderate_comments' ],
+			array_column( array_merge( ...array_column( $recorder->payloads, 'changes' ) ), 'new' )
+		);
+		$this->assertSame( 'action-scheduler', $recorder->payloads[1]['source'] );
+		$this->assertNotSame( 'action-scheduler', $recorder->payloads[0]['source'] );
+		$this->assertNotSame( 'action-scheduler', $recorder->payloads[2]['source'] );
 	}
 
 	/**

@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Sensors\Core;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
 use HelloLog\Sensors\OptionChangePolicy;
@@ -44,6 +45,10 @@ defined( 'ABSPATH' ) || exit;
  * telling which roles came or went and which capabilities each role gained or
  * lost; nothing when they ended where they started. A write made later, by
  * another shutdown callback, goes out on its own just before the final flush.
+ * The writes of an Action Scheduler job are told apart: what was noted goes
+ * out before a job begins, and what the job wrote when it ends, while it is
+ * still the job's context, so the event comes from the job and not from
+ * whoever loaded the page that started the queue runner.
  * A roles option that is created is compared with no roles (every role in it
  * is reported), and one that is deleted with no roles left (every role it held
  * is reported removed); a delete followed by a write in the same request is
@@ -147,10 +152,12 @@ final class SettingsSensor extends AbstractSensor {
 
 	/**
 	 * The roles option as it was before its first write of the request and
-	 * after its latest, per site, and whether WordPress was setting the site
-	 * up at the first write. A missing option holds no roles.
+	 * after its latest, per site, whether WordPress was setting the site up
+	 * at the first write, and how many Action Scheduler jobs were running
+	 * then (see {@see ActionSchedulerContext::depth()}). A missing option
+	 * holds no roles.
 	 *
-	 * @var array<int, array{option: string, installing: bool, old: array<int|string, mixed>, new: array<int|string, mixed>}>
+	 * @var array<int, array{option: string, installing: bool, job: int, old: array<int|string, mixed>, new: array<int|string, mixed>}>
 	 */
 	private array $roles = [];
 
@@ -167,6 +174,12 @@ final class SettingsSensor extends AbstractSensor {
 		// Role writes made by later shutdown callbacks, before the final flush
 		// at PHP_INT_MAX.
 		add_action( 'shutdown', [ $this, 'emit_role_changes' ], PHP_INT_MAX - 1 );
+		// What was noted before a job begins, so the job's writes are not
+		// folded into it, and what the job wrote, before its context ends at
+		// PHP_INT_MAX.
+		add_action( 'action_scheduler_before_execute', [ $this, 'emit_role_changes_before_job' ], 10, 0 );
+		add_action( 'action_scheduler_after_execute', [ $this, 'emit_job_role_changes' ], PHP_INT_MAX - 1, 0 );
+		add_action( 'action_scheduler_failed_execution', [ $this, 'emit_job_role_changes' ], PHP_INT_MAX - 1, 0 );
 	}
 
 	/**
@@ -224,8 +237,42 @@ final class SettingsSensor extends AbstractSensor {
 	 * emitted is not emitted again.
 	 */
 	public function emit_role_changes(): void {
-		$pending     = $this->roles;
-		$this->roles = [];
+		$this->emit_roles( 0 );
+	}
+
+	/**
+	 * An Action Scheduler job is about to begin: emit what was noted where
+	 * the request stands now (outside any job, or in the job around it).
+	 */
+	public function emit_role_changes_before_job(): void {
+		$this->emit_roles( ActionSchedulerContext::depth() );
+	}
+
+	/**
+	 * An Action Scheduler job is ending: emit what it wrote, while it is
+	 * still the context. Nothing outside a job.
+	 */
+	public function emit_job_role_changes(): void {
+		$depth = ActionSchedulerContext::depth();
+		if ( $depth > 0 ) {
+			$this->emit_roles( $depth );
+		}
+	}
+
+	/**
+	 * Emit the notes started while at least `$depth` jobs were running, and
+	 * forget them; the others stay.
+	 *
+	 * @param int $depth Jobs running when the note was started, at least.
+	 */
+	private function emit_roles( int $depth ): void {
+		$pending = [];
+		foreach ( $this->roles as $blog_id => $note ) {
+			if ( $note['job'] >= $depth ) {
+				$pending[ $blog_id ] = $note;
+				unset( $this->roles[ $blog_id ] );
+			}
+		}
 
 		foreach ( $pending as $blog_id => $note ) {
 			try {
@@ -401,6 +448,7 @@ final class SettingsSensor extends AbstractSensor {
 		$this->roles[ $blog_id ] = [
 			'option'     => $option,
 			'installing' => function_exists( 'wp_installing' ) && wp_installing(),
+			'job'        => ActionSchedulerContext::depth(),
 			'old'        => $roles,
 			'new'        => $roles,
 		];
