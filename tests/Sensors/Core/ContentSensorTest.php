@@ -937,6 +937,65 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
+	 * With meta boxes on its screen, the block editor saves through the REST
+	 * API and then posts the meta boxes to `post.php` in a second request,
+	 * which runs `edit_post()` with the same data (the sticky flag included).
+	 * That second save changes nothing, and nothing of it survives: the save
+	 * is one event.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_block_editor_save_and_its_meta_box_request_leave_one_event(): void {
+		$requests = [];
+		$this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$requests ): void {
+				self::term( 15, 5, 'News', 'category' );
+				self::term( 16, 6, 'Reviews', 'category' );
+				WpState::$post_terms[7]['category'] = [ 15 ];
+				$saved                              = $post( [ 'post_title' => 'Hello again' ] );
+
+				// The REST save.
+				$sensor->boot();
+				self::rest_update(
+					$post(),
+					$saved,
+					static function (): void {
+						self::stick( 7, true );
+						self::set_terms( 7, 'category', [ 16 ] );
+					}
+				);
+				self::fire( 'shutdown' );
+				$requests[] = $dispatcher->calls;
+
+				// The meta box request: a new request, a new sensor.
+				$dispatcher->calls  = [];
+				WpState::$callbacks = [];
+				WpState::$actions   = [];
+				( new ContentSensor( $dispatcher ) )->boot();
+				self::update_post(
+					$saved,
+					$saved,
+					static function (): void {
+						self::set_terms( 7, 'category', [ 16 ] );
+					}
+				);
+				self::stick( 7, true );
+				self::fire( 'shutdown' );
+				$requests[] = $dispatcher->calls;
+			}
+		);
+
+		$first = $this->survive_calls( $requests[0] );
+		$this->assertSame( [ 2006 ], array_column( $first, 'code' ) );
+		$this->assertSame( [ 'post_title', 'sticky', 'category' ], array_column( $first[0]['changes'], 'field' ) );
+
+		$this->assertSame( [ 2006 ], array_column( $requests[1], 0 ) );
+		$this->assertSame( [], $requests[1][0][1]['changes'] );
+		$this->assertSame( [], $this->survive_calls( $requests[1] ) );
+	}
+
+	/**
 	 * Terms given with a save (the classic editor's `tax_input`) are written
 	 * inside `wp_insert_post()`, before the status change; the update
 	 * compares them with the rest.
@@ -2153,6 +2212,17 @@ final class ContentSensorTest extends TestCase {
 	private function survive( ?EventDispatcher $recorder ): array {
 		$this->assertNotNull( $recorder );
 
+		return $this->survive_calls( $recorder->calls );
+	}
+
+	/**
+	 * Build the dispatches of one request as an admin would on the dashboard
+	 * and run the default per-request rules over them.
+	 *
+	 * @param array<int, array{0: int, 1: array<string, mixed>}> $calls Dispatches as `[ code, fields ]`.
+	 * @return array<int, array<string, mixed>> The payloads that would be written.
+	 */
+	private function survive_calls( array $calls ): array {
 		$catalog = new EventCatalog();
 		CatalogSeeder::seed( $catalog );
 
@@ -2168,7 +2238,7 @@ final class ContentSensorTest extends TestCase {
 		};
 
 		$payloads = [];
-		foreach ( $recorder->calls as [ $code, $fields ] ) {
+		foreach ( $calls as [ $code, $fields ] ) {
 			$payload = $builder->build( $code, $fields );
 			$this->assertIsArray( $payload );
 			$payloads[] = $payload;
