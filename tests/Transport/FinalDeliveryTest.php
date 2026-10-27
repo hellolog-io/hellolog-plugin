@@ -50,6 +50,13 @@ final class FinalDeliveryTest extends TestCase {
 	/** Whether another run holds the flush lock. */
 	public static bool $lock_held = false;
 
+	/**
+	 * The values every lock request was prepared with (name, seconds to wait).
+	 *
+	 * @var array<int, array<int, mixed>>
+	 */
+	public static array $lock_requests = [];
+
 	protected function setUp(): void {
 		require_once __DIR__ . '/../Sensors/Core/Fixtures/wordpress-user-functions.php';
 		require_once __DIR__ . '/../Events/Fixtures/WpCalls.php';
@@ -65,6 +72,10 @@ final class FinalDeliveryTest extends TestCase {
 			 * @param mixed  ...$args Values.
 			 */
 			public function prepare( string $query, ...$args ): string {
+				if ( str_contains( $query, 'GET_LOCK' ) ) {
+					FinalDeliveryTest::$lock_requests[] = $args;
+				}
+
 				return $query . ' ' . implode( ',', $args );
 			}
 
@@ -139,6 +150,72 @@ final class FinalDeliveryTest extends TestCase {
 
 	public function test_the_time_allowed_is_two_seconds(): void {
 		$this->assertSame( 2.0, FinalDelivery::BUDGET );
+	}
+
+	/**
+	 * The background job may be sending right now: the last send waits a
+	 * moment for it instead of giving up at once.
+	 */
+	public function test_the_lock_is_waited_for_at_most_a_second(): void {
+		( new FinalDelivery( $this->buffered(), $this->batches( [ 1 ] ), new FlushLock( FinalDelivery::LOCK_WAIT ) ) )->send();
+		( new FlushLock() )->acquire();
+
+		$this->assertSame( 1, FinalDelivery::LOCK_WAIT );
+		$this->assertSame( [ [ 'wp_hellolog_flush', 1 ], [ 'wp_hellolog_flush', 0 ] ], self::$lock_requests, 'The job itself still never waits.' );
+	}
+
+	/**
+	 * The time spent waiting for the lock counts against the budget.
+	 */
+	public function test_waiting_for_the_lock_counts_against_the_time(): void {
+		$full  = QueueFlusher::BATCH_SIZE;
+		$times = [ 100.0, 101.5, 102.5 ];
+		$clock = static function () use ( &$times ): float {
+			FinalDeliveryTest::$log[] = 'clock';
+			return array_shift( $times );
+		};
+
+		( new FinalDelivery( $this->buffered(), $this->batches( [ $full, $full, $full ] ), new FlushLock(), 2.0, $clock ) )->send();
+
+		// The time starts before the lock is asked for: 1.5 s in after the
+		// first batch, 2.5 s in after the second.
+		$this->assertSame( [ 'clock', 'lock', 'sent', 'clock', 'sent', 'clock', 'unlock' ], self::$log );
+	}
+
+	/**
+	 * Each site of a network has its own queue and its own key: a delivery
+	 * only ever sends the queue of the site it was made on, switching back
+	 * to it when the request is on another site, and leaves the request on
+	 * the site it was on.
+	 */
+	public function test_the_queue_of_the_site_it_was_made_on_is_sent(): void {
+		WpState::$blog_id = 1;
+		$sites            = [];
+		$delivery         = new FinalDelivery(
+			$this->buffered(),
+			static function () use ( &$sites ): int {
+				$sites[] = get_current_blog_id();
+				return 1;
+			},
+			new FlushLock()
+		);
+
+		switch_to_blog( 2 );
+		$delivery->send();
+
+		$this->assertSame( [ 1 ], $sites );
+		$this->assertSame( 2, get_current_blog_id() );
+		$this->assertTrue( $delivery->serves_current_site() === false );
+		restore_current_blog();
+		$this->assertTrue( $delivery->serves_current_site() );
+	}
+
+	public function test_the_end_of_request_send_is_registered_once(): void {
+		$delivery = new FinalDelivery( $this->buffered(), $this->batches( [] ), new FlushLock() );
+		$delivery->deliver( 6600, [] );
+		$delivery->deliver( 6600, [] );
+
+		$this->assertCount( 1, WpState::$callbacks['shutdown'] );
 	}
 
 	public function test_nothing_is_sent_while_another_run_holds_the_lock(): void {

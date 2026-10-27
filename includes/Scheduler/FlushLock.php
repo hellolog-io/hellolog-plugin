@@ -20,11 +20,23 @@ defined( 'ABSPATH' ) || exit;
  *
  * The lock is auto-released when the DB connection closes, so a fatal mid-run
  * can never leave it stuck.
+ *
+ * The background job never waits for it. A send that must not miss its turn
+ * (helloLOG's own last events, see {@see \HelloLog\Transport\FinalDelivery})
+ * can wait a moment for a running job to finish.
  */
 final class FlushLock {
 
 	/** Non-blocking: return immediately if another runner holds the lock. */
 	private const TIMEOUT = 0;
+
+	/**
+	 * @param int $timeout Seconds to wait for the lock; 0 returns at once.
+	 */
+	public function __construct(
+		private int $timeout = self::TIMEOUT
+	) {
+	}
 
 	public function acquire(): bool {
 		global $wpdb;
@@ -32,7 +44,7 @@ final class FlushLock {
 		// GET_LOCK returns 1 (acquired), 0 (timeout) or NULL (error).
 		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- advisory lock, not a table read.
 		return 1 === (int) $wpdb->get_var(
-			$wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $this->name(), self::TIMEOUT )
+			$wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $this->name(), $this->timeout )
 		);
 	}
 

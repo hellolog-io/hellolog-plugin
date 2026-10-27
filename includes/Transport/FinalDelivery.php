@@ -26,27 +26,44 @@ defined( 'ABSPATH' ) || exit;
  *      far is written to the queue (a {@see BufferedDispatcher} is flushed;
  *      another dispatcher writes at once);
  *   2. the queue is sent, under the same single-flight lock as the job
- *      ({@see FlushLock}), batch after batch while full batches go through,
- *      until it is empty or {@see self::BUDGET} seconds are spent;
+ *      ({@see FlushLock}, built to wait up to {@see self::LOCK_WAIT} seconds
+ *      for a running job), batch after batch while full batches go through,
+ *      until it is empty or {@see self::BUDGET} seconds, the wait for the
+ *      lock included, are spent;
  *   3. it is sent once more at the very end of the request, after the
  *      dispatcher's final flush, for whatever the rest of the request queued
  *      (plugins deactivated after helloLOG in the same bulk action, say).
  *
- * When another run holds the lock, that run is sending the queue and this
- * send is skipped. A failure while sending is reported through the
- * `hellolog_dispatch_failed` action, like a failed flush (code 0, no fields),
- * and never reaches the request.
+ * The queue sent is always the one of the site the delivery was made on: on
+ * a network every site has its own queue and its own key, so a send made
+ * while the request is on another site switches back to that site for the
+ * send (and skips it where it can not switch). The batch sender is bound to
+ * that site's key, so it never sends another site's queue.
+ *
+ * When another run still holds the lock after the wait, that run is sending
+ * the queue and this send is skipped. A failure while sending is reported
+ * through the `hellolog_dispatch_failed` action, like a failed flush (code 0,
+ * no fields), and never reaches the request.
  */
 final class FinalDelivery {
 
 	/** Longest time spent sending, in seconds, before another batch is started. */
 	public const BUDGET = 2.0;
 
+	/** Longest wait for the flush lock, in seconds: half the budget. */
+	public const LOCK_WAIT = 1;
+
 	/** @var callable(): int */
 	private $send_batch;
 
 	/** @var callable(): float */
 	private $clock;
+
+	/** The site the delivery was made on; null outside WordPress. */
+	private ?int $blog_id;
+
+	/** Whether the end-of-request send is registered. */
+	private bool $scheduled = false;
 
 	/**
 	 * @param EventDispatcher    $dispatcher Where the event is dispatched.
@@ -65,6 +82,15 @@ final class FinalDelivery {
 	) {
 		$this->send_batch = $send_batch;
 		$this->clock      = $clock ?? static fn(): float => microtime( true );
+		$this->blog_id    = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : null;
+	}
+
+	/**
+	 * Whether the request is on the site the delivery was made on: an event
+	 * dispatched now lands in the queue this delivery sends.
+	 */
+	public function serves_current_site(): bool {
+		return null === $this->blog_id || ! function_exists( 'get_current_blog_id' ) || (int) get_current_blog_id() === $this->blog_id;
 	}
 
 	/**
@@ -82,16 +108,41 @@ final class FinalDelivery {
 
 		$this->send();
 
-		// After the dispatcher's final flush, also at PHP_INT_MAX: callbacks
-		// of one priority run in the order they were added.
-		add_action( 'shutdown', [ $this, 'send' ], PHP_INT_MAX );
+		if ( ! $this->scheduled ) {
+			$this->scheduled = true;
+			// After the dispatcher's final flush, also at PHP_INT_MAX: callbacks
+			// of one priority run in the order they were added.
+			add_action( 'shutdown', [ $this, 'send' ], PHP_INT_MAX );
+		}
 	}
 
 	/**
-	 * Send the queue under the flush lock: batch after batch while full ones
-	 * go through, until it is empty or the time is up. Never throws.
+	 * Send the queue of the delivery's site under the flush lock: batch after
+	 * batch while full ones go through, until it is empty or the time is up.
+	 * Never throws.
 	 */
 	public function send(): void {
+		if ( $this->serves_current_site() ) {
+			$this->send_here();
+			return;
+		}
+		if ( ! function_exists( 'switch_to_blog' ) || ! function_exists( 'restore_current_blog' ) ) {
+			return;
+		}
+
+		switch_to_blog( (int) $this->blog_id );
+		try {
+			$this->send_here();
+		} finally {
+			restore_current_blog();
+		}
+	}
+
+	/**
+	 * Send the queue of the current site, see {@see self::send()}.
+	 */
+	private function send_here(): void {
+		$start = ( $this->clock )();
 		try {
 			if ( ! $this->lock->acquire() ) {
 				return;
@@ -102,7 +153,6 @@ final class FinalDelivery {
 		}
 
 		try {
-			$start = ( $this->clock )();
 			do {
 				$accepted = (int) ( $this->send_batch )();
 			} while ( $accepted >= QueueFlusher::BATCH_SIZE && ( $this->clock )() - $start < $this->budget );

@@ -226,7 +226,7 @@ final class Plugin {
 			return;
 		}
 
-		$delivery = new FinalDelivery( $this->dispatcher, [ $this->build_flusher(), 'run' ], new FlushLock() );
+		$delivery = new FinalDelivery( $this->dispatcher, [ $this->build_flusher(), 'run' ], new FlushLock( FinalDelivery::LOCK_WAIT ) );
 		$delivery->deliver( 5002, PluginsSensor::deactivation_fields( plugin_basename( HELLOLOG_FILE ), $network_wide ) );
 	}
 
