@@ -432,9 +432,11 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * An order without an id is being inserted, and one whose stored status
 	 * is one of {@see self::CREATION_STATUSES} is still being created: its
 	 * fields are filled in, not edited, so neither is an edit. A save that
-	 * changes none of {@see self::ORDER_FIELDS} (every save moves the
-	 * modification date) is dispatched without changes and without reading
-	 * the stored order at all, whatever its status; the buffer drops it.
+	 * writes none of {@see self::ORDER_FIELDS} (every save moves the
+	 * modification date; a checkout or a bulk action saves an order many
+	 * times) returns at once, without reading the stored order, whatever its
+	 * status; one that writes them only in another form is not dispatched
+	 * either.
 	 *
 	 * @param mixed $order The order WooCommerce is about to save.
 	 */
@@ -449,16 +451,19 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 				return;
 			}
 
-			$changes = [];
 			$pending = self::order_values( $order->get_changes() );
-			if ( [] !== $pending ) {
-				$data = $order->get_data();
-				$data = is_array( $data ) ? $data : [];
-				if ( self::is_being_created( $data ) ) {
-					return;
-				}
-				$stored  = self::order_values( $data );
-				$changes = WcObjectDiff::changes( $stored, self::real_changes( $stored, $pending ), self::ORDER_FIELDS, self::CONTENT_FIELDS );
+			if ( [] === $pending ) {
+				return;
+			}
+			$data = $order->get_data();
+			$data = is_array( $data ) ? $data : [];
+			if ( self::is_being_created( $data ) ) {
+				return;
+			}
+			$stored  = self::order_values( $data );
+			$changes = WcObjectDiff::changes( $stored, self::real_changes( $stored, $pending ), self::ORDER_FIELDS, self::CONTENT_FIELDS );
+			if ( [] === $changes ) {
+				return;
 			}
 
 			$this->emit(

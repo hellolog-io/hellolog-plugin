@@ -107,12 +107,12 @@ final class WooCommerceOrderSensorTest extends TestCase {
 
 	/**
 	 * Every save touches `date_modified`. A save that changed nothing else is
-	 * dispatched without changes, and the buffer drops it.
+	 * not dispatched: a checkout or a bulk action saves an order many times.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_a_save_that_only_moves_the_modification_date_is_dropped_by_the_buffer(): void {
+	public function test_a_save_that_only_moves_the_modification_date_is_not_dispatched(): void {
 		$this->stubs();
 
 		$recorder = $this->recorder();
@@ -120,11 +120,35 @@ final class WooCommerceOrderSensorTest extends TestCase {
 			$this->order( 5, self::stored(), [ 'date_modified' => new \DateTimeImmutable( '2026-10-26T10:00:00+00:00' ) ] )
 		);
 
-		$this->assertCount( 1, $recorder->calls );
-		$this->assertSame( 9105, $recorder->calls[0][0] );
-		$this->assertSame( [], $recorder->calls[0][1]['changes'] );
+		$this->assertSame( [], $recorder->calls );
+	}
 
-		$this->assertSame( [], $this->survive( $recorder ) );
+	/**
+	 * A save that writes the order's fields again in another form (an amount
+	 * without its decimals, an empty value where none was) changes nothing:
+	 * it is not dispatched either.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_save_that_writes_the_same_values_in_another_form_is_not_dispatched(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceOrderSensor( $recorder ) )->on_before_save(
+			$this->order(
+				5,
+				self::stored(),
+				[
+					'total'          => 25,
+					'transaction_id' => null,
+					'billing'        => [ 'company' => '' ],
+				]
+			)
+		);
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertSame( [], OrderNoteState::$fired );
 	}
 
 	/**
@@ -1128,7 +1152,7 @@ final class WooCommerceOrderSensorTest extends TestCase {
 
 	/**
 	 * A save that changes none of the order's fields never reads the stored
-	 * order (that loads every item of the order).
+	 * order (that loads every item of the order), and tells nothing.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
@@ -1147,8 +1171,7 @@ final class WooCommerceOrderSensorTest extends TestCase {
 		);
 
 		$this->assertSame( [], OrderNoteState::$fired );
-		$this->assertSame( [ 9105 ], array_column( $recorder->calls, 0 ) );
-		$this->assertSame( [], $recorder->calls[0][1]['changes'] );
+		$this->assertSame( [], $recorder->calls );
 	}
 
 	/**
