@@ -570,8 +570,7 @@ final class ContentSensor extends AbstractSensor {
 				}
 			}
 			if ( 2006 !== $event ) {
-				// The event itself says what the status became.
-				$changes = array_values( array_filter( $changes, static fn( array $item ): bool => 'post_status' !== $item['field'] ) );
+				$changes = self::status_event_changes( $changes, $before );
 			}
 
 			$extra = $pending['extra'] ?? [];
@@ -592,6 +591,28 @@ final class ContentSensor extends AbstractSensor {
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 2006, [ 'post_id' => $post_id ] );
 		}
+	}
+
+	/**
+	 * What a status event carries of a save's changes: not the status, which
+	 * the event itself says, and not the date of a draft that had none (a
+	 * floating date, see {@see PostSnapshot::from_values()}): publishing,
+	 * scheduling or making it private gives it one as part of the status
+	 * change.
+	 *
+	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes The save's changes.
+	 * @param array<string, mixed>                                         $before  Snapshot taken before the save.
+	 * @return array<int, array{field: string, old: ?string, new: ?string}>
+	 */
+	private static function status_event_changes( array $changes, array $before ): array {
+		$floating = null === ( $before['post_date'] ?? null );
+
+		return array_values(
+			array_filter(
+				$changes,
+				static fn( array $item ): bool => 'post_status' !== $item['field'] && ! ( $floating && 'post_date' === $item['field'] )
+			)
+		);
 	}
 
 	/**

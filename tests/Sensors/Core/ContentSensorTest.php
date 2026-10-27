@@ -1316,21 +1316,76 @@ final class ContentSensorTest extends TestCase {
 
 		$this->assertSame( [ 2007, 2007 ], array_column( $calls, 0 ) );
 		$this->assertSame( '2026-12-24 18:00:00', $calls[0][1]['date'] );
-		$this->assertSame(
-			[
-				[
-					'field' => 'post_date',
-					'old'   => null,
-					'new'   => '2026-12-24 18:00:00',
-				],
-			],
-			$calls[0][1]['changes']
-		);
+		// The draft had no date of its own: the date is the one the event names.
+		$this->assertArrayNotHasKey( 'changes', $calls[0][1] );
 		$this->assertSame( '2027-01-01 08:00:00', $calls[1][1]['date'] );
 
 		$survivors = $this->survive( $recorder );
 		$this->assertSame( 'Post "Hello" scheduled for 2026-12-24 18:00:00.', $survivors[0]['message'] );
 		$this->assertSame( '2026-12-24 18:00:00', $survivors[0]['vars']['date'] );
+	}
+
+	/**
+	 * A draft that never had a date of its own gets one when it is published,
+	 * scheduled or made private: that is part of the status change, not a
+	 * change of its own. A date somebody set on the draft is.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_status_event_reports_no_date_for_a_draft_that_had_none(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$floating = static fn( int $id ): \WP_Post => $post(
+					[
+						'ID'            => $id,
+						'post_status'   => 'draft',
+						'post_title'    => 'Draft title',
+						'post_date'     => '2026-10-27 09:00:00',
+						'post_date_gmt' => '0000-00-00 00:00:00',
+					]
+				);
+				$dated    = static fn( int $id, string $status ): \WP_Post => $post(
+					[
+						'ID'            => $id,
+						'post_status'   => $status,
+						'post_title'    => 'Final title',
+						'post_date'     => '2026-10-27 12:00:00',
+						'post_date_gmt' => '2026-10-27 11:00:00',
+					]
+				);
+
+				$sensor->boot();
+				self::update_post( $floating( 7 ), $dated( 7, 'publish' ) );
+				self::update_post( $floating( 8 ), $dated( 8, 'private' ) );
+				self::update_post(
+					$post(
+						[
+							'ID'            => 9,
+							'post_status'   => 'draft',
+							'post_title'    => 'Final title',
+							'post_date'     => '2026-10-20 09:00:00',
+							'post_date_gmt' => '2026-10-20 08:00:00',
+						]
+					),
+					$dated( 9, 'publish' )
+				);
+			}
+		);
+
+		$this->assertSame( [ 2001, 2009, 2001 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 'post_title' ], array_column( $calls[0][1]['changes'], 'field' ) );
+		$this->assertSame( [ 'post_title' ], array_column( $calls[1][1]['changes'], 'field' ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_date',
+					'old'   => '2026-10-20 09:00:00',
+					'new'   => '2026-10-27 12:00:00',
+				],
+			],
+			$calls[2][1]['changes']
+		);
 	}
 
 	/**
