@@ -169,6 +169,9 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	 */
 	private const NUMBER_FIELDS = [ 'regular_price', 'sale_price', 'stock_quantity', 'low_stock_amount', 'weight', 'length', 'width', 'height' ];
 
+	/** The field of the shipping class, the term of `product_shipping_class` the product has. */
+	private const SHIPPING_CLASS_FIELD = 'shipping_class_id';
+
 	/**
 	 * Fields that hold ids of terms => their taxonomy.
 	 *
@@ -1510,7 +1513,11 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	/**
 	 * The objects an id field holds, by their names: id => name. A term is
 	 * named by its name, a file of the media library by its title; an id that
-	 * names nothing is `#<id>`.
+	 * names nothing is `#<id>`, except for the shipping class: an id that is
+	 * none of the shipping classes is no class at all. The classic product
+	 * screen posts -1 for "No shipping class" and the shop reads it with
+	 * `absint()`, so the product holds 1 (a term of another taxonomy, or
+	 * none) while the shop stores no class.
 	 *
 	 * @param string $field Field of {@see self::TERM_FIELDS} or {@see self::IMAGE_FIELDS}.
 	 * @param mixed  $value One id or a list of them.
@@ -1520,6 +1527,9 @@ final class WooCommerceProductSensor extends AbstractSensor {
 		$names = [];
 		foreach ( self::ids( is_array( $value ) ? $value : [ $value ] ) as $id ) {
 			$name = isset( self::TERM_FIELDS[ $field ] ) ? self::term_name( $id, self::TERM_FIELDS[ $field ] ) : self::image_title( $id );
+			if ( '' === $name && self::SHIPPING_CLASS_FIELD === $field ) {
+				continue;
+			}
 
 			$names[ $id ] = '' !== $name ? $name : '#' . $id;
 		}

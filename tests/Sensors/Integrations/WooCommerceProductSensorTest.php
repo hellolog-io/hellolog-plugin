@@ -287,6 +287,65 @@ final class WooCommerceProductSensorTest extends TestCase {
 	}
 
 	/**
+	 * The classic product screen posts -1 for "No shipping class", and the
+	 * shop reads it with `absint()`: the product holds 1 (here a category)
+	 * while nothing is stored. That is no shipping class, so a save that
+	 * changes nothing else tells nothing, and one that does tells only that.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_no_shipping_class_on_the_classic_screen_is_no_change(): void {
+		$this->stubs();
+		self::term( 1, 'Uncategorized', 'product_cat' );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceProductSensor( $recorder );
+		$sensor->on_before_save( new FakeProduct( 5, self::stored( [ 'shipping_class_id' => 0 ] ), [ 'shipping_class_id' => 1 ] ) );
+		$this->assertSame( [], $recorder->calls );
+
+		$sensor->on_before_save(
+			new FakeProduct(
+				5,
+				self::stored( [ 'shipping_class_id' => 0 ] ),
+				[
+					'shipping_class_id' => 1,
+					'regular_price'     => '1200',
+				]
+			)
+		);
+		$this->assertSame( [ self::change( 'regular_price', '1000', '1200' ) ], $recorder->calls[0][1]['changes'] );
+	}
+
+	/**
+	 * A shipping class is a term of the shipping classes: an id that is none
+	 * of them (a category, a class deleted since) is no shipping class, on
+	 * either side, so a change is what the shop stores.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_shipping_class_is_only_a_term_of_the_shipping_classes(): void {
+		$this->stubs();
+		self::term( 1, 'Uncategorized', 'product_cat' );
+		self::term( 9, 'Bulky', 'product_shipping_class' );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceProductSensor( $recorder );
+		$sensor->on_before_save( new FakeProduct( 5, self::stored( [ 'shipping_class_id' => 1 ] ), [ 'shipping_class_id' => 9 ] ) );
+		$sensor->on_before_save( new FakeProduct( 6, self::stored( [ 'shipping_class_id' => 9 ] ), [ 'shipping_class_id' => 1 ] ) );
+		$sensor->on_before_save( new FakeProduct( 7, self::stored( [ 'shipping_class_id' => 44 ] ), [ 'shipping_class_id' => 0 ] ) );
+
+		$this->assertSame(
+			[
+				[ self::change( 'shipping_class_id', '', 'Bulky' ) ],
+				[ self::change( 'shipping_class_id', 'Bulky', '' ) ],
+			],
+			array_map( static fn( array $call ): array => $call[1]['changes'], $recorder->calls )
+		);
+	}
+
+	/**
 	 * Terms, the shipping class and images are named, not numbered; an id
 	 * that names nothing is shown as `#<id>`.
 	 *
