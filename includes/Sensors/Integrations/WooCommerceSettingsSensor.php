@@ -29,6 +29,12 @@ defined( 'ABSPATH' ) || exit;
  * their own (9401) that names each account by the last four digits of its
  * number, see {@see self::bacs_changes()}.
  *
+ * The bank accounts are logged whoever writes them: the shop itself only
+ * writes them for a person on its settings screen or REST API, so a write
+ * from a visitor's request or a background run (an exploit, a backdoor
+ * swapping the IBAN) is exactly what the alert is for. Such an event carries
+ * its source and no actor, like any other.
+ *
  * The first save of a payment option creates it, which only `added_option`
  * tells: those first writes are logged too (with no old value), outside the
  * shop's installer. Other shop options are added on the fly by the shop
@@ -49,6 +55,14 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 	 * @var array<int, string>
 	 */
 	private const ACCOUNT_FIELDS = [ 'account_name', 'account_number', 'bank_name', 'sort_code', 'iban', 'bic' ];
+
+	/**
+	 * The fields of a bank account that are bank codes: compared the way the
+	 * accounts are matched, without spaces, dashes or case, and never shown.
+	 *
+	 * @var array<int, string>
+	 */
+	private const CODE_FIELDS = [ 'account_number', 'sort_code', 'iban', 'bic' ];
 
 	/** How an account with neither a number nor an IBAN is named. */
 	private const NO_NUMBER = 'no number';
@@ -82,8 +96,15 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 			if ( ! str_starts_with( $name, 'woocommerce_' ) || $old_value === $value ) {
 				return;
 			}
+			if ( self::BACS_ACCOUNTS === $name ) {
+				$this->log_bank_accounts( $old_value, $value );
+				return;
+			}
+			if ( ! OptionChangePolicy::should_log_current( $name ) ) {
+				return;
+			}
 
-			$this->log( $name, $old_value, $value );
+			$this->log_setting( $name, $old_value, $value );
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, self::code_for( $name ), [ 'option' => $name ] );
 		}
@@ -92,7 +113,8 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 	/**
 	 * An option was written for the first time. Logged for payment options
 	 * only, and not while the shop's installer adds its defaults (on an
-	 * upgrade too).
+	 * upgrade too). The policy is asked before the gateway registry: most
+	 * first writes are not a person's and need no registry walk.
 	 *
 	 * @param mixed $option Option name.
 	 * @param mixed $value  Its first value.
@@ -101,11 +123,18 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 		$name = '';
 		try {
 			$name = is_scalar( $option ) ? (string) $option : '';
-			if ( ! str_starts_with( $name, 'woocommerce_' ) || self::is_installing() || ! self::is_payment_option( $name ) ) {
+			if ( ! str_starts_with( $name, 'woocommerce_' ) || self::is_installing() ) {
+				return;
+			}
+			if ( self::BACS_ACCOUNTS === $name ) {
+				$this->log_bank_accounts( null, $value );
+				return;
+			}
+			if ( ! OptionChangePolicy::should_log_current( $name ) || ! self::is_gateway_option( $name ) ) {
 				return;
 			}
 
-			$this->log( $name, null, $value );
+			$this->log_setting( $name, null, $value );
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, self::code_for( $name ), [ 'option' => $name ] );
 		}
@@ -119,7 +148,9 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 	 * compared by {@see ChangeSet::diff()}: a credential-like key reads
 	 * `[redacted]`, a structure under a key is one value with the secrets
 	 * inside it masked, and a key that is empty on both sides (missing, `''`
-	 * or `[]`) is not a change. Everything else is one change named after the
+	 * or `[]`) is not a change. A key with a leading underscore is the
+	 * gateway's own bookkeeping (PayPal Standard's `_should_load`, which the
+	 * shop writes itself) and is left out. Everything else is one change named after the
 	 * option, see {@see OptionChangePolicy::changes()}: a list (which is a set,
 	 * so a reorder is no change), a plain value, a setting whose own name
 	 * looks like a credential (masked whole), and a setting that is itself a
@@ -137,7 +168,7 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 			return OptionChangePolicy::changes( $option, $old, $new );
 		}
 
-		return self::key_changes( is_array( $old ) ? $old : [], is_array( $new ) ? $new : [] );
+		return self::key_changes( self::without_bookkeeping( $old ), self::without_bookkeeping( $new ) );
 	}
 
 	/**
@@ -160,10 +191,13 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 	 * - A changed one: one change per field, `account:…1234.bank_name`. The
 	 *   bank and the holder's name are told old → new; the account number,
 	 *   sort code, IBAN and BIC are credentials, told as `[redacted]` on both
-	 *   sides.
+	 *   sides, and compared without spaces, dashes or case, so writing one
+	 *   another way is no change.
 	 *
-	 * Removed accounts come first, then the accounts of the new list in their
-	 * order. Entries that are not arrays are ignored.
+	 * Removed accounts come first, then the changes of the kept ones, then
+	 * the added ones, each in list order: a payload keeps a limited number of
+	 * changes, and many added accounts must not push out the change of an
+	 * existing one. Entries that are not arrays are ignored.
 	 *
 	 * @param array<int|string, mixed> $old Accounts before the write.
 	 * @param array<int|string, mixed> $new Accounts after it.
@@ -180,7 +214,8 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 			$paired[ $index ] = true;
 		}
 
-		// Every account of either list once, each with the digits it is named by.
+		// Every account of either list once, each with the digits it is named
+		// by: removed, kept, added.
 		$entries = [];
 		foreach ( $before as $index => $account ) {
 			if ( ! isset( $paired[ $index ] ) ) {
@@ -188,14 +223,16 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 			}
 		}
 		foreach ( $after as $index => $account ) {
+			if ( isset( $pairs[ $index ] ) ) {
+				[ $old_index, $via ] = $pairs[ $index ];
+				$tail                = '' === $via ? self::preferred_tail( $account ) : $account['tails'][ $via ];
+				$entries[]           = [ $tail, $before[ $old_index ], $account ];
+			}
+		}
+		foreach ( $after as $index => $account ) {
 			if ( ! isset( $pairs[ $index ] ) ) {
 				$entries[] = [ self::preferred_tail( $account ), null, $account ];
-				continue;
 			}
-
-			[ $old_index, $via ] = $pairs[ $index ];
-			$tail                = '' === $via ? self::preferred_tail( $account ) : $account['tails'][ $via ];
-			$entries[]           = [ $tail, $before[ $old_index ], $account ];
 		}
 
 		$shared = [];
@@ -227,37 +264,37 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Log a write that passed the prefix check: the bank accounts as 9401,
-	 * any other setting as 9400, both only when a person saved them.
+	 * Log a write to the bank accounts as 9401, whoever made it (see the
+	 * class description). No old/new texts in the metadata: the accounts are
+	 * only ever told through the masked changes.
+	 *
+	 * @param mixed $old_value Accounts before the write; null when the option did not exist.
+	 * @param mixed $value     Accounts after it.
+	 */
+	private function log_bank_accounts( $old_value, $value ): void {
+		$changes = self::bacs_changes( is_array( $old_value ) ? $old_value : [], is_array( $value ) ? $value : [] );
+		if ( [] === $changes ) {
+			return;
+		}
+
+		$this->emit(
+			9401,
+			[
+				'target'   => OptionChangePolicy::target( self::BACS_ACCOUNTS ),
+				'changes'  => $changes,
+				'metadata' => array_merge( [ 'option' => self::BACS_ACCOUNTS ], OptionChangePolicy::request_metadata() ),
+			]
+		);
+	}
+
+	/**
+	 * Log a write to a setting a person saved as 9400.
 	 *
 	 * @param string $option    Option name.
 	 * @param mixed  $old_value Value before the write; null when the option did not exist.
 	 * @param mixed  $value     Value after it.
 	 */
-	private function log( string $option, $old_value, $value ): void {
-		if ( ! OptionChangePolicy::should_log_current( $option ) ) {
-			return;
-		}
-
-		if ( self::BACS_ACCOUNTS === $option ) {
-			$changes = self::bacs_changes( is_array( $old_value ) ? $old_value : [], is_array( $value ) ? $value : [] );
-			if ( [] === $changes ) {
-				return;
-			}
-
-			// No old/new texts in the metadata: the accounts are only ever told
-			// through the masked changes.
-			$this->emit(
-				9401,
-				[
-					'target'   => OptionChangePolicy::target( $option ),
-					'changes'  => $changes,
-					'metadata' => array_merge( [ 'option' => $option ], OptionChangePolicy::request_metadata() ),
-				]
-			);
-			return;
-		}
-
+	private function log_setting( string $option, $old_value, $value ): void {
 		$changes = self::setting_changes( $option, $old_value, $value );
 		if ( [] === $changes ) {
 			return;
@@ -299,8 +336,7 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Whether the option is the bank accounts or the settings of a payment
-	 * gateway.
+	 * Whether the option holds the settings of a payment gateway.
 	 *
 	 * The gateways name their option themselves (`get_option_key()`), and
 	 * that is only asked once the shop has loaded them: loading them here
@@ -310,10 +346,7 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 	 *
 	 * @param string $option Option name.
 	 */
-	private static function is_payment_option( string $option ): bool {
-		if ( self::BACS_ACCOUNTS === $option ) {
-			return true;
-		}
+	private static function is_gateway_option( string $option ): bool {
 		if ( ! function_exists( 'WC' ) || ! function_exists( 'did_action' ) || did_action( self::GATEWAYS_LOADED ) < 1 ) {
 			return false;
 		}
@@ -378,7 +411,10 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 	}
 
 	/**
-	 * The changes between two versions of one bank account.
+	 * The changes between two versions of one bank account. The bank codes
+	 * are compared by the hash of their plain form (see
+	 * {@see self::identify()}), so only a different code is a change; they
+	 * are reported masked whatever they hold.
 	 *
 	 * @param array<int|string, mixed> $old The account before the write.
 	 * @param array<int|string, mixed> $new The account after it.
@@ -386,7 +422,48 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 	 * @return array<int, array{field: string, old: ?string, new: ?string}>
 	 */
 	private static function account_changes( array $old, array $new ): array {
-		return self::key_changes( $old, $new, self::ACCOUNT_FIELDS );
+		return self::key_changes( self::comparable( $old ), self::comparable( $new ), self::ACCOUNT_FIELDS );
+	}
+
+	/**
+	 * An account with each bank code that is text or a number replaced by
+	 * the hash of its plain form (empty when it has none).
+	 *
+	 * @param array<int|string, mixed> $account Account as stored.
+	 *
+	 * @return array<int|string, mixed>
+	 */
+	private static function comparable( array $account ): array {
+		foreach ( self::CODE_FIELDS as $field ) {
+			if ( isset( $account[ $field ] ) && ( is_string( $account[ $field ] ) || is_int( $account[ $field ] ) ) ) {
+				$account[ $field ] = self::identify( $account[ $field ] )[0];
+			}
+		}
+
+		return $account;
+	}
+
+	/**
+	 * A setting's keyed values without the keys that start with `_`; an
+	 * empty array for a side that holds none.
+	 *
+	 * @param mixed $value One side of a write.
+	 *
+	 * @return array<int|string, mixed>
+	 */
+	private static function without_bookkeeping( $value ): array {
+		if ( ! is_array( $value ) ) {
+			return [];
+		}
+
+		$kept = [];
+		foreach ( $value as $key => $item ) {
+			if ( ! is_string( $key ) || ! str_starts_with( $key, '_' ) ) {
+				$kept[ $key ] = $item;
+			}
+		}
+
+		return $kept;
 	}
 
 	/**
@@ -464,12 +541,12 @@ final class WooCommerceSettingsSensor extends AbstractSensor {
 	}
 
 	/**
-	 * The hash of a bank number written without spaces, dashes or case, and
+	 * The hash of a bank code written without spaces, dashes or case, and
 	 * its last four digits (its last four characters when it has no digits).
-	 * Both empty when there is no number. The hash is only ever compared,
+	 * Both empty when there is no code. The hash is only ever compared,
 	 * never sent.
 	 *
-	 * @param mixed $number Account number or IBAN as stored.
+	 * @param mixed $number Account number, IBAN, sort code or BIC as stored.
 	 *
 	 * @return array{0: string, 1: string}
 	 */

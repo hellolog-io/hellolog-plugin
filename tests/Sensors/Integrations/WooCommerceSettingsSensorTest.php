@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Sensors\Integrations;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
@@ -181,6 +182,36 @@ final class WooCommerceSettingsSensorTest extends TestCase {
 				[ 'enabled' => 'yes' ]
 			)
 		);
+	}
+
+	/**
+	 * Keys with a leading underscore are the gateway's own bookkeeping
+	 * (PayPal Standard's `_should_load`, written by the shop itself).
+	 */
+	public function test_bookkeeping_keys_of_a_setting_are_not_changes(): void {
+		$this->assertSame(
+			[ self::change( 'enabled', 'no', 'yes' ) ],
+			WooCommerceSettingsSensor::setting_changes( 'woocommerce_paypal_settings', [ 'enabled' => 'no' ], [ 'enabled' => 'yes', '_should_load' => 'no' ] )
+		);
+		$this->assertSame(
+			[],
+			WooCommerceSettingsSensor::setting_changes( 'woocommerce_paypal_settings', [ 'enabled' => 'yes' ], [ 'enabled' => 'yes', '_should_load' => 'yes' ] )
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_write_of_bookkeeping_keys_only_logs_nothing(): void {
+		$recorder = $this->recorder();
+		$this->gateways_loaded( [ 'paypal' => 'woocommerce_paypal_settings' ] );
+
+		$sensor = new WooCommerceSettingsSensor( $recorder );
+		$sensor->on_add( 'woocommerce_paypal_settings', [ '_should_load' => 'no' ] );
+		$sensor->on_update( 'woocommerce_paypal_settings', [ 'enabled' => 'no' ], [ 'enabled' => 'no', '_should_load' => 'no' ] );
+
+		$this->assertSame( [], $recorder->calls );
 	}
 
 	public function test_a_list_valued_setting_stays_one_change(): void {
@@ -415,16 +446,20 @@ final class WooCommerceSettingsSensorTest extends TestCase {
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_a_first_write_by_a_background_run_logs_nothing(): void {
+	public function test_a_gateway_first_write_by_a_background_run_or_a_visitor_logs_nothing_and_asks_no_registry(): void {
 		$recorder = $this->recorder();
 		$this->gateways_loaded( [ 'stripe' => 'woocommerce_stripe_settings' ] );
-		RequestState::$cron = true;
-
 		$sensor = new WooCommerceSettingsSensor( $recorder );
+
+		RequestState::$cron = true;
 		$sensor->on_add( 'woocommerce_stripe_settings', [ 'enabled' => 'yes' ] );
-		$sensor->on_add( 'woocommerce_bacs_accounts', [ self::account( '12345678' ) ] );
+		RequestState::$cron    = false;
+		RequestState::$admin   = false;
+		RequestState::$user_id = 0;
+		$sensor->on_add( 'woocommerce_stripe_settings', [ 'enabled' => 'yes' ] );
 
 		$this->assertSame( [], $recorder->calls );
+		$this->assertSame( 0, PaymentGatewayState::$wc_calls, 'The policy is asked before the registry.' );
 	}
 
 	/**
@@ -513,20 +548,151 @@ final class WooCommerceSettingsSensorTest extends TestCase {
 	}
 
 	/**
+	 * The shop only ever writes its bank accounts for a person on a settings
+	 * screen or the REST API. A write from a visitor's request is exactly what
+	 * the alert is for: it is logged, with its source and without an actor.
+	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_a_bank_account_change_by_a_background_run_or_a_visitor_logs_nothing(): void {
-		$recorder = $this->recorder();
-		$sensor   = new WooCommerceSettingsSensor( $recorder );
-
-		RequestState::$cron = true;
-		$sensor->on_update( 'woocommerce_bacs_accounts', [], [ self::account( '12345678' ) ] );
-		RequestState::$cron    = false;
+	public function test_a_bank_account_change_by_a_visitor_is_logged_without_an_actor(): void {
+		$recorder              = $this->recorder();
+		RequestState::$admin   = false;
 		RequestState::$user_id = 0;
-		$sensor->on_update( 'woocommerce_bacs_accounts', [], [ self::account( '12345678' ) ] );
+
+		$sensor = new WooCommerceSettingsSensor( $recorder );
+		$sensor->on_add( 'woocommerce_bacs_accounts', [ self::account( '12345678' ) ] );
+		$sensor->on_update( 'woocommerce_bacs_accounts', [ self::account( '12345678' ) ], [ self::account( '12345678', self::IBAN_NEW ) ] );
+
+		$this->assertSame( [ 9401, 9401 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ self::change( 'account:…5678', null, 'added' ) ], $recorder->calls[0][1]['changes'] );
+
+		$payload = $this->build(
+			9401,
+			$recorder->calls[1][1],
+			[ RequestSource::class, 'current' ],
+			new RequestContext( null, null, [], null, null, null )
+		);
+		$this->assertSame( RequestSource::FRONTEND, $payload['source'] );
+		$this->assertArrayNotHasKey( 'user', $payload );
+		$this->assertSame( [ self::change( 'account:…5678.iban', SensitiveOption::REDACTED, SensitiveOption::REDACTED ) ], $payload['changes'] );
+	}
+
+	/**
+	 * @return array<string, array{0: string}>
+	 */
+	public static function background_runs(): array {
+		return [
+			'a cron run'      => [ RequestSource::CRON ],
+			'a queued job'    => [ RequestSource::ACTION_SCHEDULER ],
+		];
+	}
+
+	/**
+	 * A background run that changes the bank accounts is logged as that run,
+	 * even when it runs inside a signed-in person's request: no actor.
+	 *
+	 * @dataProvider background_runs
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param string $source The run's source.
+	 */
+	public function test_a_bank_account_change_by_a_background_run_is_logged_as_that_run( string $source ): void {
+		$recorder = $this->recorder();
+		if ( RequestSource::CRON === $source ) {
+			RequestState::$cron = true;
+		} else {
+			ActionSchedulerContext::begin( 7 );
+		}
+
+		( new WooCommerceSettingsSensor( $recorder ) )->on_update( 'woocommerce_bacs_accounts', [ self::account( '12345678' ) ], [ self::account( '87654321' ) ] );
+
+		$this->assertSame( [ 9401 ], array_column( $recorder->calls, 0 ) );
+		$payload = $this->build(
+			9401,
+			$recorder->calls[0][1],
+			[ RequestSource::class, 'current' ],
+			new RequestContext( 1, 'admin', [ 'administrator' ], null, null, null )
+		);
+		$this->assertSame( $source, $payload['source'] );
+		$this->assertArrayNotHasKey( 'user', $payload );
+		$this->assertSame(
+			[
+				self::change( 'account:…5678', 'present', null ),
+				self::change( 'account:…4321', null, 'added' ),
+			],
+			$payload['changes']
+		);
+	}
+
+	/**
+	 * The installer never writes the bank accounts, but it adds defaults the
+	 * way a first save would; its writes stay unlogged.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_while_the_shop_installs_the_first_bank_account_logs_nothing_even_unattended(): void {
+		$recorder           = $this->recorder();
+		RequestState::$cron = true;
+		define( 'WC_INSTALLING', true );
+
+		( new WooCommerceSettingsSensor( $recorder ) )->on_add( 'woocommerce_bacs_accounts', [ self::account( '12345678' ) ] );
 
 		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * The account number stays, only the IBAN is new: one masked change on
+	 * that account, all the way to the payload.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_new_iban_on_a_kept_account_number_is_one_masked_change(): void {
+		$recorder = $this->recorder();
+		( new WooCommerceSettingsSensor( $recorder ) )->on_update(
+			'woocommerce_bacs_accounts',
+			[ self::account( '12345678', self::IBAN_OLD ) ],
+			[ self::account( '12345678', self::IBAN_NEW ) ]
+		);
+
+		$this->assertSame( [ 9401 ], array_column( $recorder->calls, 0 ) );
+		$payload = $this->build( 9401, $recorder->calls[0][1] );
+		$this->assertSame( 'Bank account details (BACS) changed.', $payload['message'] );
+		$this->assertSame( 'critical', $payload['severity'] );
+		$this->assertSame( self::setting( 'woocommerce_bacs_accounts' ), $payload['target'] );
+		$this->assertSame( [ self::change( 'account:…5678.iban', SensitiveOption::REDACTED, SensitiveOption::REDACTED ) ], $payload['changes'] );
+		$this->assertNoneOf(
+			[ '12345678', self::IBAN_OLD, self::IBAN_NEW, str_replace( ' ', '', self::IBAN_OLD ), str_replace( ' ', '', self::IBAN_NEW ), '557799', '668800' ],
+			[ $recorder->calls, $payload ]
+		);
+	}
+
+	/**
+	 * A payload keeps 50 changes. Many accounts added in front of a changed
+	 * one must not push the change of the existing account out.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_changed_account_survives_many_added_ones_in_front_of_it(): void {
+		$added = [];
+		for ( $i = 0; $i < 60; $i++ ) {
+			$added[] = self::account( sprintf( '9%07d', $i ) );
+		}
+
+		$recorder = $this->recorder();
+		( new WooCommerceSettingsSensor( $recorder ) )->on_update(
+			'woocommerce_bacs_accounts',
+			[ self::account( '12345678', self::IBAN_OLD ) ],
+			[ ...$added, self::account( '12345678', self::IBAN_NEW ) ]
+		);
+
+		$payload = $this->build( 9401, $recorder->calls[0][1] );
+		$this->assertCount( 50, $payload['changes'] );
+		$this->assertSame( self::change( 'account:…5678.iban', SensitiveOption::REDACTED, SensitiveOption::REDACTED ), $payload['changes'][0] );
 	}
 
 	/**
@@ -631,7 +797,8 @@ final class WooCommerceSettingsSensorTest extends TestCase {
 	}
 
 	/**
-	 * Spaces and dashes are how a number is written, not which account it is.
+	 * Spaces and dashes are how a number is written, not which account it is,
+	 * nor a change of it.
 	 */
 	public function test_an_account_is_found_again_whatever_the_spacing_of_its_number(): void {
 		$changes = WooCommerceSettingsSensor::bacs_changes(
@@ -639,12 +806,49 @@ final class WooCommerceSettingsSensorTest extends TestCase {
 			[ self::account( '1234 5678', '', 'Second Bank' ) ]
 		);
 
+		$this->assertSame( [ self::change( 'account:…5678.bank_name', 'First Bank', 'Second Bank' ) ], $changes );
+	}
+
+	/**
+	 * Every bank code compares the way it is matched: without spaces, dashes
+	 * or case.
+	 */
+	public function test_bank_codes_written_another_way_are_no_change(): void {
+		$old = [
+			'account_name'   => 'Example Ltd',
+			'account_number' => '12345678',
+			'bank_name'      => 'First Bank',
+			'sort_code'      => '12-34-56',
+			'iban'           => self::IBAN_OLD,
+			'bic'            => 'EXMPGB2L',
+		];
+		$new = [
+			'account_name'   => 'Example Ltd',
+			'account_number' => '1234 5678',
+			'bank_name'      => 'First Bank',
+			'sort_code'      => '123456',
+			'iban'           => strtolower( str_replace( ' ', '', self::IBAN_OLD ) ),
+			'bic'            => 'exmpgb2l',
+		];
+
+		$this->assertSame( [], WooCommerceSettingsSensor::bacs_changes( [ $old ], [ $new ] ) );
+	}
+
+	/**
+	 * Removed accounts first, then the changes of kept ones, then the added
+	 * ones, whatever their places in the list.
+	 */
+	public function test_changes_list_removed_then_changed_then_added_accounts(): void {
 		$this->assertSame(
 			[
-				self::change( 'account:…5678.account_number', SensitiveOption::REDACTED, SensitiveOption::REDACTED ),
-				self::change( 'account:…5678.bank_name', 'First Bank', 'Second Bank' ),
+				self::change( 'account:…4444', 'present', null ),
+				self::change( 'account:…5678.iban', SensitiveOption::REDACTED, SensitiveOption::REDACTED ),
+				self::change( 'account:…6666', null, 'added' ),
 			],
-			$changes
+			WooCommerceSettingsSensor::bacs_changes(
+				[ self::account( '12345678', self::IBAN_OLD ), self::account( '33334444' ) ],
+				[ self::account( '55556666' ), self::account( '12345678', self::IBAN_NEW ) ]
+			)
 		);
 	}
 
@@ -667,6 +871,11 @@ final class WooCommerceSettingsSensorTest extends TestCase {
 		$this->assertSame(
 			[ self::change( 'account:…1234 #3', null, 'added' ) ],
 			WooCommerceSettingsSensor::bacs_changes( [ $first, $second ], [ $first, $second, $third ] )
+		);
+		$this->assertSame(
+			[ self::change( 'account:…1234 #1.bank_name', 'Second Bank', 'Moved Bank' ) ],
+			WooCommerceSettingsSensor::bacs_changes( [ $first, $second ], [ $moved, $first ] ),
+			'The place is the place in the new list.'
 		);
 	}
 
@@ -797,24 +1006,31 @@ final class WooCommerceSettingsSensorTest extends TestCase {
 	}
 
 	/**
-	 * The wire payload of a recorded event.
+	 * The wire payload of a recorded event; by default built for an
+	 * administrator on a dashboard screen.
 	 *
-	 * @param int                  $code   Event code.
-	 * @param array<string, mixed> $fields What the sensor dispatched.
+	 * @param int                  $code    Event code.
+	 * @param array<string, mixed> $fields  What the sensor dispatched.
+	 * @param callable|null        $source  Returns the request source.
+	 * @param RequestContext|null  $context Who made the request.
 	 *
 	 * @return array<string, mixed>
 	 */
-	private function build( int $code, array $fields ): array {
+	private function build( int $code, array $fields, ?callable $source = null, ?RequestContext $context = null ): array {
 		$catalog = new EventCatalog();
 		CatalogSeeder::seed( $catalog );
-		$builder = new class( $catalog ) extends EventBuilder {
+		$builder = new class(
+			$catalog,
+			$source ?? static fn(): string => RequestSource::ADMIN,
+			$context ?? new RequestContext( 1, 'admin', [ 'administrator' ], null, null, null )
+		) extends EventBuilder {
 
-			public function __construct( EventCatalog $catalog ) {
-				parent::__construct( $catalog, false, static fn(): string => RequestSource::ADMIN );
+			public function __construct( EventCatalog $catalog, callable $source, private RequestContext $context ) {
+				parent::__construct( $catalog, false, $source );
 			}
 
 			protected function current_context(): RequestContext {
-				return new RequestContext( 1, 'admin', [ 'administrator' ], null, null, null );
+				return $this->context;
 			}
 		};
 
