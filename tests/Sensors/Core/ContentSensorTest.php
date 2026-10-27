@@ -798,6 +798,79 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
+	 * WooCommerce renames a product it sends back to `auto-draft` to its
+	 * placeholder (`AUTO-DRAFT`) while the post is saved: the revert names
+	 * the product by the title it had before the save.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_product_reverted_to_auto_draft_is_named_by_its_title_before_the_save(): void {
+		require_once __DIR__ . '/Fixtures/woocommerce-class.php';
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+				self::update_post(
+					$post(
+						[
+							'post_type'  => 'product',
+							'post_title' => 'Hoodie',
+						]
+					),
+					$post(
+						[
+							'post_type'   => 'product',
+							'post_status' => 'auto-draft',
+							'post_title'  => 'AUTO-DRAFT',
+						]
+					)
+				);
+				// The title is read again for the next save.
+				self::update_post(
+					$post(
+						[
+							'post_type'   => 'product',
+							'post_status' => 'trash',
+							'post_title'  => 'Mug',
+						]
+					),
+					$post(
+						[
+							'post_type'   => 'product',
+							'post_status' => 'auto-draft',
+							'post_title'  => 'AUTO-DRAFT',
+						]
+					)
+				);
+			}
+		);
+
+		$this->assertSame( [ 2013, 2013 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				'type'  => 'product',
+				'id'    => '7',
+				'label' => 'Hoodie',
+			],
+			$calls[0][1]['target']
+		);
+		$this->assertSame( 'Hoodie', $calls[0][1]['title'] );
+		$this->assertSame( 'Mug', $calls[1][1]['target']['label'] );
+	}
+
+	/**
+	 * A product that still bears WooCommerce's placeholder title is named by
+	 * its id; a post of another type keeps whatever title it has.
+	 */
+	public function test_a_product_with_the_placeholder_title_is_named_by_its_id(): void {
+		$this->assertSame( '#7', ContentSensor::object_target( 'product', 7, 'AUTO-DRAFT', true )['label'] );
+		$this->assertSame( '#7', ContentSensor::object_target( 'product_variation', 7, 'AUTO-DRAFT', true )['label'] );
+		$this->assertSame( 'AUTO-DRAFT', ContentSensor::object_target( 'post', 7, 'AUTO-DRAFT', true )['label'] );
+		$this->assertSame( 'AUTO-DRAFT', ContentSensor::object_target( 'product', 7, 'AUTO-DRAFT', false )['label'] );
+	}
+
+	/**
 	 * A product or coupon restored through the shop's REST API is a status
 	 * update too.
 	 *

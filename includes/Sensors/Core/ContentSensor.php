@@ -12,6 +12,7 @@ namespace HelloLog\Sensors\Core;
 use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\Integrations\WooCommerceProductSensor;
 use Throwable;
 use WP_Post;
 
@@ -46,7 +47,9 @@ defined( 'ABSPATH' ) || exit;
  * Every event names the post it is about as its target and links to its
  * edit screen. The trash, restore or revert of an order, product or coupon,
  * and the permanent delete of an order, are named by the shop's target of
- * that object (see {@see self::object_target()}).
+ * that object (see {@see self::object_target()}). WooCommerce renames a
+ * product it sends back to `auto-draft` while the post is saved, so the
+ * revert of a post of the shop is named by the title it had before the save.
  *
  * Of a file of the media library only its trash and restore are logged here
  * (the rest is {@see MediaSensor}'s), on the file's media target. Core moves
@@ -148,6 +151,15 @@ final class ContentSensor extends AbstractSensor {
 	 */
 	private array $restored = [];
 
+	/**
+	 * Titles of the shop's posts whose save is open, read on
+	 * `pre_post_update`: `site:post id` => title. Its other events are the
+	 * shop's sensors', so nothing else of them is read.
+	 *
+	 * @var array<string, string>
+	 */
+	private array $titles = [];
+
 	public function key(): string {
 		return 'core-content';
 	}
@@ -176,7 +188,8 @@ final class ContentSensor extends AbstractSensor {
 	 * An existing post is about to be saved: read it as it still is. A save
 	 * of the same post that is already open (a plugin saving it again from
 	 * the hooks of the first save) keeps the first snapshot, so one event
-	 * tells both saves.
+	 * tells both saves. Of a post of the shop only the title is read, for
+	 * its revert.
 	 */
 	public function on_before_update( int $post_id ): void {
 		$key = self::state_key( $post_id );
@@ -188,9 +201,14 @@ final class ContentSensor extends AbstractSensor {
 		// throws); that must never reach the request that saves the post.
 		try {
 			$post = get_post( $post_id );
-			if ( $post instanceof WP_Post && $this->should_track( $post, 2006 ) ) {
+			if ( ! $post instanceof WP_Post ) {
+				return;
+			}
+			if ( $this->should_track( $post, 2006 ) ) {
 				$this->before[ $key ]    = $this->snapshot( $post );
 				$this->opened_in[ $key ] = ActionSchedulerContext::depth();
+			} elseif ( self::is_store_post( $post ) && ! isset( $this->titles[ $key ] ) ) {
+				$this->titles[ $key ] = (string) $post->post_title;
 			}
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 2006, [ 'post_id' => $post_id ] );
@@ -226,7 +244,8 @@ final class ContentSensor extends AbstractSensor {
 		}
 
 		if ( 0 !== $code && $this->should_track( $post, $code ) ) {
-			$this->emit_post_event( $code, $post, $extra );
+			$title = 2013 === $code ? ( $this->titles[ $key ] ?? null ) : null;
+			$this->emit_post_event( $code, $post, $extra, [], [], $title );
 		}
 	}
 
@@ -236,6 +255,7 @@ final class ContentSensor extends AbstractSensor {
 	 */
 	public function on_after_insert( int $post_id ): void {
 		$key = self::state_key( $post_id );
+		unset( $this->titles[ $key ] );
 		if ( ! isset( $this->before[ $key ] ) ) {
 			return;
 		}
@@ -582,7 +602,9 @@ final class ContentSensor extends AbstractSensor {
 	 * names it: a file of the media library is a media item, a post of the
 	 * shop's types (while the shop is active) the shop's order, product or
 	 * coupon, so one object's history stays on one target. An order is named
-	 * `#<id>`, its post has no number of its own. Any other post is a post.
+	 * `#<id>`, its post has no number of its own; a product is named the way
+	 * {@see WooCommerceProductSensor::product_target()} names it. Any other
+	 * post is a post.
 	 *
 	 * @param string $post_type    Post type name.
 	 * @param int    $id           Post id.
@@ -598,6 +620,9 @@ final class ContentSensor extends AbstractSensor {
 		$type = $owner_active ? ( self::STORE_TARGET_TYPES[ $post_type ] ?? null ) : null;
 		if ( null === $type ) {
 			return self::post_target( $id, $title );
+		}
+		if ( 'product' === $type ) {
+			return WooCommerceProductSensor::product_target( $id, $title );
 		}
 
 		return [
@@ -626,6 +651,18 @@ final class ContentSensor extends AbstractSensor {
 		}
 
 		return $links;
+	}
+
+	/**
+	 * Whether a post is one of the shop's (an order, product or coupon) while
+	 * the shop is active.
+	 *
+	 * @param WP_Post $post The post.
+	 */
+	private static function is_store_post( WP_Post $post ): bool {
+		$type = (string) $post->post_type;
+
+		return isset( self::STORE_TARGET_TYPES[ $type ] ) && PostTypeOwnership::owner_active( $type );
 	}
 
 	/**
@@ -810,9 +847,13 @@ final class ContentSensor extends AbstractSensor {
 	 * @param array<string, mixed>                                         $extra   Extra `metadata` entries.
 	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes What changed.
 	 * @param array<string, string>                                        $links   Links beside the edit and view links.
+	 * @param string|null                                                  $title   Title to name the post by instead of its
+	 *                                                                              current one (the title it had before the
+	 *                                                                              save); null for the current one.
 	 */
-	private function emit_post_event( int $code, WP_Post $post, array $extra = [], array $changes = [], array $links = [] ): void {
-		$id = (int) $post->ID;
+	private function emit_post_event( int $code, WP_Post $post, array $extra = [], array $changes = [], array $links = [], ?string $title = null ): void {
+		$id    = (int) $post->ID;
+		$title = $title ?? (string) $post->post_title;
 
 		$fields = [
 			'post'      => [
@@ -823,10 +864,10 @@ final class ContentSensor extends AbstractSensor {
 			'target'    => self::object_target(
 				(string) $post->post_type,
 				$id,
-				(string) $post->post_title,
+				$title,
 				PostTypeOwnership::owner_active( (string) $post->post_type )
 			),
-			'title'     => (string) $post->post_title,
+			'title'     => $title,
 			'post_type' => self::type_label( (string) $post->post_type ),
 			'metadata'  => array_merge(
 				[

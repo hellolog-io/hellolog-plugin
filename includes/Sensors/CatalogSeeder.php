@@ -169,7 +169,7 @@ final class CatalogSeeder {
 	private static function woocommerce( EventCatalog $c ): void {
 		// Products
 		$c->register( new EventDefinition( 9000, ObjectType::PRODUCT, EventType::CREATED, Severity::INFO, 'WC product "{name}" created.' ) );
-		$c->register( new EventDefinition( 9001, ObjectType::PRODUCT, EventType::UPDATED, Severity::INFO, 'WC product "{name}" updated. Fields: {fields}.' ) );
+		$c->register( new EventDefinition( 9001, ObjectType::PRODUCT, EventType::UPDATED, Severity::INFO, 'WC product "{name}" updated.' ) );
 		$c->register( new EventDefinition( 9002, ObjectType::PRODUCT, EventType::DELETED, Severity::MEDIUM, 'WC product "{name}" deleted.' ) );
 		$c->register( new EventDefinition( 9003, ObjectType::PRODUCT, EventType::UPDATED, Severity::INFO, 'WC product "{name}" price changed from {old} to {new}.' ) );
 		$c->register( new EventDefinition( 9004, ObjectType::PRODUCT, EventType::UPDATED, Severity::INFO, 'WC product "{name}" stock changed from {old} to {new}.' ) );
