@@ -494,6 +494,348 @@ final class WcObjectDiffTest extends TestCase {
 		$this->assertSame( [ self::item( '10', 'a', 'c' ) ], $changes );
 	}
 
+	public function test_a_content_field_wildcard_is_expanded_like_a_field_wildcard(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'status' => 'draft',
+				'meta'   => [
+					'a' => '1',
+					'b' => '2',
+				],
+			],
+			[
+				'status' => 'publish',
+				'meta'   => [
+					'a' => '9',
+					'c' => '3',
+				],
+			],
+			[ 'status', 'meta.*' ],
+			[ 'meta.*' ]
+		);
+
+		$this->assertSame(
+			[
+				self::item( 'status', 'draft', 'publish' ),
+				self::item( 'meta.a', null, null ),
+				self::item( 'meta.c', null, null ),
+			],
+			$changes
+		);
+	}
+
+	public function test_a_content_field_wildcard_leaves_other_keys_readable(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'body'   => [ 'html' => 'old' ],
+				'body_x' => 'old',
+			],
+			[
+				'body'   => [ 'html' => 'new' ],
+				'body_x' => 'new',
+			],
+			[ 'body.*', 'body_x' ],
+			[ 'body.*' ]
+		);
+
+		$this->assertSame(
+			[
+				self::item( 'body.html', null, null ),
+				self::item( 'body_x', 'old', 'new' ),
+			],
+			$changes
+		);
+	}
+
+	public function test_a_credential_like_name_is_masked_after_flattening(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'gw'   => [
+					'api_key' => 'key-old-1',
+					'title'   => 'Card',
+				],
+				'acct' => [
+					'password' => 'hash-old-2',
+					'email'    => 'a@example.com',
+				],
+			],
+			[
+				'gw'   => [
+					'api_key' => 'key-new-1',
+					'title'   => 'Credit card',
+				],
+				'acct' => [
+					'password' => 'hash-new-2',
+					'email'    => 'b@example.com',
+				],
+			],
+			[ 'gw.*', 'acct.*' ]
+		);
+
+		$this->assertSame(
+			[
+				self::item( 'gw.api_key', '[redacted]', '[redacted]' ),
+				self::item( 'gw.title', 'Card', 'Credit card' ),
+				self::item( 'acct.password', '[redacted]', '[redacted]' ),
+				self::item( 'acct.email', 'a@example.com', 'b@example.com' ),
+			],
+			$changes
+		);
+		$this->assertDoesNotMatchRegularExpression( '/key-(old|new)|hash-(old|new)/', (string) json_encode( $changes ) );
+	}
+
+	public function test_the_value_of_a_secret_pair_is_masked_when_only_the_value_is_pending(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'extra' => [
+					'name'  => 'api_secret',
+					'value' => 'sk-old',
+				],
+			],
+			[ 'extra' => [ 'value' => 'sk-new' ] ],
+			[ 'extra.*' ]
+		);
+
+		$this->assertSame( [ self::item( 'extra.value', '[redacted]', '[redacted]' ) ], $changes );
+	}
+
+	public function test_a_secret_pair_that_did_not_change_is_not_reported(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'extra' => [
+					'name'  => 'api_secret',
+					'value' => 'sk-same',
+				],
+			],
+			[ 'extra' => [ 'value' => 'sk-same' ] ],
+			[ 'extra.*' ]
+		);
+
+		$this->assertSame( [], $changes );
+	}
+
+	public function test_a_pair_renamed_into_a_secret_is_masked(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'extra' => [
+					'name'  => 'color',
+					'value' => 'sk-old',
+				],
+			],
+			[
+				'extra' => [
+					'name'  => 'access_token',
+					'value' => 'sk-new',
+				],
+			],
+			[ 'extra.*' ]
+		);
+
+		$this->assertSame(
+			[
+				self::item( 'extra.name', 'color', 'access_token' ),
+				self::item( 'extra.value', '[redacted]', '[redacted]' ),
+			],
+			$changes
+		);
+	}
+
+	public function test_a_pair_renamed_out_of_a_secret_is_masked(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'extra' => [
+					'name'  => 'client_secret',
+					'value' => 'sk-old',
+				],
+			],
+			[
+				'extra' => [
+					'name'  => 'color',
+					'value' => 'sk-new',
+				],
+			],
+			[ 'extra.value' ]
+		);
+
+		$this->assertSame( [ self::item( 'extra.value', '[redacted]', '[redacted]' ) ], $changes );
+	}
+
+	public function test_everything_below_the_value_of_a_secret_pair_is_masked(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'extra' => [
+					'id'    => 'private_key',
+					'value' => [
+						'pem' => 'pem-old',
+						'n'   => 1,
+					],
+				],
+			],
+			[
+				'extra' => [
+					'id'    => 'private_key',
+					'value' => [
+						'pem' => 'pem-new',
+						'n'   => 2,
+					],
+				],
+			],
+			[ 'extra.*' ]
+		);
+
+		$this->assertSame(
+			[
+				self::item( 'extra.value.pem', '[redacted]', '[redacted]' ),
+				self::item( 'extra.value.n', '[redacted]', '[redacted]' ),
+			],
+			$changes
+		);
+	}
+
+	public function test_a_pair_without_a_secret_name_stays_readable(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'opt' => [
+					'name'  => 'color',
+					'value' => 'red',
+				],
+			],
+			[ 'opt' => [ 'value' => 'blue' ] ],
+			[ 'opt.*' ]
+		);
+
+		$this->assertSame( [ self::item( 'opt.value', 'red', 'blue' ) ], $changes );
+	}
+
+	public function test_a_top_level_pair_is_masked_too(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'name'  => 'webhook_secret',
+				'value' => 'sk-old',
+			],
+			[ 'value' => 'sk-new' ],
+			[ 'value' ]
+		);
+
+		$this->assertSame( [ self::item( 'value', '[redacted]', '[redacted]' ) ], $changes );
+	}
+
+	public function test_a_content_pair_stays_valueless(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'extra' => [
+					'name'  => 'api_secret',
+					'value' => 'sk-old',
+				],
+			],
+			[ 'extra' => [ 'value' => 'sk-new' ] ],
+			[ 'extra.value' ],
+			[ 'extra.value' ]
+		);
+
+		$this->assertSame( [ self::item( 'extra.value', null, null ) ], $changes );
+	}
+
+	public function test_flatten_masks_the_value_of_a_secret_pair(): void {
+		$flat = WcObjectDiff::flatten(
+			[
+				'extra' => [
+					'name'  => 'api_secret',
+					'value' => 'sk-live',
+				],
+				'deep'  => [
+					'id'    => 'access_token',
+					'value' => [ 'x' => 'tok' ],
+				],
+				'opt'   => [
+					'name'  => 'color',
+					'value' => 'red',
+				],
+			]
+		);
+
+		$this->assertSame(
+			[
+				'extra.name'   => 'api_secret',
+				'extra.value'  => '[redacted]',
+				'deep.id'      => 'access_token',
+				'deep.value.x' => '[redacted]',
+				'opt.name'     => 'color',
+				'opt.value'    => 'red',
+			],
+			$flat
+		);
+	}
+
+	public function test_a_meta_list_with_a_secret_key_is_masked(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'meta_data' => [
+					[
+						'id'    => 7,
+						'key'   => '_stripe_secret',
+						'value' => 'sk_live_old',
+					],
+					[
+						'id'    => 8,
+						'key'   => '_color',
+						'value' => 'red',
+					],
+				],
+			],
+			[
+				'meta_data' => [
+					[
+						'id'    => 7,
+						'key'   => '_stripe_secret',
+						'value' => 'sk_live_new',
+					],
+					[
+						'id'    => 8,
+						'key'   => '_color',
+						'value' => 'red',
+					],
+				],
+			],
+			[ 'meta_data' ]
+		);
+
+		$this->assertCount( 1, $changes );
+		$this->assertSame( 'meta_data', $changes[0]['field'] );
+		$this->assertStringNotContainsString( 'sk_live', (string) json_encode( $changes ) );
+	}
+
+	public function test_a_list_of_pairs_without_a_secret_name_stays_readable(): void {
+		$changes = WcObjectDiff::changes(
+			[
+				'attributes' => [
+					[
+						'id'    => 8,
+						'name'  => 'color',
+						'value' => 'red',
+					],
+				],
+			],
+			[
+				'attributes' => [
+					[
+						'id'    => 8,
+						'name'  => 'color',
+						'value' => 'blue',
+					],
+				],
+			],
+			[ 'attributes' ]
+		);
+
+		$this->assertSame(
+			[
+				self::item( 'attributes', '{"id":8,"name":"color","value":"red"}', '{"id":8,"name":"color","value":"blue"}' ),
+			],
+			$changes
+		);
+	}
+
 	public function test_an_object_never_reaches_the_change_list(): void {
 		$changes = WcObjectDiff::changes(
 			[ 'product' => new \stdClass() ],

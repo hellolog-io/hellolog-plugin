@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Events\ChangeSet;
+use HelloLog\Sensors\SensitiveOption;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -22,7 +23,13 @@ defined( 'ABSPATH' ) || exit;
  * one value. What is left is plain data: a date is its ISO 8601 text in UTC,
  * so the same instant held in two time zones is not a change; an object with a
  * text form is that text; any other object is dropped. The rules hold at every
- * level, inside lists too, so no object ever reaches the change list. The
+ * level, inside lists too, so no object ever reaches the change list.
+ *
+ * Flattening also splits up a name/value pair (`name`, `key` or `id` next to
+ * `value`), which {@see ChangeSet} would mask as one array. So the value of a
+ * pair whose name is credential-like is masked here, with everything below it:
+ * {@see self::flatten()} shows {@see SensitiveOption::REDACTED} in its place and
+ * {@see self::changes()} reports the change as `[redacted]` on both sides. The
  * helper never calls into WordPress or WooCommerce.
  */
 final class WcObjectDiff {
@@ -37,11 +44,21 @@ final class WcObjectDiff {
 	private const ELLIPSIS = '…';
 
 	/**
+	 * The keys that name the field of a name/value pair, like
+	 * {@see ChangeSet} reads them.
+	 *
+	 * @var array<int, string>
+	 */
+	private const PAIR_NAME_KEYS = [ 'name', 'key', 'id' ];
+
+	/**
 	 * Nested associative arrays as one level of dot keys.
 	 *
 	 * `[ 'billing' => [ 'city' => 'Budapest' ] ]` becomes
 	 * `[ 'billing.city' => 'Budapest' ]`. A list (and an empty array) is one
-	 * value and keeps its shape. Values are cleaned as described on the class.
+	 * value and keeps its shape. Values are cleaned as described on the class,
+	 * and the value of a name/value pair with a credential-like name reads
+	 * {@see SensitiveOption::REDACTED}.
 	 *
 	 * @param array<int|string, mixed> $a      Snapshot, possibly nested.
 	 * @param string                   $prefix Dot key to put in front of every key; empty for none.
@@ -49,8 +66,13 @@ final class WcObjectDiff {
 	 * @return array<int|string, mixed>
 	 */
 	public static function flatten( array $a, string $prefix = '' ): array {
-		$flat = [];
-		self::flatten_into( $flat, $a, $prefix, 0 );
+		$flat    = self::flatten_raw( $a, $prefix );
+		$secrets = self::secret_pairs( $flat );
+		foreach ( $flat as $key => $unused ) {
+			if ( self::is_secret_value( (string) $key, $secrets ) ) {
+				$flat[ $key ] = SensitiveOption::REDACTED;
+			}
+		}
 
 		return $flat;
 	}
@@ -63,23 +85,106 @@ final class WcObjectDiff {
 	 * the dot keys to compare, in the order the result follows. A name that
 	 * ends in `*` is a prefix wildcard: `billing.*` stands for every key that
 	 * starts with `billing.` and exists in either snapshot. `$content_fields`
-	 * are exact dot keys reported as "changed" without values.
+	 * are dot keys reported as "changed" without values; they take wildcards
+	 * the same way.
+	 *
+	 * The comparison runs on the real values. The value of a name/value pair
+	 * whose name is credential-like, in either snapshot (`pending` may carry
+	 * the value alone), is reported as `[redacted]` on both sides, so a changed
+	 * secret is never lost and never shown.
 	 *
 	 * @param array<int|string, mixed> $stored         Snapshot of what is stored now.
 	 * @param array<int|string, mixed> $pending        The values about to replace it.
 	 * @param array<int, int|string>   $fields         Dot keys to compare; may hold prefix wildcards like `billing.*`.
-	 * @param array<int, int|string>   $content_fields Dot keys reported without their values.
+	 * @param array<int, int|string>   $content_fields Dot keys reported without their values; may hold prefix wildcards.
 	 *
 	 * @return array<int, array{field: string, old: ?string, new: ?string}>
 	 */
 	public static function changes( array $stored, array $pending, array $fields, array $content_fields = [] ): array {
-		$stored_flat = self::flatten( $stored );
+		$stored_flat = self::flatten_raw( $stored );
 		$after       = $stored_flat;
-		foreach ( self::flatten( $pending ) as $key => $value ) {
+		foreach ( self::flatten_raw( $pending ) as $key => $value ) {
 			$after[ $key ] = $value;
 		}
 
-		return ChangeSet::diff( $stored_flat, $after, self::expand( $fields, $after ), $content_fields );
+		// A pair counts as secret when either snapshot names it so: a rename
+		// into or out of a credential-like name must not unmask the value.
+		$secrets = self::secret_pairs( $stored_flat ) + self::secret_pairs( $after );
+
+		$changes = ChangeSet::diff(
+			$stored_flat,
+			$after,
+			self::expand( $fields, $after ),
+			self::expand( $content_fields, $after )
+		);
+		foreach ( $changes as $i => $change ) {
+			if ( ( null !== $change['old'] || null !== $change['new'] ) && self::is_secret_value( $change['field'], $secrets ) ) {
+				$changes[ $i ]['old'] = SensitiveOption::REDACTED;
+				$changes[ $i ]['new'] = SensitiveOption::REDACTED;
+			}
+		}
+
+		return $changes;
+	}
+
+	/**
+	 * The flattened `$a` with its real values.
+	 *
+	 * @param array<int|string, mixed> $a      Snapshot, possibly nested.
+	 * @param string                   $prefix Dot key to put in front of every key; empty for none.
+	 *
+	 * @return array<int|string, mixed>
+	 */
+	private static function flatten_raw( array $a, string $prefix = '' ): array {
+		$flat = [];
+		self::flatten_into( $flat, $a, $prefix, 0 );
+
+		return $flat;
+	}
+
+	/**
+	 * The dot keys of the name/value pairs that hold a secret: the key before
+	 * the last dot of every `name`, `key` or `id` key whose value is a
+	 * credential-like string (empty for a pair at the top level). Like
+	 * {@see ChangeSet}, a non-string name does not count.
+	 *
+	 * @param array<int|string, mixed> $flat Flat snapshot.
+	 *
+	 * @return array<string, true>
+	 */
+	private static function secret_pairs( array $flat ): array {
+		$pairs = [];
+		foreach ( $flat as $key => $value ) {
+			if ( ! is_string( $value ) ) {
+				continue;
+			}
+
+			$key  = (string) $key;
+			$dot  = strrpos( $key, '.' );
+			$last = false === $dot ? $key : substr( $key, $dot + 1 );
+			if ( in_array( $last, self::PAIR_NAME_KEYS, true ) && SensitiveOption::is_sensitive( $value ) ) {
+				$pairs[ false === $dot ? '' : substr( $key, 0, $dot ) ] = true;
+			}
+		}
+
+		return $pairs;
+	}
+
+	/**
+	 * Whether a flat key is the `value` of a secret pair, or sits below it.
+	 *
+	 * @param string               $key   Flat key.
+	 * @param array<string, true>  $pairs Dot keys of the secret pairs, see {@see self::secret_pairs()}.
+	 */
+	private static function is_secret_value( string $key, array $pairs ): bool {
+		foreach ( array_keys( $pairs ) as $pair ) {
+			$value_key = '' === (string) $pair ? 'value' : $pair . '.value';
+			if ( $key === $value_key || str_starts_with( $key, $value_key . '.' ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
