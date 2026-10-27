@@ -36,10 +36,14 @@ queue.
 * Authentication: login/logout, failed logins, password reset, 2FA, app passwords
 * Users: create / delete / role change / profile updates
 * Content: posts, pages, CPTs, taxonomies, comments, menus, widgets, custom fields
+* Media library: uploads, edits of a file's title, caption, description or
+  alternative text, trash (with the media trash on), permanent deletion
 * Plugins & themes: install / activate / deactivate / update / delete / file changes
 * Settings & system: site URL, permalinks, discussion, WordPress core updates
 * Files: wp-config.php, .htaccess, robots.txt, plugin/theme file modifications
 * Multisite: sites, super admin grants, network settings
+* helloLOG itself: changes to its own settings (the API key, never its value;
+  IP anonymization; sensors turned on or off) and its deactivation
 * Integrations: WooCommerce, Gravity Forms, WPForms, Yoast SEO, RankMath, ACF,
   bbPress, LearnDash, MemberPress, Paid Memberships Pro, TablePress,
   Redirection, MainWP, and more
