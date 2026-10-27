@@ -11,6 +11,7 @@ namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\StoreTargets;
 use Throwable;
 
 defined( 'ABSPATH' ) || exit;
@@ -142,18 +143,15 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 
 	/**
 	 * The object an event about an order is about; the label is the order
-	 * number, which differs from the id on shops with sequential numbering.
+	 * number, which differs from the id on shops with sequential numbering
+	 * (see {@see StoreTargets::order()}).
 	 *
 	 * @param int    $id     Order id.
 	 * @param string $number Order number; the id is used when empty.
 	 * @return array{type: string, id: string, label: string}
 	 */
 	public static function order_target( int $id, string $number ): array {
-		return [
-			'type'  => 'order',
-			'id'    => (string) $id,
-			'label' => '#' . ( '' !== $number ? $number : (string) $id ),
-		];
+		return StoreTargets::order( $id, $number );
 	}
 
 	/**

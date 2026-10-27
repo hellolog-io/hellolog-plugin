@@ -12,7 +12,7 @@ namespace HelloLog\Sensors\Core;
 use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
-use HelloLog\Sensors\Integrations\WooCommerceProductSensor;
+use HelloLog\Sensors\StoreTargets;
 use Throwable;
 use WP_Post;
 
@@ -601,9 +601,9 @@ final class ContentSensor extends AbstractSensor {
 	 * The object a post of a type stands for, as the sensor of that object
 	 * names it: a file of the media library is a media item, a post of the
 	 * shop's types (while the shop is active) the shop's order, product or
-	 * coupon, so one object's history stays on one target. An order is named
-	 * `#<id>`, its post has no number of its own; a product is named the way
-	 * {@see WooCommerceProductSensor::product_target()} names it. Any other
+	 * coupon, named the way the shop's sensors name it (see
+	 * {@see StoreTargets}), so one object's history stays on one target. An
+	 * order is named `#<id>`, its post has no number of its own. Any other
 	 * post is a post.
 	 *
 	 * @param string $post_type    Post type name.
@@ -618,18 +618,16 @@ final class ContentSensor extends AbstractSensor {
 		}
 
 		$type = $owner_active ? ( self::STORE_TARGET_TYPES[ $post_type ] ?? null ) : null;
-		if ( null === $type ) {
-			return self::post_target( $id, $title );
+		switch ( $type ) {
+			case 'order':
+				return StoreTargets::order( $id );
+			case 'product':
+				return StoreTargets::product( $id, $title );
+			case 'coupon':
+				return StoreTargets::coupon( $id, $title );
+			default:
+				return self::post_target( $id, $title );
 		}
-		if ( 'product' === $type ) {
-			return WooCommerceProductSensor::product_target( $id, $title );
-		}
-
-		return [
-			'type'  => $type,
-			'id'    => (string) $id,
-			'label' => 'order' === $type ? '#' . $id : $title,
-		];
 	}
 
 	/**
