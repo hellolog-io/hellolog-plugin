@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Sensors\Integrations;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
 use HelloLog\Sensors\Core\ContentSensor;
@@ -174,10 +175,13 @@ final class WooCommerceCouponSensor extends AbstractSensor {
 	];
 
 	/**
-	 * The coupons created in this request: `site:coupon id` => true. A coupon
-	 * id is unique on its own site only.
+	 * The coupons created in this request: `site:coupon id` => how many
+	 * Action Scheduler jobs were running (see
+	 * {@see ActionSchedulerContext::depth()}). A coupon id is unique on its
+	 * own site only. What a job created is made when the job ends, see
+	 * {@see self::flush_job_state()}.
 	 *
-	 * @var array<string, true>
+	 * @var array<string, int>
 	 */
 	private array $created = [];
 
@@ -196,6 +200,21 @@ final class WooCommerceCouponSensor extends AbstractSensor {
 		add_action( 'transition_post_status', [ $this, 'on_post_status' ], 10, 3 );
 		add_action( 'post_updated', [ $this, 'on_post_updated' ], 10, 3 );
 		add_action( 'before_delete_post', [ $this, 'on_delete_post' ], 10, 2 );
+		// When a job ends, before its context closes at PHP_INT_MAX.
+		add_action( 'action_scheduler_after_execute', [ $this, 'flush_job_state' ], PHP_INT_MAX - 1, 0 );
+		add_action( 'action_scheduler_failed_execution', [ $this, 'flush_job_state' ], PHP_INT_MAX - 1, 0 );
+	}
+
+	/**
+	 * The Action Scheduler job that is ending made the coupons it created: a
+	 * later job of the same run that edits one logs the edit. Nothing
+	 * outside a job.
+	 */
+	public function flush_job_state(): void {
+		$depth = ActionSchedulerContext::depth();
+		if ( $depth > 0 ) {
+			$this->created = array_filter( $this->created, static fn( int $at ): bool => $at < $depth );
+		}
 	}
 
 	/**
@@ -406,7 +425,7 @@ final class WooCommerceCouponSensor extends AbstractSensor {
 	 * @param string $code      Its code.
 	 */
 	private function emit_created( int $coupon_id, string $code ): void {
-		$this->created[ self::state_key( $coupon_id ) ] = true;
+		$this->created[ self::state_key( $coupon_id ) ] = ActionSchedulerContext::depth();
 		$this->emit( 9200, self::coupon_fields( $coupon_id, $code ) );
 	}
 

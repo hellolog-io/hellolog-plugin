@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Sensors\Integrations;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
@@ -1022,6 +1023,39 @@ final class WooCommerceCouponSensorTest extends TestCase {
 	}
 
 	/**
+	 * A coupon an Action Scheduler job created is made when the job ends: a
+	 * later job of the same run (the command line runs many in one process)
+	 * that edits it logs the edit. One the request created before a job ran
+	 * inside it is still being made after that job.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_coupon_created_by_a_job_is_edited_by_a_later_job_of_the_same_run(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceCouponSensor( $recorder );
+		$sensor->on_created( 9, new \WC_Coupon( 9, self::stored( [ 'code' => 'winter5' ] ) ) );
+
+		ActionSchedulerContext::begin( 41 );
+		$sensor->on_created( 8, new \WC_Coupon( 8, self::stored() ) );
+		$sensor->on_before_save( new \WC_Coupon( 8, self::stored(), [ 'amount' => '15' ] ) );
+		$sensor->flush_job_state();
+		ActionSchedulerContext::end( 41 );
+
+		ActionSchedulerContext::begin( 42 );
+		$sensor->on_before_save( new \WC_Coupon( 8, self::stored(), [ 'amount' => '25' ] ) );
+		$sensor->on_before_save( new \WC_Coupon( 9, self::stored( [ 'code' => 'winter5' ] ), [ 'amount' => '25' ] ) );
+		$sensor->flush_job_state();
+		ActionSchedulerContext::end( 42 );
+		$sensor->flush_job_state();
+
+		$this->assertSame( [ 9200, 9200, 9201 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( '8', $recorder->calls[2][1]['target']['id'] );
+	}
+
+	/**
 	 * The shop's save of a coupon runs before it writes it, with no guard
 	 * around its hooks: whatever fails while reading the coupon is reported,
 	 * never thrown.
@@ -1162,6 +1196,9 @@ final class WooCommerceCouponSensorTest extends TestCase {
 			'transition_post_status'              => [ 'on_post_status', 3, 10 ],
 			'post_updated'                        => [ 'on_post_updated', 3, 10 ],
 			'before_delete_post'                  => [ 'on_delete_post', 2, 10 ],
+			// When a job ends, before its context closes at PHP_INT_MAX.
+			'action_scheduler_after_execute'      => [ 'flush_job_state', 0, PHP_INT_MAX - 1 ],
+			'action_scheduler_failed_execution'   => [ 'flush_job_state', 0, PHP_INT_MAX - 1 ],
 		];
 		$this->assertSame( array_keys( $expected ), array_keys( WpState::$callbacks ) );
 		foreach ( $expected as $hook => [ $method, $args, $priority ] ) {
