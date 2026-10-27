@@ -1860,6 +1860,96 @@ final class SuppressionRulesTest extends TestCase {
 	}
 
 	/**
+	 * @return array{type: string, id: string}
+	 */
+	private static function coupon( int $id ): array {
+		return [
+			'type' => 'coupon',
+			'id'   => (string) $id,
+		];
+	}
+
+	/**
+	 * A coupon edit (9201) says nothing next to the coupon's creation or its
+	 * permanent delete in the same request: a creation tells no changes, and
+	 * the edits of a deleted coupon do not matter.
+	 */
+	public function test_defaults_drop_coupon_edits_under_creation_and_delete(): void {
+		$rules = SuppressionRules::defaults();
+		$edit  = [ self::change( 'amount', '10', '25' ) ];
+
+		foreach ( [ 9200, 9202 ] as $winner ) {
+			$result = $rules->apply(
+				[
+					self::event( 9201, self::coupon( 8 ), $edit ),
+					self::event( $winner, self::coupon( 8 ) ),
+					self::event( 9201, self::coupon( 9 ), $edit ),
+				]
+			);
+			$this->assertSame( [ $winner, 9201 ], self::codes( $result ), "9201 yields to $winner on the same coupon only" );
+			$this->assertArrayNotHasKey( 'changes', $result[0], "9201 is dropped under $winner, not folded" );
+		}
+	}
+
+	/**
+	 * A coupon edit goes into the trash, restore or revert of its coupon in
+	 * the same request, without the status: the event says that itself.
+	 */
+	public function test_defaults_fold_coupon_edits_into_trash_restore_and_revert_without_the_status(): void {
+		$rules = SuppressionRules::defaults();
+
+		foreach ( [ 2003, 2004, 2013 ] as $code ) {
+			$result = $rules->apply(
+				[
+					self::event(
+						9201,
+						self::coupon( 8 ),
+						[
+							self::change( 'status', 'publish', 'trash' ),
+							self::change( 'amount', '10', '25' ),
+						]
+					),
+					self::event( $code, self::coupon( 8 ) ),
+					self::event( 9201, self::coupon( 9 ), [ self::change( 'status', 'publish', 'draft' ) ] ),
+				]
+			);
+			$this->assertSame( [ $code, 9201 ], self::codes( $result ), "9201 goes into $code on the same coupon only" );
+			$this->assertSame( [ self::change( 'amount', '10', '25' ) ], $result[0]['changes'], "$code carries the edit but not the status" );
+			$this->assertSame( [ self::change( 'status', 'publish', 'draft' ) ], $result[1]['changes'], 'an edit that is not folded keeps its status' );
+		}
+
+		$status_only = $rules->apply(
+			[
+				self::event( 9201, self::coupon( 8 ), [ self::change( 'status', 'publish', 'trash' ) ] ),
+				self::event( 2003, self::coupon( 8 ) ),
+			]
+		);
+		$this->assertSame( [ 2003 ], self::codes( $status_only ) );
+		$this->assertArrayNotHasKey( 'changes', $status_only[0] );
+	}
+
+	/**
+	 * The edits of a coupon in one request (core's write of the post, its
+	 * status change, the shop's save) are one event; an edit that changed
+	 * nothing is none.
+	 */
+	public function test_defaults_merge_coupon_edits_and_drop_empty_ones(): void {
+		$rules = SuppressionRules::defaults();
+
+		$merged = $rules->apply(
+			[
+				self::event( 9201, self::coupon( 8 ), [ self::change( 'status', 'publish', 'draft' ) ] ),
+				self::event( 9201, self::coupon( 8 ), [] ),
+				self::event( 9201, self::coupon( 8 ), [ self::change( 'amount', '10', '25' ) ] ),
+			]
+		);
+		$this->assertSame( [ 9201 ], self::codes( $merged ) );
+		$this->assertSame( [ 'status', 'amount' ], array_column( $merged[0]['changes'], 'field' ) );
+
+		$this->assertSame( [], $rules->apply( [ self::event( 9201, self::coupon( 8 ), [] ) ] ) );
+	}
+
+	/**
 	 * A suppressed payload can leave fields out of what it folds: the event
 	 * it folds into tells them itself. Its own changes stay whole.
 	 */

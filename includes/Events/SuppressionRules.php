@@ -190,21 +190,24 @@ final class SuppressionRules {
 
 				// A product edit says nothing of its own next to the product's
 				// creation (it tells no changes) or permanent delete, and goes
-				// into its trash, restore or revert (see the folds below).
+				// into its trash, restore or revert (see the folds below). The
+				// same for a coupon edit.
 				9001 => [ 9000, 9002, 2003, 2004, 2013 ],
+				9201 => [ 9200, 9202, 2003, 2004, 2013 ],
 			],
 			// Role changes are not merged: folding two of them would keep the
 			// message of the first and understate the final privilege. A
 			// restore can arrive from up to three hooks of one request. A
 			// product edit can arrive from WordPress's write of the post, its
-			// terms, its status change and two saves of the shop. Item changes
-			// are not merged either: every item of an order is on the order's
-			// target, and folding two would mix their quantities under the
-			// first one's name.
-			[ 2006, 4001, 2121, 2401, 2011, 9105, 9110, 9001 ],
+			// terms, its status change and two saves of the shop, a coupon edit
+			// from the write of the post, its status change and the shop's
+			// save. Item changes are not merged either: every item of an order
+			// is on the order's target, and folding two would mix their
+			// quantities under the first one's name.
+			[ 2006, 4001, 2121, 2401, 2011, 9105, 9110, 9001, 9201 ],
 			// A menu save without changes of its own stays: it saved the
 			// menu's items.
-			[ 2006, 4001, 2121, 2011, 9105, 9001, 9108 ],
+			[ 2006, 4001, 2121, 2011, 9105, 9001, 9108, 9201 ],
 			[
 				// Only the note that is nothing but WooCommerce's sentence about the
 				// status change repeats it, whoever it is filed under. Everything
@@ -248,14 +251,16 @@ final class SuppressionRules {
 				// no changes.
 				9105 => [ 9101, 9110, 9109, 9102 ],
 
-				// A product edit made in the request that trashes, restores or
-				// reverts the product goes into that event.
+				// A product or coupon edit made in the request that trashes,
+				// restores or reverts it goes into that event.
 				9001 => [ 2003, 2004, 2013 ],
+				9201 => [ 2003, 2004, 2013 ],
 			],
 			[
-				// A product edit folded into the trash, restore or revert of its
-				// product leaves its status out: that event says it.
+				// A product or coupon edit folded into its trash, restore or
+				// revert leaves its status out: that event says it.
 				9001 => [ 'status' ],
+				9201 => [ 'status' ],
 			]
 		);
 	}
