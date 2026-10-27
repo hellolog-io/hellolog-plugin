@@ -1455,6 +1455,113 @@ final class SuppressionRulesTest extends TestCase {
 	}
 
 	/**
+	 * An order edit (9105) and its item events (9106–9108) say nothing next
+	 * to the order's creation (not 9107: creating an order removes no item),
+	 * trash or delete in the same request; an edit next to a status change
+	 * goes into the status event.
+	 */
+	public function test_defaults_drop_order_edits_under_creation_trash_and_delete(): void {
+		$rules = SuppressionRules::defaults();
+		$edit  = [ self::change( 'billing.city', 'Budapest', 'Szeged' ) ];
+
+		$beaten_by = [
+			9105 => [ 9100, 9102, 9109 ],
+			9106 => [ 9100, 9102, 9109 ],
+			9107 => [ 9102, 9109 ],
+			9108 => [ 9100, 9102, 9109 ],
+		];
+		foreach ( $beaten_by as $code => $winners ) {
+			foreach ( $winners as $winner ) {
+				$result = $rules->apply(
+					[
+						self::event( $code, self::order( 5 ), $edit ),
+						self::event( $winner, self::order( 5 ) ),
+						self::event( $code, self::order( 6 ), $edit ),
+					]
+				);
+				$this->assertSame( [ $winner, $code ], self::codes( $result ), "$code must yield to $winner on the same order only" );
+				$this->assertArrayNotHasKey( 'changes', $result[0], "$code is dropped under $winner, not folded" );
+			}
+		}
+
+		$this->assertSame( [ 9100, 9107 ], self::codes( $rules->apply( [ self::event( 9100, self::order( 5 ) ), self::event( 9107, self::order( 5 ), $edit ) ] ) ) );
+
+		$folded = $rules->apply(
+			[
+				self::event( 9105, self::order( 5 ), $edit ),
+				self::event( 9101, self::order( 5 ), [ self::change( 'status', 'on-hold', 'completed' ) ], [ 'metadata' => [ 'old_status' => 'on-hold' ] ] ),
+			]
+		);
+		$this->assertSame( [ 9101 ], self::codes( $folded ) );
+		$this->assertSame( [ 'billing.city', 'status' ], array_column( $folded[0]['changes'], 'field' ) );
+	}
+
+	/**
+	 * The edits of an order in one request are one event; an edit that
+	 * changed nothing is none.
+	 */
+	public function test_defaults_fold_order_edits_and_drop_empty_ones(): void {
+		$rules = SuppressionRules::defaults();
+
+		$folded = $rules->apply(
+			[
+				self::event( 9105, self::order( 5 ), [ self::change( 'billing.city', 'Budapest', 'Szeged' ) ] ),
+				self::event( 9105, self::order( 5 ), [] ),
+				self::event( 9105, self::order( 5 ), [ self::change( 'total', '25.00', '30.00' ) ] ),
+			]
+		);
+		$this->assertSame( [ 9105 ], self::codes( $folded ) );
+		$this->assertSame( [ 'billing.city', 'total' ], array_column( $folded[0]['changes'], 'field' ) );
+
+		$this->assertSame( [], $rules->apply( [ self::event( 9105, self::order( 5 ), [] ) ] ) );
+	}
+
+	/**
+	 * A restore can arrive as WooCommerce's restore, WordPress's restore of
+	 * the order post and a status change out of the trash, all in one
+	 * request: one restore stays. A trash or restore the store tells hides
+	 * the post event of the same order; a status change that is no restore
+	 * stays.
+	 */
+	public function test_defaults_keep_one_order_restore_and_one_order_trash(): void {
+		$rules    = SuppressionRules::defaults();
+		$restored = [ 'metadata' => [ 'previous_status' => 'processing' ] ];
+
+		$result = $rules->apply(
+			[
+				self::event( 2004, self::order( 5 ) ),
+				self::event( 9110, self::order( 5 ), null, $restored ),
+				self::event( 9101, self::order( 5 ), [ self::change( 'status', 'trash', 'processing' ) ], [ 'metadata' => [ 'old_status' => 'trash' ] ] ),
+				self::event( 9110, self::order( 5 ), null, $restored ),
+			]
+		);
+		$this->assertSame( [ 9110 ], self::codes( $result ) );
+		$this->assertSame( 'processing', $result[0]['metadata']['previous_status'] );
+
+		// Restores that differ (one carries the edits of its save) are still one.
+		$merged = $rules->apply(
+			[
+				self::event( 9110, self::order( 5 ), [ self::change( 'billing.city', 'Budapest', 'Szeged' ) ], $restored ),
+				self::event( 9110, self::order( 5 ), null, [ 'metadata' => [ 'order_id' => 5 ] ] ),
+			]
+		);
+		$this->assertSame( [ 9110 ], self::codes( $merged ) );
+		$this->assertSame( [ 'billing.city' ], array_column( $merged[0]['changes'], 'field' ) );
+		$this->assertSame( 'processing', $merged[0]['metadata']['previous_status'] );
+
+		$this->assertSame( [ 9109 ], self::codes( $rules->apply( [ self::event( 2003, self::order( 5 ) ), self::event( 9109, self::order( 5 ) ) ] ) ) );
+		$this->assertSame( [ 2003, 2004 ], self::codes( $rules->apply( [ self::event( 2003, self::order( 5 ) ), self::event( 2004, self::order( 6 ) ) ] ) ) );
+
+		$status = $rules->apply(
+			[
+				self::event( 9110, self::order( 5 ), null, $restored ),
+				self::event( 9101, self::order( 5 ), [ self::change( 'status', 'pending', 'processing' ) ], [ 'metadata' => [ 'old_status' => 'pending' ] ] ),
+			]
+		);
+		$this->assertSame( [ 9110, 9101 ], self::codes( $status ) );
+	}
+
+	/**
 	 * Two edits of a term in one request are one event, and an edit that
 	 * changed nothing (or was undone) is not one. Menu saves fold the same
 	 * way, but a menu save without a change of its own stays: it is a save of

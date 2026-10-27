@@ -17,6 +17,7 @@ use HelloLog\Events\RequestSource;
 use HelloLog\Events\SuppressionRules;
 use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Integrations\WooCommerceOrderSensor;
+use HelloLog\Tests\Sensors\Integrations\Fixtures\FakeOrder;
 use HelloLog\Tests\Sensors\Integrations\Fixtures\OrderNoteState;
 use PHPUnit\Framework\TestCase;
 
@@ -754,7 +755,11 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 */
 	public function test_a_new_order_is_looked_up_when_the_hook_passes_no_order_object(): void {
 		$this->stubs( true );
-		OrderNoteState::$orders[5] = $this->order( 5, 'A-17' );
+		$details                   = [
+			'total'       => '25.00',
+			'created_via' => 'admin',
+		];
+		OrderNoteState::$orders[5] = new FakeOrder( 5, 'A-17', null, [], [], $details );
 
 		$recorder = $this->recorder();
 		( new WooCommerceOrderSensor( $recorder ) )->on_created( 5 );
@@ -762,6 +767,14 @@ final class WooCommerceOrderNoteTest extends TestCase {
 		$fields = $recorder->calls[0][1];
 		$this->assertSame( WooCommerceOrderSensor::order_target( 5, 'A-17' ), $fields['target'] );
 		$this->assertSame( [ 'edit' => 'https://shop.test/wp-admin/order/5' ], $fields['links'] );
+		$this->assertSame( [ 'total' => '25.00' ], $fields['vars'] );
+		$this->assertSame(
+			[
+				'order_id'    => 5,
+				'created_via' => 'admin',
+			],
+			$fields['metadata']
+		);
 	}
 
 	/**
@@ -780,6 +793,16 @@ final class WooCommerceOrderNoteTest extends TestCase {
 		$this->assertSame( [ 'edit' => 'https://shop.test/wp-admin/order/5' ], $fields['links'] );
 		$this->assertSame( 'pending', $fields['old'] );
 		$this->assertSame( 'processing', $fields['new'] );
+		$this->assertSame(
+			[
+				[
+					'field' => 'status',
+					'old'   => 'pending',
+					'new'   => 'processing',
+				],
+			],
+			$fields['changes']
+		);
 	}
 
 	/**
@@ -1204,24 +1227,8 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	 * @param string|null $number Order number; the id when not given.
 	 * @param string|null $edit   Edit screen URL; the stand-in's default when not given.
 	 */
-	private function order( int $id, ?string $number = null, ?string $edit = null ): object {
-		return new class( $id, $number ?? (string) $id, $edit ?? 'https://shop.test/wp-admin/order/' . $id ) {
-
-			public function __construct( private int $id, private string $number, private string $edit ) {
-			}
-
-			public function get_id(): int {
-				return $this->id;
-			}
-
-			public function get_order_number(): string {
-				return $this->number;
-			}
-
-			public function get_edit_order_url(): string {
-				return $this->edit;
-			}
-		};
+	private function order( int $id, ?string $number = null, ?string $edit = null ): FakeOrder {
+		return new FakeOrder( $id, $number, $edit );
 	}
 
 	/**

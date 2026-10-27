@@ -44,7 +44,9 @@ defined( 'ABSPATH' ) || exit;
  * events another sensor reports itself (see {@see PostTypeOwnership}); the
  * site editor's types are always logged (see {@see self::SITE_EDITOR_TYPES}).
  * Every event names the post it is about as its target and links to its
- * edit screen.
+ * edit screen. The trash, restore or revert of an order, product or coupon
+ * is named by the shop's target of that object (see
+ * {@see self::object_target()}).
  *
  * Of a file of the media library only its trash and restore are logged here
  * (the rest is {@see MediaSensor}'s), on the file's media target. Core moves
@@ -71,6 +73,20 @@ final class ContentSensor extends AbstractSensor {
 
 	/** How messages name a file of the media library. */
 	private const MEDIA_LABEL = 'Media';
+
+	/**
+	 * The shop's post types => the type of target its sensors give the
+	 * object (see {@see self::object_target()}).
+	 *
+	 * @var array<string, string>
+	 */
+	private const STORE_TARGET_TYPES = [
+		'shop_order'           => 'order',
+		'shop_order_placehold' => 'order',
+		'product'              => 'product',
+		'product_variation'    => 'product',
+		'shop_coupon'          => 'coupon',
+	];
 
 	/**
 	 * Old statuses of a save that brings a post into being: an insert (`new`)
@@ -562,6 +578,36 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	/**
+	 * The object a post of a type stands for, as the sensor of that object
+	 * names it: a file of the media library is a media item, a post of the
+	 * shop's types (while the shop is active) the shop's order, product or
+	 * coupon, so one object's history stays on one target. An order is named
+	 * `#<id>`, its post has no number of its own. Any other post is a post.
+	 *
+	 * @param string $post_type    Post type name.
+	 * @param int    $id           Post id.
+	 * @param string $title        Post title.
+	 * @param bool   $owner_active Whether the plugin that owns the type is active, see {@see PostTypeOwnership::owner_active()}.
+	 * @return array{type: string, id: string, label: string}
+	 */
+	public static function object_target( string $post_type, int $id, string $title, bool $owner_active ): array {
+		if ( 'attachment' === $post_type ) {
+			return MediaSensor::media_target( $id, $title );
+		}
+
+		$type = $owner_active ? ( self::STORE_TARGET_TYPES[ $post_type ] ?? null ) : null;
+		if ( null === $type ) {
+			return self::post_target( $id, $title );
+		}
+
+		return [
+			'type'  => $type,
+			'id'    => (string) $id,
+			'label' => 'order' === $type ? '#' . $id : $title,
+		];
+	}
+
+	/**
 	 * Where to open a post. The public page exists only while the post is
 	 * published; a link core could not give is left out.
 	 *
@@ -774,9 +820,12 @@ final class ContentSensor extends AbstractSensor {
 				'type'   => (string) $post->post_type,
 				'status' => (string) $post->post_status,
 			],
-			'target'    => 'attachment' === $post->post_type
-				? MediaSensor::media_target( $id, (string) $post->post_title )
-				: self::post_target( $id, (string) $post->post_title ),
+			'target'    => self::object_target(
+				(string) $post->post_type,
+				$id,
+				(string) $post->post_title,
+				PostTypeOwnership::owner_active( (string) $post->post_type )
+			),
 			'title'     => (string) $post->post_title,
 			'post_type' => self::type_label( (string) $post->post_type ),
 			'metadata'  => array_merge(

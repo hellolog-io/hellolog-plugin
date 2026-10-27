@@ -180,6 +180,9 @@ final class CatalogSeeder {
 		$c->register( new EventDefinition( 9102, ObjectType::ORDER, EventType::DELETED, Severity::MEDIUM, 'WC order #{id} deleted.' ) );
 		$c->register( new EventDefinition( 9103, ObjectType::ORDER, EventType::UPDATED, Severity::INFO, 'Note added to WC order #{id}: {note}' ) );
 		$c->register( new EventDefinition( 9104, ObjectType::ORDER, EventType::UPDATED, Severity::MEDIUM, 'Refund issued on WC order #{id}: {amount}.' ) );
+		$c->register( new EventDefinition( 9105, ObjectType::ORDER, EventType::UPDATED, Severity::MEDIUM, 'WC order #{id} edited.' ) );
+		$c->register( new EventDefinition( 9109, ObjectType::ORDER, EventType::TRASHED, Severity::MEDIUM, 'WC order #{id} moved to trash.' ) );
+		$c->register( new EventDefinition( 9110, ObjectType::ORDER, EventType::RESTORED, Severity::LOW, 'WC order #{id} restored from trash.' ) );
 
 		// Coupons
 		$c->register( new EventDefinition( 9200, ObjectType::COUPON, EventType::CREATED, Severity::INFO, 'WC coupon "{code}" created.' ) );

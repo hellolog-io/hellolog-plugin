@@ -11,19 +11,74 @@ namespace HelloLog\Sensors\Integrations;
 
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
+use Throwable;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Order lifecycle (9100–9104). Uses WC's high-level hooks so HPOS-mode
- * stores work identically — no direct `$wpdb` reads.
+ * Order lifecycle (9100–9105, 9109, 9110). Uses WC's high-level hooks so
+ * HPOS-mode stores work identically — no direct `$wpdb` reads.
  *
  * Every event names its order as `target` (labelled with the order number)
  * and, while the order still exists, links to its edit screen. An order note
  * event also carries the text of the note and its kind, see
  * {@see self::note_type()}.
+ *
+ * A save of an existing order tells which of {@see self::ORDER_FIELDS}
+ * changed (9105), read from the order before WooCommerce writes it; a save
+ * of an order that is still being created tells nothing (its creation is
+ * 9100). A status change carries the status as a change, and a status
+ * change out of the trash is also a restore (9110), as are WooCommerce's
+ * own restore and WordPress's restore of an order stored as a post.
+ *
+ * Every handler runs inside WooCommerce's work on the order (an exception in
+ * the hook before a save aborts the write of the order), so whatever fails
+ * while reading the order is reported, never thrown.
  */
 final class WooCommerceOrderSensor extends AbstractSensor {
+
+	/**
+	 * The fields of an order whose edits are told: the addresses (`.*` stands
+	 * for every field under it), the totals, the payment, the customer and
+	 * the dates. The status has its own event, the items theirs.
+	 *
+	 * @var array<int, string>
+	 */
+	public const ORDER_FIELDS = [
+		'billing.*',
+		'shipping.*',
+		'total',
+		'discount_total',
+		'shipping_total',
+		'payment_method',
+		'payment_method_title',
+		'customer_id',
+		'customer_note',
+		'currency',
+		'date_created',
+		'transaction_id',
+		'date_paid',
+		'date_completed',
+	];
+
+	/**
+	 * Amounts of money: `10.00` and `10` are the same amount.
+	 *
+	 * @var array<int, string>
+	 */
+	private const MONEY_FIELDS = [ 'total', 'discount_total', 'shipping_total' ];
+
+	/**
+	 * Stored statuses of an order that is still being created: not set yet,
+	 * WordPress's and WooCommerce's placeholders, and the drafts of the admin
+	 * screen and the checkout. A save of such an order fills its fields in.
+	 *
+	 * @var array<int, string>
+	 */
+	private const CREATION_STATUSES = [ '', 'new', 'auto-draft', 'draft', 'checkout-draft' ];
+
+	/** What WooCommerce puts in front of a status where it stores it as a post status. */
+	private const STATUS_PREFIX = 'wc-';
 
 	/** Longest note text sent, in characters, the ellipsis included. */
 	private const MAX_NOTE_LENGTH = 500;
@@ -39,6 +94,14 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 
 	private const ELLIPSIS = '…';
 
+	/**
+	 * Numbers of the orders about to be deleted, read while they can still
+	 * be loaded: `site:order id` => order number. Taken by the delete event.
+	 *
+	 * @var array<string, string>
+	 */
+	private array $deleting = [];
+
 	public function key(): string {
 		return 'woocommerce-order';
 	}
@@ -49,7 +112,12 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 
 	public function boot(): void {
 		add_action( 'woocommerce_new_order', [ $this, 'on_created' ], 10, 2 );
+		add_action( 'woocommerce_before_order_object_save', [ $this, 'on_before_save' ], 10, 1 );
 		add_action( 'woocommerce_order_status_changed', [ $this, 'on_status_changed' ], 10, 4 );
+		add_action( 'woocommerce_trash_order', [ $this, 'on_trashed' ], 10, 1 );
+		add_action( 'woocommerce_untrash_order', [ $this, 'on_untrashed' ], 10, 2 );
+		add_action( 'untrashed_post', [ $this, 'on_post_untrashed' ], 10, 2 );
+		add_action( 'woocommerce_before_delete_order', [ $this, 'on_before_delete' ], 10, 2 );
 		add_action( 'woocommerce_delete_order', [ $this, 'on_deleted' ], 10, 1 );
 		add_action( 'woocommerce_order_note_added', [ $this, 'on_note_added' ], 10, 2 );
 		add_action( 'woocommerce_order_refunded', [ $this, 'on_refunded' ], 10, 2 );
@@ -224,107 +292,345 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	}
 
 	/**
+	 * A new order: its total and currency go into `vars`, how it was placed
+	 * (`created_via`) and paid into `metadata`.
+	 *
 	 * @param mixed $order Order object the hook passed, if any.
 	 */
 	public function on_created( int $order_id, $order = null ): void {
-		$this->emit(
-			9100,
-			array_merge(
+		try {
+			$order    = $this->order_object( $order_id, $order );
+			$vars     = array_filter(
 				[
-					'id'       => $order_id,
-					'metadata' => [ 'order_id' => $order_id ],
+					'total'    => self::read( $order, 'get_total' ),
+					'currency' => self::read( $order, 'get_currency' ),
 				],
-				$this->order_fields( $order_id, $order )
-			)
-		);
+				'is_string'
+			);
+			$metadata = array_filter(
+				[
+					'created_via'    => self::read( $order, 'get_created_via' ),
+					'payment_method' => self::read( $order, 'get_payment_method' ),
+				],
+				'is_string'
+			);
+
+			$this->emit(
+				9100,
+				array_merge(
+					[
+						'id'       => $order_id,
+						'vars'     => $vars,
+						'metadata' => [ 'order_id' => $order_id ] + $metadata,
+					],
+					$this->order_fields( $order_id, $order )
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9100, [ 'order_id' => $order_id ] );
+		}
 	}
 
 	/**
+	 * An existing order is about to be saved: tell which of its fields
+	 * change, from the values it has stored (`get_data()`) and those the save
+	 * is about to write (`get_changes()`). An order is whatever can be asked
+	 * for those; WooCommerce fires this hook for orders only (a refund has a
+	 * hook of its own).
+	 *
+	 * An order without an id is being inserted, and one whose stored status
+	 * is one of {@see self::CREATION_STATUSES} is still being created: its
+	 * fields are filled in, not edited, so neither is an edit. A save that
+	 * changes none of {@see self::ORDER_FIELDS} (every save moves the
+	 * modification date) is dispatched without changes and without reading
+	 * the stored order at all, whatever its status; the buffer drops it.
+	 *
+	 * @param mixed $order The order WooCommerce is about to save.
+	 */
+	public function on_before_save( $order ): void {
+		$order_id = 0;
+		try {
+			if ( ! is_object( $order ) || ! method_exists( $order, 'get_id' ) || ! method_exists( $order, 'get_data' ) || ! method_exists( $order, 'get_changes' ) ) {
+				return;
+			}
+			$order_id = (int) $order->get_id();
+			if ( $order_id <= 0 ) {
+				return;
+			}
+
+			$changes = [];
+			$pending = self::order_values( $order->get_changes() );
+			if ( [] !== $pending ) {
+				$data = $order->get_data();
+				$data = is_array( $data ) ? $data : [];
+				if ( self::is_being_created( $data ) ) {
+					return;
+				}
+				$stored  = self::order_values( $data );
+				$changes = WcObjectDiff::changes( $stored, self::real_changes( $stored, $pending ), self::ORDER_FIELDS );
+			}
+
+			$this->emit(
+				9105,
+				array_merge(
+					[
+						'id'       => $order_id,
+						'changes'  => $changes,
+						'metadata' => [ 'order_id' => $order_id ],
+					],
+					$this->order_fields( $order_id, $order )
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9105, [ 'order_id' => $order_id ] );
+		}
+	}
+
+	/**
+	 * The status changed: it is told as a change too. A status change out of
+	 * the trash is also the restore of the order, whichever way it came (a
+	 * status update through the REST API fires no restore hook); the rules
+	 * keep only the restore.
+	 *
 	 * @param mixed $order
 	 */
 	public function on_status_changed( int $order_id, string $old, string $new, $order ): void {
-		$this->emit(
-			9101,
-			array_merge(
-				[
-					'id'       => $order_id,
-					'old'      => $old,
-					'new'      => $new,
-					'metadata' => [
-						'order_id'   => $order_id,
-						'old_status' => $old,
-						'new_status' => $new,
+		try {
+			$fields = $this->order_fields( $order_id, $order );
+
+			$this->emit(
+				9101,
+				array_merge(
+					[
+						'id'       => $order_id,
+						'old'      => $old,
+						'new'      => $new,
+						'changes'  => [
+							[
+								'field' => 'status',
+								'old'   => $old,
+								'new'   => $new,
+							],
+						],
+						'metadata' => [
+							'order_id'   => $order_id,
+							'old_status' => $old,
+							'new_status' => $new,
+						],
 					],
-				],
-				$this->order_fields( $order_id, $order )
-			)
-		);
+					$fields
+				)
+			);
+
+			if ( 'trash' === self::status_slug( $old ) ) {
+				$this->emit_restored( $order_id, $new, $fields );
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9101, [ 'order_id' => $order_id ] );
+		}
 	}
 
+	/**
+	 * WooCommerce moved an order to the trash.
+	 */
+	public function on_trashed( int $order_id ): void {
+		try {
+			$this->emit(
+				9109,
+				array_merge(
+					[
+						'id'       => $order_id,
+						'metadata' => [ 'order_id' => $order_id ],
+					],
+					$this->order_fields( $order_id, null )
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9109, [ 'order_id' => $order_id ] );
+		}
+	}
+
+	/**
+	 * WooCommerce is restoring an order from the trash.
+	 *
+	 * @param int   $order_id        Order id.
+	 * @param mixed $previous_status Status the order had before the trash, as stored (`wc-processing`).
+	 */
+	public function on_untrashed( int $order_id, $previous_status = '' ): void {
+		try {
+			$this->emit_restored( $order_id, is_string( $previous_status ) ? $previous_status : '', $this->order_fields( $order_id, null ) );
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9110, [ 'order_id' => $order_id ] );
+		}
+	}
+
+	/**
+	 * WordPress restored a post from the trash: for an order stored as a post
+	 * (the classic order screen restores it this way, firing no hook of
+	 * WooCommerce) it is the restore of the order.
+	 *
+	 * @param int   $post_id         Post id.
+	 * @param mixed $previous_status Status the post had before the trash (`wc-processing`).
+	 */
+	public function on_post_untrashed( int $post_id, $previous_status = '' ): void {
+		try {
+			if ( ! function_exists( 'get_post_type' ) || 'shop_order' !== get_post_type( $post_id ) ) {
+				return;
+			}
+			$this->emit_restored( $post_id, is_string( $previous_status ) ? $previous_status : '', $this->order_fields( $post_id, null ) );
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9110, [ 'order_id' => $post_id ] );
+		}
+	}
+
+	/**
+	 * An order is about to be deleted for good: read its number while it can
+	 * still be loaded, for the delete event that follows.
+	 *
+	 * @param int   $order_id Order id.
+	 * @param mixed $order    The order WooCommerce is about to delete.
+	 */
+	public function on_before_delete( int $order_id, $order = null ): void {
+		try {
+			$number = is_object( $order ) && method_exists( $order, 'get_order_number' ) ? (string) $order->get_order_number() : '';
+			if ( '' !== $number ) {
+				$this->deleting[ self::state_key( $order_id ) ] = $number;
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9102, [ 'order_id' => $order_id ] );
+		}
+	}
+
+	/**
+	 * An order was deleted for good. It can no longer be loaded: it is named
+	 * by the number read just before the delete, else by its id, and there is
+	 * nothing left to open.
+	 */
 	public function on_deleted( int $order_id ): void {
-		// A deleted order is gone: it can be named, but there is nothing to open.
-		$this->emit(
-			9102,
-			array_merge(
-				[
-					'id'       => $order_id,
-					'metadata' => [ 'order_id' => $order_id ],
-				],
-				$this->order_fields( $order_id, null, false )
-			)
-		);
+		try {
+			$key    = self::state_key( $order_id );
+			$number = $this->deleting[ $key ] ?? '';
+			unset( $this->deleting[ $key ] );
+
+			$this->emit(
+				9102,
+				array_merge(
+					[
+						'id'       => $order_id,
+						'metadata' => [ 'order_id' => $order_id ],
+					],
+					$order_id > 0 ? [ 'target' => self::order_target( $order_id, $number ) ] : []
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9102, [ 'order_id' => $order_id ] );
+		}
 	}
 
 	/**
 	 * @param mixed $order
 	 */
 	public function on_note_added( int $note_id, $order ): void {
-		$order_id = is_object( $order ) && method_exists( $order, 'get_id' ) ? (int) $order->get_id() : 0;
-		$note     = function_exists( 'get_comment' ) ? get_comment( $note_id ) : null;
-		$content  = is_object( $note ) ? (string) ( $note->comment_content ?? '' ) : '';
-		$author   = is_object( $note ) ? (string) ( $note->comment_author ?? '' ) : '';
-		$email    = is_object( $note ) ? (string) ( $note->comment_author_email ?? '' ) : '';
-		$type     = self::note_type(
-			$this->is_customer_note( $note_id ),
-			self::is_status_note( $content, $this->status_formats(), $this->status_names() ),
-			self::is_system_note( $author, $email, $this->system_author(), $this->system_email() )
-		);
+		try {
+			$order_id = is_object( $order ) && method_exists( $order, 'get_id' ) ? (int) $order->get_id() : 0;
+			$note     = function_exists( 'get_comment' ) ? get_comment( $note_id ) : null;
+			$content  = is_object( $note ) ? (string) ( $note->comment_content ?? '' ) : '';
+			$author   = is_object( $note ) ? (string) ( $note->comment_author ?? '' ) : '';
+			$email    = is_object( $note ) ? (string) ( $note->comment_author_email ?? '' ) : '';
+			$type     = self::note_type(
+				$this->is_customer_note( $note_id ),
+				self::is_status_note( $content, $this->status_formats(), $this->status_names() ),
+				self::is_system_note( $author, $email, $this->system_author(), $this->system_email() )
+			);
+
+			$this->emit(
+				9103,
+				array_merge(
+					[
+						'id'       => $order_id,
+						'vars'     => [ 'note' => self::note_text( $content ) ],
+						'metadata' => [
+							'order_id'  => $order_id,
+							'note_id'   => $note_id,
+							'note_type' => $type,
+						],
+					],
+					$this->order_fields( $order_id, $order )
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9103, [ 'note_id' => $note_id ] );
+		}
+	}
+
+	public function on_refunded( int $order_id, int $refund_id ): void {
+		try {
+			$refund = function_exists( 'wc_get_order' ) ? wc_get_order( $refund_id ) : null;
+			$amount = $refund && method_exists( $refund, 'get_amount' ) ? (string) $refund->get_amount() : '';
+			$this->emit(
+				9104,
+				array_merge(
+					[
+						'id'       => $order_id,
+						'amount'   => $amount,
+						'metadata' => [
+							'order_id'  => $order_id,
+							'refund_id' => $refund_id,
+							'amount'    => $amount,
+						],
+					],
+					$this->order_fields( $order_id, null )
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9104, [ 'order_id' => $order_id ] );
+		}
+	}
+
+	/**
+	 * Dispatch the restore of an order from the trash.
+	 *
+	 * @param int                  $order_id        Order id.
+	 * @param string               $previous_status Status the order goes back to, as stored or as a slug.
+	 * @param array<string, mixed> $fields          Target and links of the order, see {@see self::order_fields()}.
+	 */
+	private function emit_restored( int $order_id, string $previous_status, array $fields ): void {
+		$metadata = [ 'order_id' => $order_id ];
+		$status   = self::status_slug( $previous_status );
+		if ( '' !== $status ) {
+			$metadata['previous_status'] = $status;
+		}
 
 		$this->emit(
-			9103,
+			9110,
 			array_merge(
 				[
 					'id'       => $order_id,
-					'vars'     => [ 'note' => self::note_text( $content ) ],
-					'metadata' => [
-						'order_id'  => $order_id,
-						'note_id'   => $note_id,
-						'note_type' => $type,
-					],
+					'metadata' => $metadata,
 				],
-				$this->order_fields( $order_id, $order )
+				$fields
 			)
 		);
 	}
 
-	public function on_refunded( int $order_id, int $refund_id ): void {
-		$refund = function_exists( 'wc_get_order' ) ? wc_get_order( $refund_id ) : null;
-		$amount = $refund && method_exists( $refund, 'get_amount' ) ? (string) $refund->get_amount() : '';
-		$this->emit(
-			9104,
-			array_merge(
-				[
-					'id'       => $order_id,
-					'amount'   => $amount,
-					'metadata' => [
-						'order_id'  => $order_id,
-						'refund_id' => $refund_id,
-						'amount'    => $amount,
-					],
-				],
-				$this->order_fields( $order_id, null )
-			)
-		);
+	/**
+	 * The order the hook passed or, failing that, the one WooCommerce finds
+	 * for the id; null when there is none.
+	 *
+	 * @param int   $order_id Order id.
+	 * @param mixed $order    Order object the hook passed, if any.
+	 */
+	private function order_object( int $order_id, $order ): ?object {
+		if ( is_object( $order ) ) {
+			return $order;
+		}
+		if ( $order_id <= 0 || ! function_exists( 'wc_get_order' ) ) {
+			return null;
+		}
+
+		$found = wc_get_order( $order_id );
+
+		return is_object( $found ) ? $found : null;
 	}
 
 	/**
@@ -336,22 +642,18 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 *
 	 * @param int   $order_id Order id.
 	 * @param mixed $order    Order object the hook passed, if any.
-	 * @param bool  $link     Whether the order still exists to be opened.
 	 * @return array<string, mixed>
 	 */
-	private function order_fields( int $order_id, $order, bool $link = true ): array {
+	private function order_fields( int $order_id, $order ): array {
 		if ( $order_id <= 0 ) {
 			return [];
 		}
 
-		if ( ! is_object( $order ) && $link && function_exists( 'wc_get_order' ) ) {
-			$order = wc_get_order( $order_id );
-		}
-
-		$number = is_object( $order ) && method_exists( $order, 'get_order_number' ) ? (string) $order->get_order_number() : '';
+		$order  = $this->order_object( $order_id, $order );
+		$number = null !== $order && method_exists( $order, 'get_order_number' ) ? (string) $order->get_order_number() : '';
 		$fields = [ 'target' => self::order_target( $order_id, $number ) ];
 
-		if ( $link && is_object( $order ) && method_exists( $order, 'get_edit_order_url' ) ) {
+		if ( null !== $order && method_exists( $order, 'get_edit_order_url' ) ) {
 			$edit = $order->get_edit_order_url();
 			if ( is_string( $edit ) && '' !== $edit ) {
 				$fields['links'] = [ 'edit' => $edit ];
@@ -359,6 +661,117 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		}
 
 		return $fields;
+	}
+
+	/**
+	 * What a getter of the order answers, as text; null when the order or the
+	 * getter is missing, or the answer is empty or no scalar.
+	 *
+	 * @param object|null $order  The order.
+	 * @param string      $method Getter name.
+	 */
+	private static function read( ?object $order, string $method ): ?string {
+		if ( null === $order || ! method_exists( $order, $method ) ) {
+			return null;
+		}
+
+		$value = $order->$method();
+
+		return is_scalar( $value ) && '' !== (string) $value ? (string) $value : null;
+	}
+
+	/**
+	 * The values of an order (stored or pending) that hold one of
+	 * {@see self::ORDER_FIELDS}: only those are read, so the items an order
+	 * keeps in its data are never turned into text.
+	 *
+	 * @param mixed $values Values of the order by key.
+	 * @return array<string, mixed>
+	 */
+	private static function order_values( $values ): array {
+		if ( ! is_array( $values ) ) {
+			return [];
+		}
+
+		$roots = [];
+		foreach ( self::ORDER_FIELDS as $field ) {
+			$roots[ explode( '.', $field, 2 )[0] ] = true;
+		}
+
+		return array_intersect_key( $values, $roots );
+	}
+
+	/**
+	 * The pending values without those that only write the stored value in
+	 * another form: an empty value where null was (or the other way round),
+	 * or an amount of {@see self::MONEY_FIELDS} written differently (`10`
+	 * for `10.00`). Nested values (the addresses) are compared key by key.
+	 *
+	 * @param array<int|string, mixed> $stored  Stored values.
+	 * @param array<int|string, mixed> $pending Values the save is about to write.
+	 * @param string                   $prefix  Dot path of the arrays compared, for nested values.
+	 * @return array<int|string, mixed>
+	 */
+	private static function real_changes( array $stored, array $pending, string $prefix = '' ): array {
+		$real = [];
+		foreach ( $pending as $key => $value ) {
+			$old = $stored[ $key ] ?? null;
+			if ( is_array( $value ) && is_array( $old ) ) {
+				$nested = self::real_changes( $old, $value, $prefix . $key . '.' );
+				if ( [] !== $nested ) {
+					$real[ $key ] = $nested;
+				}
+				continue;
+			}
+
+			if ( ( null === $old || '' === $old ) && ( null === $value || '' === $value ) ) {
+				continue;
+			}
+			if ( in_array( $prefix . $key, self::MONEY_FIELDS, true ) && is_numeric( $old ) && is_numeric( $value ) && (float) $old === (float) $value ) {
+				continue;
+			}
+
+			$real[ $key ] = $value;
+		}
+
+		return $real;
+	}
+
+	/**
+	 * Whether the stored values are those of an order that is still being
+	 * created, see {@see self::CREATION_STATUSES}. Values that hold no status
+	 * at all are not: the save is told rather than lost.
+	 *
+	 * @param array<string, mixed> $data Stored values of the order.
+	 */
+	private static function is_being_created( array $data ): bool {
+		if ( ! array_key_exists( 'status', $data ) || ! ( null === $data['status'] || is_string( $data['status'] ) ) ) {
+			return false;
+		}
+
+		return in_array( self::status_slug( (string) $data['status'] ), self::CREATION_STATUSES, true );
+	}
+
+	/**
+	 * A status without the prefix WooCommerce stores it with as a post status
+	 * (`wc-processing` is `processing`).
+	 *
+	 * @param string $status Status, prefixed or not.
+	 */
+	private static function status_slug( string $status ): string {
+		return str_starts_with( $status, self::STATUS_PREFIX ) ? substr( $status, strlen( self::STATUS_PREFIX ) ) : $status;
+	}
+
+	/**
+	 * The key of an order's per-request state: `site:order id`. An order id
+	 * is unique on its own site only.
+	 *
+	 * @param int $order_id Order id.
+	 */
+	private static function state_key( int $order_id ): string {
+		$site = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
+
+		return $site . ':' . $order_id;
 	}
 
 	/**

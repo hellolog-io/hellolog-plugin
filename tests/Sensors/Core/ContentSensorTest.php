@@ -499,7 +499,9 @@ final class ContentSensorTest extends TestCase {
 
 	/**
 	 * No store sensor reports a product, coupon or order (stored as a post)
-	 * going to the trash or coming back from it, so this one does.
+	 * going to the trash or coming back from it, so this one does, on the
+	 * target the store sensors give the object: one order's history stays on
+	 * one target.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
@@ -509,9 +511,12 @@ final class ContentSensorTest extends TestCase {
 
 		$calls = $this->run_hook(
 			static function ( ContentSensor $sensor, callable $post ): void {
+				WpState::$post_types['shop_order_placehold'] = true;
+
 				$sensor->on_status( 'trash', 'publish', $post( [ 'post_type' => 'product', 'post_status' => 'trash' ] ) );
 				$sensor->on_status( 'trash', 'publish', $post( [ 'ID' => 8, 'post_type' => 'shop_coupon', 'post_status' => 'trash' ] ) );
 				$sensor->on_status( 'trash', 'wc-processing', $post( [ 'ID' => 9, 'post_type' => 'shop_order', 'post_status' => 'trash' ] ) );
+				$sensor->on_status( 'trash', 'wc-processing', $post( [ 'ID' => 10, 'post_type' => 'shop_order_placehold', 'post_status' => 'trash' ] ) );
 
 				WpState::$posts[7] = $post( [ 'post_type' => 'product', 'post_status' => 'draft' ] );
 				WpState::$posts[8] = $post( [ 'ID' => 8, 'post_type' => 'shop_coupon', 'post_status' => 'draft' ] );
@@ -520,10 +525,57 @@ final class ContentSensorTest extends TestCase {
 			}
 		);
 
-		$this->assertSame( [ 2003, 2003, 2003, 2004, 2004 ], array_column( $calls, 0 ) );
-		$this->assertSame( [ '7', '8', '9', '7', '8' ], array_map( static fn( array $call ): string => $call[1]['target']['id'], $calls ) );
+		$this->assertSame( [ 2003, 2003, 2003, 2003, 2004, 2004 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[ 'product:7', 'coupon:8', 'order:9', 'order:10', 'product:7', 'coupon:8' ],
+			array_map( static fn( array $call ): string => $call[1]['target']['type'] . ':' . $call[1]['target']['id'], $calls )
+		);
+		$this->assertSame( [ 'Hello', 'Hello', '#9', '#10', 'Hello', 'Hello' ], array_map( static fn( array $call ): string => $call[1]['target']['label'], $calls ) );
 		$this->assertSame( 'product', $calls[0][1]['post']['type'] );
-		$this->assertSame( 'shop_coupon', $calls[4][1]['post']['type'] );
+		$this->assertSame( 'shop_coupon', $calls[5][1]['post']['type'] );
+	}
+
+	/**
+	 * @return array<string, array{0: string, 1: bool, 2: string, 3: string}> Post type, whether WooCommerce
+	 *                                                                         is active, target type, label.
+	 */
+	public static function object_targets(): array {
+		return [
+			'order'                       => [ 'shop_order', true, 'order', '#7' ],
+			'order placeholder'           => [ 'shop_order_placehold', true, 'order', '#7' ],
+			'product'                     => [ 'product', true, 'product', 'Mug' ],
+			'product variation'           => [ 'product_variation', true, 'product', 'Mug' ],
+			'coupon'                      => [ 'shop_coupon', true, 'coupon', 'Mug' ],
+			'refund'                      => [ 'shop_order_refund', true, 'post', 'Mug' ],
+			'file'                        => [ 'attachment', true, 'media', 'Mug' ],
+			'post'                        => [ 'post', true, 'post', 'Mug' ],
+			'order without WooCommerce'   => [ 'shop_order', false, 'post', 'Mug' ],
+			'product without WooCommerce' => [ 'product', false, 'post', 'Mug' ],
+		];
+	}
+
+	/**
+	 * A post of the shop's types is the shop's object: an order is named by
+	 * its number (the id, as the post has no other), a product or coupon by
+	 * its title. Without the shop, a type of that name belongs to some other
+	 * plugin and is a plain post.
+	 *
+	 * @dataProvider object_targets
+	 *
+	 * @param string $post_type    Post type.
+	 * @param bool   $owner_active Whether WooCommerce is active.
+	 * @param string $type         Expected target type.
+	 * @param string $label        Expected target label.
+	 */
+	public function test_the_target_of_a_post_is_the_object_it_stands_for( string $post_type, bool $owner_active, string $type, string $label ): void {
+		$this->assertSame(
+			[
+				'type'  => $type,
+				'id'    => '7',
+				'label' => $label,
+			],
+			ContentSensor::object_target( $post_type, 7, 'Mug', $owner_active )
+		);
 	}
 
 	/**
@@ -682,7 +734,8 @@ final class ContentSensorTest extends TestCase {
 
 	/**
 	 * No store sensor reports a product or an order sent to `auto-draft`,
-	 * where WordPress's cleanup deletes it unseen, so this one does.
+	 * where WordPress's cleanup deletes it unseen, so this one does, on the
+	 * store's target.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
@@ -702,7 +755,7 @@ final class ContentSensorTest extends TestCase {
 
 		$this->assertSame( [ 2013, 2013, 2013, 2013 ], array_column( $calls, 0 ) );
 		$this->assertSame(
-			[ 'post:7', 'post:7', 'post:9', 'post:9' ],
+			[ 'product:7', 'product:7', 'order:9', 'order:9' ],
 			array_map( static fn( array $call ): string => $call[1]['target']['type'] . ':' . $call[1]['target']['id'], $calls )
 		);
 		$this->assertSame( [ 'product', 'product', 'shop_order', 'shop_order' ], array_map( static fn( array $call ): string => $call[1]['post']['type'], $calls ) );
@@ -743,6 +796,7 @@ final class ContentSensorTest extends TestCase {
 
 		$this->assertFalse( class_exists( 'WooCommerce', false ) );
 		$this->assertSame( [ 2001, 2005 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 'post', 'post' ], array_map( static fn( array $call ): string => $call[1]['target']['type'], $calls ) );
 	}
 
 	/**

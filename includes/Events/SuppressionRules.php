@@ -150,13 +150,31 @@ final class SuppressionRules {
 				4000 => [ 9300 ],
 				9103 => [ 9101 ],
 				2011 => [ 2010, 2012 ],
+
+				// An order's trash or restore that WooCommerce tells itself hides
+				// the post event of the same order; the post event stays for the
+				// screens that fire no WooCommerce hook.
+				2003 => [ 9109 ],
+				2004 => [ 9110 ],
+
+				// An order edit and its item events say nothing next to the
+				// order's creation (creating an order removes no item), trash or
+				// delete; an edit next to a status change goes into that event.
+				9105 => [ 9100, 9101, 9102, 9109 ],
+				9106 => [ 9100, 9102, 9109 ],
+				9107 => [ 9102, 9109 ],
+				9108 => [ 9100, 9102, 9109 ],
+
+				// A status change out of the trash is the restore.
+				9101 => [ 9110 ],
 			],
 			// Role changes are not merged: folding two of them would keep the
-			// message of the first and understate the final privilege.
-			[ 2006, 4001, 2121, 2401, 2011 ],
+			// message of the first and understate the final privilege. A
+			// restore can arrive from up to three hooks of one request.
+			[ 2006, 4001, 2121, 2401, 2011, 9105, 9110 ],
 			// A menu save without changes of its own stays: it saved the
 			// menu's items.
-			[ 2006, 4001, 2121, 2011 ],
+			[ 2006, 4001, 2121, 2011, 9105 ],
 			[
 				// Only the note that is nothing but WooCommerce's sentence about the
 				// status change repeats it, whoever it is filed under. Everything
@@ -174,6 +192,10 @@ final class SuppressionRules {
 				// default one, an editor, a shop manager) and any later change,
 				// from a role the user already had, is an event of its own.
 				4002 => static fn( array $p ): bool => self::is_first_default_role( $p ),
+
+				// Only a status change from the trash is a restore; any other
+				// status change of a restored order stays.
+				9101 => static fn( array $p ): bool => 'trash' === ( $p['metadata']['old_status'] ?? null ),
 			],
 			[
 				// A post update the status event of its post makes redundant still
@@ -188,6 +210,11 @@ final class SuppressionRules {
 				// upload carrying it; the edits of a file deleted in the same
 				// request are just dropped.
 				2011 => [ 2010 ],
+
+				// An order edit goes into the status change of its save; when that
+				// status change is a restore, into the restore. Under a creation,
+				// trash or delete alone it is just dropped.
+				9105 => [ 9101, 9110 ],
 			]
 		);
 	}

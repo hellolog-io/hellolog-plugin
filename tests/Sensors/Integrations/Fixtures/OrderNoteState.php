@@ -70,4 +70,23 @@ final class OrderNoteState {
 	 * @var array<string, array{priority: int, accepted_args: int}>
 	 */
 	public static array $actions = [];
+
+	/** The site `get_current_blog_id()` answers (`wordpress-site-functions.php`). */
+	public static int $blog_id = 1;
+
+	/**
+	 * Post id => the post type `get_post_type()` answers
+	 * (`wordpress-site-functions.php`). An id that is not listed has no post.
+	 *
+	 * @var array<int, string>
+	 */
+	public static array $post_types = [];
+
+	/**
+	 * Every `do_action()` call (`wordpress-site-functions.php`), in order, as
+	 * `[ hook name, arguments ]`.
+	 *
+	 * @var array<int, array{0: string, 1: array<int, mixed>}>
+	 */
+	public static array $fired = [];
 }
