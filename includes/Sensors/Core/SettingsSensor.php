@@ -105,6 +105,47 @@ final class SettingsSensor extends AbstractSensor {
 	private const CONTENT = [ 'moderation_keys', 'disallowed_keys' ];
 
 	/**
+	 * Capabilities that run the site (settings, users, unfiltered content,
+	 * plugins, themes, code, the network), most powerful first. They lead a
+	 * capability list, so cutting a long list can never hide them.
+	 *
+	 * @var array<int, string>
+	 */
+	private const PRIVILEGED = [
+		'manage_options',
+		'promote_users',
+		'edit_users',
+		'create_users',
+		'delete_users',
+		'list_users',
+		'unfiltered_html',
+		'unfiltered_upload',
+		'install_plugins',
+		'activate_plugins',
+		'edit_plugins',
+		'delete_plugins',
+		'update_plugins',
+		'install_themes',
+		'edit_themes',
+		'delete_themes',
+		'update_themes',
+		'switch_themes',
+		'edit_theme_options',
+		'update_core',
+		'export',
+		'import',
+		'edit_files',
+		'manage_network',
+		'manage_network_users',
+		'manage_network_plugins',
+		'manage_network_themes',
+		'manage_network_options',
+		'manage_sites',
+		'upgrade_network',
+		'setup_network',
+	];
+
+	/**
 	 * The roles option as it was before its first write of the request and
 	 * after its latest, per site, and whether WordPress was setting the site
 	 * up at the first write. A missing option holds no roles.
@@ -215,11 +256,12 @@ final class SettingsSensor extends AbstractSensor {
 	 * What changed between two values of the roles option: a role added
 	 * (`role:<slug>`, null to `added`) or removed (`present` to null), and
 	 * the capabilities of a role (`caps:<slug>`), with the ones it lost as
-	 * the old value and the ones it gained as the new, each a sorted,
-	 * comma-separated list (null when there are none). A new role's
-	 * capabilities are all gained, a removed role's all lost. A capability
-	 * stored as denied (`false`) is one the role does not have, as for
-	 * `WP_Role::has_cap()`.
+	 * the old value and the ones it gained as the new, each a comma-separated
+	 * list (null when there are none): the capabilities that run the site
+	 * first (see {@see self::PRIVILEGED}), the rest in alphabetical order. A
+	 * new role's capabilities are all gained, a removed role's all lost. A
+	 * capability stored as denied (`false`) is one the role does not have, as
+	 * for `WP_Role::has_cap()`.
 	 *
 	 * The items are built here, not by {@see ChangeSet::diff()}: role and
 	 * capability names are identifiers, and one that reads like a credential
@@ -456,13 +498,24 @@ final class SettingsSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Capability names as a change value: sorted, joined by `, `, cut to the
-	 * value limit; null for none.
+	 * Capability names as a change value, joined by `, ` and cut to the value
+	 * limit: the capabilities that run the site first, in the order of
+	 * {@see self::PRIVILEGED}, then the rest in alphabetical order, so the
+	 * cut only ever drops the least telling ones. Null for none.
 	 *
 	 * @param array<int|string, string> $caps Capability names.
 	 */
 	private static function cap_list( array $caps ): ?string {
-		return [] === $caps ? null : ChangeSet::stringify( array_values( $caps ) );
+		if ( [] === $caps ) {
+			return null;
+		}
+
+		$caps       = array_values( array_unique( $caps ) );
+		$privileged = array_values( array_intersect( self::PRIVILEGED, $caps ) );
+		$rest       = array_values( array_diff( $caps, self::PRIVILEGED ) );
+		sort( $rest, SORT_STRING );
+
+		return ChangeSet::truncate( implode( ', ', array_merge( $privileged, $rest ) ) );
 	}
 
 	/**

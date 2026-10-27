@@ -488,13 +488,20 @@ final class SettingsSensorTest extends TestCase {
 		$this->assertSame( $changes, $payload['changes'] );
 	}
 
-	public function test_a_long_capability_list_is_cut_to_the_value_limit(): void {
+	/**
+	 * A list longer than a change value is cut, and the powerful
+	 * capabilities come first, so the cut can never hide them. Alphabetically
+	 * both would be past the cut here.
+	 */
+	public function test_a_long_capability_list_is_cut_after_the_powerful_capabilities(): void {
 		$caps = [];
-		for ( $i = 0; $i < 300; $i++ ) {
+		for ( $i = 0; $i < 118; $i++ ) {
 			$caps[ sprintf( 'custom_cap_%03d', $i ) ] = true;
 		}
-		$new                 = self::ROLES;
-		$new['shop_manager'] = [
+		$caps['promote_users']  = true;
+		$caps['manage_options'] = true;
+		$new                    = self::ROLES;
+		$new['shop_manager']    = [
 			'name'         => 'Shop manager',
 			'capabilities' => $caps,
 		];
@@ -502,8 +509,34 @@ final class SettingsSensorTest extends TestCase {
 		$changes = SettingsSensor::roles_changes( self::ROLES, $new );
 		$this->assertSame( 'caps:shop_manager', $changes[1]['field'] );
 		$this->assertSame( 1024, mb_strlen( (string) $changes[1]['new'], 'UTF-8' ) );
-		$this->assertStringStartsWith( 'custom_cap_000, custom_cap_001, ', (string) $changes[1]['new'] );
+		$this->assertStringStartsWith( 'manage_options, promote_users, custom_cap_000, custom_cap_001, ', (string) $changes[1]['new'] );
 		$this->assertStringEndsWith( '…', (string) $changes[1]['new'] );
+	}
+
+	/**
+	 * The capabilities that run the site (settings, users, plugins, themes,
+	 * code, the network) lead a list, most powerful first; the rest follow
+	 * in alphabetical order.
+	 */
+	public function test_powerful_capabilities_lead_a_list_and_the_rest_follow_in_order(): void {
+		$new = self::ROLES;
+		unset( $new['editor']['capabilities']['read'], $new['editor']['capabilities']['edit_others_posts'] );
+		foreach ( [ 'zz_report', 'edit_users', 'aa_report', 'promote_users', 'manage_options', 'moderate_comments' ] as $cap ) {
+			$new['editor']['capabilities'][ $cap ] = true;
+		}
+		$old = self::ROLES;
+		$old['editor']['capabilities']['install_plugins'] = true;
+
+		$this->assertSame(
+			[
+				[
+					'field' => 'caps:editor',
+					'old'   => 'install_plugins, edit_others_posts, read',
+					'new'   => 'manage_options, promote_users, edit_users, aa_report, moderate_comments, zz_report',
+				],
+			],
+			SettingsSensor::roles_changes( $old, $new )
+		);
 	}
 
 	public function test_the_roles_option_is_named_by_the_table_prefix_of_the_site(): void {
@@ -557,7 +590,7 @@ final class SettingsSensorTest extends TestCase {
 				[
 					'field' => 'caps:editor',
 					'old'   => 'edit_others_posts',
-					'new'   => 'list_users, manage_options',
+					'new'   => 'manage_options, list_users',
 				],
 			],
 			$fields['changes']
