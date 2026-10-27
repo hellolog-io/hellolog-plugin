@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Sensors\Integrations;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
@@ -20,6 +21,7 @@ use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\ContentSensor;
 use HelloLog\Sensors\Integrations\WooCommerceProductSensor;
 use HelloLog\Tests\Events\Fixtures\WpCalls;
+use HelloLog\Tests\Sensors\Core\Fixtures\BuildingRecorder;
 use HelloLog\Tests\Sensors\Core\Fixtures\Hooks;
 use HelloLog\Tests\Sensors\Core\Fixtures\TermState;
 use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
@@ -477,7 +479,9 @@ final class WooCommerceProductSensorTest extends TestCase {
 
 	/**
 	 * A product or variation deleted for good names its target and has
-	 * nothing left to open. Other posts are not the shop's.
+	 * nothing left to open; a variation's delete is told when the request
+	 * ends (its product may still be deleted after it). Other posts are not
+	 * the shop's.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
@@ -500,6 +504,8 @@ final class WooCommerceProductSensorTest extends TestCase {
 			)
 		);
 		$sensor->on_delete_post( 7, self::post( [ 'ID' => 7, 'post_type' => 'post' ] ) );
+		$this->assertSame( [ 9002 ], array_column( $recorder->calls, 0 ) );
+		$sensor->flush_open_saves();
 
 		$this->assertSame( [ 9002, 9002 ], array_column( $recorder->calls, 0 ) );
 		$this->assertSame( self::target( '5', 'Mug' ), $recorder->calls[0][1]['target'] );
@@ -871,12 +877,24 @@ final class WooCommerceProductSensorTest extends TestCase {
 		);
 
 		$recorder = $this->boot_sensors();
-		Hooks::fire( 'before_delete_post', 50, $parent );
+		self::delete_post( $parent, '21' );
 		for ( $i = 1; $i <= 20; $i++ ) {
-			Hooks::fire( 'before_delete_post', 100 + $i, self::variation( $i ) );
+			self::delete_post( self::variation( $i ), '23' );
 		}
-		Hooks::fire( 'before_delete_post', 201, self::variation( 1, [ 'ID' => 201, 'post_parent' => 60, 'post_title' => 'Scarf - Red' ] ) );
+		self::delete_post(
+			self::variation(
+				1,
+				[
+					'ID'          => 201,
+					'post_parent' => 60,
+					'post_title'  => 'Scarf - Red',
+				]
+			),
+			'23'
+		);
+		Hooks::fire( 'shutdown' );
 
+		$this->assertNotContains( 9001, array_column( $recorder->calls, 0 ), 'deleting the meta of a deleted post is no edit' );
 		$survivors = $this->survive_calls( $recorder->calls );
 		$this->assertSame( [ 9002, 9002 ], array_column( $survivors, 'code' ) );
 		$this->assertSame( self::target( '50', 'Hoodie' ), $survivors[0]['target'] );
@@ -1124,6 +1142,130 @@ final class WooCommerceProductSensorTest extends TestCase {
 	}
 
 	/**
+	 * @return array<string, array{0: string}> Status of the product and its variations when they are deleted.
+	 */
+	public static function deletes_children_first(): array {
+		return [
+			'shop REST API'  => [ 'publish' ],
+			'trash emptying' => [ 'trash' ],
+		];
+	}
+
+	/**
+	 * The shop's REST API deletes the variations of a variable product before
+	 * the product, and WordPress's emptying of the trash takes them in any
+	 * order: still one delete, the product's.
+	 *
+	 * @dataProvider deletes_children_first
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param string $status Status of the product and its variations.
+	 */
+	public function test_variations_deleted_before_their_product_are_one_delete( string $status ): void {
+		$this->stubs();
+		$parent             = self::variable_product( [ 'post_status' => $status ] );
+		WpState::$posts[50] = $parent;
+
+		$recorder = $this->boot_sensors();
+		for ( $i = 1; $i <= 20; $i++ ) {
+			self::delete_post( self::variation( $i, [ 'post_status' => $status ] ), '23' );
+		}
+		self::delete_post( $parent, '21' );
+		Hooks::fire( 'shutdown' );
+
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 9002 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( self::target( '50', 'Hoodie' ), $survivors[0]['target'] );
+		$this->assertNotContains( 9001, array_column( $recorder->calls, 0 ) );
+	}
+
+	/**
+	 * A variation deleted on its own is told, when the request ends; the
+	 * removal of its image with it is no edit.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_variation_deleted_on_its_own_is_told_when_the_request_ends(): void {
+		$this->stubs();
+		WpState::$posts[50] = self::variable_product();
+
+		$recorder = $this->boot_sensors();
+		self::delete_post( self::variation( 3 ), '23' );
+		$this->assertSame( [], $recorder->calls );
+
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 9002 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( self::target( '103', 'Hoodie - Size 3' ), $recorder->calls[0][1]['target'] );
+		$this->assertArrayNotHasKey( 'links', $recorder->calls[0][1] );
+	}
+
+	/**
+	 * A variation's status change is told when the request ends, unless its
+	 * product is trashed or restored in the same request, whichever comes
+	 * first.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_variations_status_change_is_told_unless_its_product_takes_it_along(): void {
+		$this->stubs();
+		WpState::$posts[50] = self::variable_product();
+		WpState::$posts[60] = self::variable_product(
+			[
+				'ID'         => 60,
+				'post_title' => 'Scarf',
+			]
+		);
+
+		$recorder = $this->boot_sensors();
+		self::update_post( self::variation( 1 ), self::variation( 1, [ 'post_status' => 'trash' ] ) );
+		self::update_post(
+			self::variation(
+				2,
+				[
+					'post_parent' => 60,
+					'post_status' => 'private',
+				]
+			),
+			self::variation( 2, [ 'post_parent' => 60 ] )
+		);
+		Hooks::fire( 'wp_trash_post', 50, 'publish' );
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 9001 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( '102', $recorder->calls[0][1]['target']['id'] );
+		$this->assertSame( [ self::change( 'status', 'private', 'publish' ) ], $recorder->calls[0][1]['changes'] );
+	}
+
+	/**
+	 * A variation deleted by an Action Scheduler job is told when the job
+	 * ends, while the job is still the context, and not again at shutdown.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_variation_deleted_in_a_job_is_told_when_the_job_ends(): void {
+		$this->stubs();
+		WpState::$posts[50] = self::variable_product();
+		$recorder           = new BuildingRecorder();
+		ActionSchedulerContext::register();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+
+		Hooks::fire( 'action_scheduler_begin_execute', 41, 'WP Cron' );
+		self::delete_post( self::variation( 3 ) );
+		Hooks::fire( 'action_scheduler_after_execute', 41, null, 'WP Cron' );
+
+		$this->assertSame( [ 9002 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertSame( 'action-scheduler', $recorder->payloads[0]['source'] );
+
+		Hooks::fire( 'shutdown' );
+		$this->assertCount( 1, $recorder->payloads, 'Not again at shutdown.' );
+	}
+
+	/**
 	 * The shop's save of a product runs before it writes it: whatever fails
 	 * while reading the product is reported, never thrown.
 	 *
@@ -1272,6 +1414,7 @@ final class WooCommerceProductSensorTest extends TestCase {
 		$sensor->on_untrashing( null );
 		$sensor->on_delete_post( [], null );
 		$sensor->flush_open_saves();
+		$sensor->flush_job_saves();
 
 		$this->assertSame( [ 9000, 9002 ], array_column( $recorder->calls, 0 ) );
 		$this->assertSame( '5', $recorder->calls[0][1]['target']['id'] );
@@ -1310,6 +1453,9 @@ final class WooCommerceProductSensorTest extends TestCase {
 			'untrash_post'                           => [ 'on_untrashing', 1, 0 ],
 			'before_delete_post'                     => [ 'on_delete_post', 2, 10 ],
 			'shutdown'                               => [ 'flush_open_saves', 1, 0 ],
+			// When a job ends, before its context closes at PHP_INT_MAX.
+			'action_scheduler_after_execute'         => [ 'flush_job_saves', 0, PHP_INT_MAX - 1 ],
+			'action_scheduler_failed_execution'      => [ 'flush_job_saves', 0, PHP_INT_MAX - 1 ],
 		];
 		$this->assertSame( array_keys( $expected ), array_keys( WpState::$callbacks ) );
 		foreach ( $expected as $hook => [ $method, $args, $priority ] ) {
@@ -1441,6 +1587,31 @@ final class WooCommerceProductSensorTest extends TestCase {
 			WpState::$post_meta[ $post_id ]['_thumbnail_id'] = (string) $attachment_id;
 			Hooks::fire( 'updated_post_meta', 1, $post_id, '_thumbnail_id', $attachment_id );
 		}
+	}
+
+	/**
+	 * Delete a post for good the way `wp_delete_post()` does: the post is
+	 * still there on `before_delete_post`, then each of its meta rows is
+	 * deleted by its id (the product image among them, `$image`), then
+	 * `delete_post`.
+	 *
+	 * @param \WP_Post $post  The post.
+	 * @param string   $image Id of its product image; empty for none.
+	 */
+	private static function delete_post( \WP_Post $post, string $image = '' ): void {
+		$id                    = (int) $post->ID;
+		WpState::$posts[ $id ] = $post;
+		if ( '' !== $image ) {
+			WpState::$post_meta[ $id ]['_thumbnail_id'] = $image;
+		}
+
+		Hooks::fire( 'before_delete_post', $id, $post );
+		if ( '' !== $image ) {
+			Hooks::fire( 'delete_post_meta', [ 900 + $id ], $id, '_thumbnail_id', $image );
+			unset( WpState::$post_meta[ $id ]['_thumbnail_id'] );
+			Hooks::fire( 'deleted_post_meta', [ 900 + $id ], $id, '_thumbnail_id', $image );
+		}
+		Hooks::fire( 'delete_post', $id, $post );
 	}
 
 	/**

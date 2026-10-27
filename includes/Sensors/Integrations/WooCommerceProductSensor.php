@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Sensors\Integrations;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
 use HelloLog\Sensors\Core\ContentSensor;
@@ -53,8 +54,12 @@ defined( 'ABSPATH' ) || exit;
  * a placeholder, or of a variation of one.
  *
  * Trashing, restoring or deleting a variable product does the same to every
- * variation: the product's own event says it, so the status changes and
- * deletes of its variations in that request are not told.
+ * variation, before or after the product (the shop's REST API deletes the
+ * variations first, emptying the trash takes them in any order), and the
+ * product's own event says it. So a variation's status change or delete is
+ * held until the request (or the job that made it) ends, and told then
+ * unless its product was trashed, restored or deleted in the same request.
+ * The removal of a deleted post's image along with it is no edit.
  *
  * Every handler runs inside the work of WordPress or WooCommerce on the
  * product (the shop's save of a product has no guard around its hooks), so
@@ -233,12 +238,37 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	private array $images_before = [];
 
 	/**
+	 * How many Action Scheduler jobs were running when a save of a product's
+	 * post opened (see {@see ActionSchedulerContext::depth()}):
+	 * `site:product id` => depth.
+	 *
+	 * @var array<string, int>
+	 */
+	private array $opened_in = [];
+
+	/**
 	 * Posts being trashed, restored or deleted in this request:
 	 * `site:post id` => true. The variations of such a product go with it.
 	 *
 	 * @var array<string, true>
 	 */
 	private array $cascading = [];
+
+	/**
+	 * Posts being deleted for good in this request: `site:post id` => true.
+	 *
+	 * @var array<string, true>
+	 */
+	private array $deleting = [];
+
+	/**
+	 * Status changes and deletes of variations, held until the request (or
+	 * the job that made them) ends: the site, the variation's parent, the jobs
+	 * running when it happened, and the event.
+	 *
+	 * @var array<int, array{blog: int, parent: int, depth: int, code: int, fields: array<string, mixed>}>
+	 */
+	private array $held = [];
 
 	public function key(): string {
 		return 'woocommerce-product';
@@ -269,6 +299,9 @@ final class WooCommerceProductSensor extends AbstractSensor {
 		add_action( 'before_delete_post', [ $this, 'on_delete_post' ], 10, 2 );
 		// Before the request's events are written, at priority 1.
 		add_action( 'shutdown', [ $this, 'flush_open_saves' ], 0 );
+		// What a job made, before its context ends at PHP_INT_MAX.
+		add_action( 'action_scheduler_after_execute', [ $this, 'flush_job_saves' ], PHP_INT_MAX - 1, 0 );
+		add_action( 'action_scheduler_failed_execution', [ $this, 'flush_job_saves' ], PHP_INT_MAX - 1, 0 );
 	}
 
 	/**
@@ -400,17 +433,19 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			}
 
 			$parent_id = max( 0, (int) $post->post_parent );
-			if ( $this->in_creation( $product_id, $parent_id ) || ( self::VARIATION_TYPE === $type && $this->is_cascading( $parent_id ) ) ) {
+			if ( $this->in_creation( $product_id, $parent_id ) ) {
 				return;
 			}
 
-			$this->emit(
-				9001,
-				array_merge(
-					[ 'changes' => [ self::change( 'status', $old, $new ) ] ],
-					$this->product_fields( $product_id, (string) $post->post_title, $parent_id, $type )
-				)
+			$fields = array_merge(
+				[ 'changes' => [ self::change( 'status', $old, $new ) ] ],
+				$this->product_fields( $product_id, (string) $post->post_title, $parent_id, $type )
 			);
+			if ( self::VARIATION_TYPE === $type ) {
+				$this->hold( $parent_id, 9001, $fields );
+				return;
+			}
+			$this->emit( 9001, $fields );
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
 		}
@@ -437,8 +472,9 @@ final class WooCommerceProductSensor extends AbstractSensor {
 				return;
 			}
 
-			$key                = self::state_key( $product_id );
-			$this->open[ $key ] = $this->open[ $key ] ?? [];
+			$key                     = self::state_key( $product_id );
+			$this->open[ $key ]      = $this->open[ $key ] ?? [];
+			$this->opened_in[ $key ] = $this->opened_in[ $key ] ?? ActionSchedulerContext::depth();
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
 		}
@@ -465,7 +501,7 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			}
 			$key     = self::state_key( $product_id );
 			$written = $this->open[ $key ] ?? [];
-			unset( $this->open[ $key ] );
+			unset( $this->open[ $key ], $this->opened_in[ $key ] );
 			if ( ! $post_after instanceof WP_Post || ! $post_before instanceof WP_Post ) {
 				return;
 			}
@@ -607,8 +643,12 @@ final class WooCommerceProductSensor extends AbstractSensor {
 				return;
 			}
 			$product_id = self::id_of( $object_id );
-			if ( $product_id > 0 && function_exists( 'get_post_meta' ) ) {
-				$this->images_before[ self::state_key( $product_id ) ] = get_post_meta( $product_id, self::IMAGE_META_KEY, true );
+			if ( $product_id <= 0 || ! function_exists( 'get_post_meta' ) ) {
+				return;
+			}
+			$key = self::state_key( $product_id );
+			if ( ! isset( $this->deleting[ $key ] ) ) {
+				$this->images_before[ $key ] = get_post_meta( $product_id, self::IMAGE_META_KEY, true );
 			}
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
@@ -670,25 +710,23 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Tell what WordPress wrote inside saves of products that never got to
-	 * writing the post, each on the site it happened on. Runs at shutdown,
-	 * once.
+	 * Tell what is still held when the request ends, each on the site it
+	 * happened on: the variations' status changes and deletes their product
+	 * did not take along, and what WordPress wrote inside saves of products
+	 * that never got to writing the post. Runs at shutdown, once.
 	 */
 	public function flush_open_saves(): void {
-		$open       = $this->open;
-		$this->open = [];
-		foreach ( $open as $key => $changes ) {
-			if ( [] === $changes ) {
-				continue;
-			}
+		$this->flush( 0 );
+	}
 
-			$parts      = explode( ':', (string) $key, 2 );
-			$product_id = (int) ( $parts[1] ?? 0 );
-			try {
-				$this->on_site( (int) $parts[0], fn() => $this->record_written( $product_id, $changes ) );
-			} catch ( Throwable $e ) {
-				$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
-			}
+	/**
+	 * Tell what the Action Scheduler job that is ending made and is still
+	 * held, while the job is still the context. Nothing outside a job.
+	 */
+	public function flush_job_saves(): void {
+		$depth = ActionSchedulerContext::depth();
+		if ( $depth > 0 ) {
+			$this->flush( $depth );
 		}
 	}
 
@@ -708,6 +746,9 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			if ( $product_id <= 0 ) {
 				return;
 			}
+			// WordPress deletes the post's meta next, its image among it.
+			$key                    = self::state_key( $product_id );
+			$this->deleting[ $key ] = true;
 			if ( ! $post instanceof WP_Post ) {
 				$post = function_exists( 'get_post' ) ? get_post( $product_id ) : null;
 				if ( ! $post instanceof WP_Post ) {
@@ -722,10 +763,7 @@ final class WooCommerceProductSensor extends AbstractSensor {
 
 			$parent_id = self::VARIATION_TYPE === $type ? max( 0, (int) $post->post_parent ) : 0;
 			if ( self::PRODUCT_TYPE === $type ) {
-				// WooCommerce deletes its variations after it.
-				$this->cascading[ self::state_key( $product_id ) ] = true;
-			} elseif ( $this->is_cascading( $parent_id ) ) {
-				return;
+				$this->cascading[ $key ] = true;
 			}
 			$status = $parent_id > 0 ? self::post_status( $parent_id ) : (string) $post->post_status;
 			// Core's only caller of `wp_delete_auto_drafts()` is this cron action.
@@ -734,7 +772,12 @@ final class WooCommerceProductSensor extends AbstractSensor {
 				return;
 			}
 
-			$this->emit( 9002, $this->product_fields( $product_id, (string) $post->post_title, $parent_id, $type, false ) );
+			$fields = $this->product_fields( $product_id, (string) $post->post_title, $parent_id, $type, false );
+			if ( self::VARIATION_TYPE === $type ) {
+				$this->hold( $parent_id, 9002, $fields );
+				return;
+			}
+			$this->emit( 9002, $fields );
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9002, [ 'product_id' => $product_id ] );
 		}
@@ -818,6 +861,9 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			$known = ! $replaced || array_key_exists( $key, $this->images_before );
 			$old   = $replaced ? ( $this->images_before[ $key ] ?? null ) : null;
 			unset( $this->images_before[ $key ] );
+			if ( isset( $this->deleting[ $key ] ) ) {
+				return;
+			}
 
 			$post = function_exists( 'get_post' ) ? get_post( $product_id ) : null;
 			if ( ! $post instanceof WP_Post ) {
@@ -840,6 +886,77 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			}
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+		}
+	}
+
+	/**
+	 * Hold a variation's status change or delete until the request (or the
+	 * job that made it) ends, see {@see self::flush()}; dropped at once when
+	 * its product is already being trashed, restored or deleted.
+	 *
+	 * @param int                  $parent_id Id of the variation's parent.
+	 * @param int                  $code      Code of the event.
+	 * @param array<string, mixed> $fields    Its fields.
+	 */
+	private function hold( int $parent_id, int $code, array $fields ): void {
+		if ( $this->is_cascading( $parent_id ) ) {
+			return;
+		}
+
+		$this->held[] = [
+			'blog'   => self::blog_id(),
+			'parent' => $parent_id,
+			'depth'  => ActionSchedulerContext::depth(),
+			'code'   => $code,
+			'fields' => $fields,
+		];
+	}
+
+	/**
+	 * Tell what was held from at least `$depth` running jobs on, each on its
+	 * own site, and forget it; the rest stays held. A variation's held event
+	 * is dropped when its product was trashed, restored or deleted in the
+	 * meantime.
+	 *
+	 * @param int $depth Jobs running when it was held, at least.
+	 */
+	private function flush( int $depth ): void {
+		$due = [];
+		foreach ( $this->held as $index => $event ) {
+			if ( $event['depth'] >= $depth ) {
+				$due[] = $event;
+				unset( $this->held[ $index ] );
+			}
+		}
+		$this->held = array_values( $this->held );
+
+		foreach ( $due as $event ) {
+			if ( isset( $this->cascading[ $event['blog'] . ':' . $event['parent'] ] ) ) {
+				continue;
+			}
+			try {
+				$this->on_site( $event['blog'], fn() => $this->emit( $event['code'], $event['fields'] ) );
+			} catch ( Throwable $e ) {
+				$this->report_failure( $e, $event['code'], [ 'product_id' => (int) ( $event['fields']['metadata']['product_id'] ?? 0 ) ] );
+			}
+		}
+
+		foreach ( $this->open as $key => $changes ) {
+			if ( ( $this->opened_in[ $key ] ?? 0 ) < $depth ) {
+				continue;
+			}
+			unset( $this->open[ $key ], $this->opened_in[ $key ] );
+			if ( [] === $changes ) {
+				continue;
+			}
+
+			$parts      = explode( ':', (string) $key, 2 );
+			$product_id = (int) ( $parts[1] ?? 0 );
+			try {
+				$this->on_site( (int) $parts[0], fn() => $this->record_written( $product_id, $changes ) );
+			} catch ( Throwable $e ) {
+				$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+			}
 		}
 	}
 
@@ -877,8 +994,7 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	 * @param callable $work    What to run.
 	 */
 	private function on_site( int $blog_id, callable $work ): void {
-		$current = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
-		$switch  = $blog_id > 0 && $current !== $blog_id && function_exists( 'switch_to_blog' );
+		$switch = $blog_id > 0 && self::blog_id() !== $blog_id && function_exists( 'switch_to_blog' );
 		if ( $switch ) {
 			switch_to_blog( $blog_id );
 		}
@@ -1338,8 +1454,13 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	 * @param int $product_id Product id.
 	 */
 	private static function state_key( int $product_id ): string {
-		$site = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
+		return self::blog_id() . ':' . $product_id;
+	}
 
-		return $site . ':' . $product_id;
+	/**
+	 * The current site; 0 outside WordPress.
+	 */
+	private static function blog_id(): int {
+		return function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
 	}
 }
