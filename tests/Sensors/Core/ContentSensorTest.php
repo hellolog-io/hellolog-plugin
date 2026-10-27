@@ -17,6 +17,7 @@ use HelloLog\Events\RequestSource;
 use HelloLog\Events\SuppressionRules;
 use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\ContentSensor;
+use HelloLog\Sensors\Core\PostTypeOwnership;
 use HelloLog\Tests\Events\Fixtures\WpCalls;
 use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
 use PHPUnit\Framework\TestCase;
@@ -103,35 +104,6 @@ final class ContentSensorTest extends TestCase {
 		$this->assertSame( $expected, ContentSensor::status_event_code( $new, $old ) );
 	}
 
-	public function test_owned_elsewhere_lists_exactly_the_agreed_types(): void {
-		$this->assertSame(
-			[
-				'product',
-				'product_variation',
-				'shop_order',
-				'shop_order_placehold',
-				'shop_order_refund',
-				'shop_coupon',
-				'revision',
-				'nav_menu_item',
-				'customize_changeset',
-				'oembed_cache',
-				'user_request',
-				'attachment',
-				'forum',
-				'topic',
-				'reply',
-				'sfwd-courses',
-				'sfwd-lessons',
-				'sfwd-topic',
-				'sfwd-quiz',
-				'download',
-				'acf-field-group',
-			],
-			ContentSensor::OWNED_ELSEWHERE
-		);
-	}
-
 	public function test_site_editor_types_are_named_by_the_editors_labels(): void {
 		$this->assertSame(
 			[
@@ -188,22 +160,21 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
-	 * Forums, topics, replies and downloads are common names: they are the
-	 * forum's or the download shop's only while that plugin is active, the
-	 * way a `product` is the shop's only with WooCommerce. The course and
-	 * field group types carry their plugin's prefix and are always theirs.
+	 * An event another sensor reports in its own words is left to it, while
+	 * its plugin is active; anything that sensor does not report stays here,
+	 * see {@see PostTypeOwnership}.
 	 */
-	public function test_shared_type_names_are_owned_elsewhere_only_while_their_plugin_is_active(): void {
-		foreach ( [ 'forum', 'topic', 'reply', 'download' ] as $type ) {
-			$this->assertFalse( ContentSensor::is_tracked_type( $type, true, 2006, true ), $type );
-			$this->assertTrue( ContentSensor::is_tracked_type( $type, true, 2006, false ), $type );
-			$this->assertTrue( ContentSensor::is_tracked_type( $type, true, 2003, true ), $type );
-			$this->assertFalse( ContentSensor::is_tracked_type( $type, false, 2006, false ), $type );
-		}
-		foreach ( [ 'sfwd-courses', 'sfwd-lessons', 'sfwd-topic', 'sfwd-quiz', 'acf-field-group' ] as $type ) {
-			$this->assertFalse( ContentSensor::is_tracked_type( $type, true, 2006, false ), $type );
-			$this->assertTrue( ContentSensor::is_tracked_type( $type, true, 2003, false ), $type );
-		}
+	public function test_events_a_plugins_sensor_reports_are_left_to_it_while_the_plugin_is_active(): void {
+		$this->assertFalse( ContentSensor::is_tracked_type( 'topic', true, 2001, true ) );
+		$this->assertTrue( ContentSensor::is_tracked_type( 'topic', true, 2001, false ) );
+		$this->assertTrue( ContentSensor::is_tracked_type( 'topic', true, 2006, true ) );
+		$this->assertTrue( ContentSensor::is_tracked_type( 'download', true, 2005, true ) );
+		$this->assertFalse( ContentSensor::is_tracked_type( 'download', true, 2001, true ) );
+		$this->assertTrue( ContentSensor::is_tracked_type( 'sfwd-lessons', true, 2006, true ) );
+		$this->assertFalse( ContentSensor::is_tracked_type( 'acf-field-group', true, 2006, true ) );
+		$this->assertTrue( ContentSensor::is_tracked_type( 'acf-field-group', true, 2006, false ) );
+		$this->assertTrue( ContentSensor::is_tracked_type( 'acf-field-group', true, 2003, true ) );
+		$this->assertFalse( ContentSensor::is_tracked_type( 'download', false, 2005, false ) );
 	}
 
 	/**
@@ -248,8 +219,23 @@ final class ContentSensorTest extends TestCase {
 	 * @return array<string, array{0: string, 1: int, 2: bool}> post type, event code, expected.
 	 */
 	public static function owned_type_codes(): array {
+		$types = [
+			'product',
+			'product_variation',
+			'shop_order',
+			'shop_order_placehold',
+			'shop_order_refund',
+			'shop_coupon',
+			'attachment',
+			'revision',
+			'nav_menu_item',
+			'customize_changeset',
+			'oembed_cache',
+			'user_request',
+		];
+
 		$cases = [];
-		foreach ( ContentSensor::OWNED_ELSEWHERE as $type ) {
+		foreach ( $types as $type ) {
 			foreach ( [ 2003, 2004, 2013 ] as $code ) {
 				$cases[ $type . ' ' . $code ] = [ $type, $code, true ];
 			}
@@ -263,8 +249,9 @@ final class ContentSensorTest extends TestCase {
 
 	/**
 	 * The store sensors report products, coupons and orders in their own
-	 * words, but not their trash, restore or revert to auto-draft: those
-	 * stay with this sensor.
+	 * words, the media sensor files of the library, and the internal records
+	 * are nobody's: only their trash, restore and revert to auto-draft stay
+	 * with this sensor.
 	 *
 	 * @dataProvider owned_type_codes
 	 */
@@ -278,15 +265,15 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
-	 * Without WooCommerce a `product` type belongs to some other plugin, and
-	 * nobody else reports it.
+	 * Without WooCommerce a `product` type (or any other type of the shop's
+	 * names) belongs to some other plugin, and nobody else reports it.
 	 */
 	public function test_without_woocommerce_a_product_type_is_tracked_like_any_other(): void {
 		foreach ( [ 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2013 ] as $code ) {
 			$this->assertTrue( ContentSensor::is_tracked_type( 'product', true, $code, false ), (string) $code );
+			$this->assertTrue( ContentSensor::is_tracked_type( 'shop_coupon', true, $code, false ), (string) $code );
 		}
 		$this->assertFalse( ContentSensor::is_tracked_type( 'product', false, 2006, false ) );
-		$this->assertFalse( ContentSensor::is_tracked_type( 'shop_coupon', true, 2006, false ) );
 	}
 
 	public function test_post_target_has_a_string_id_and_the_title_as_label(): void {
@@ -2162,56 +2149,121 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
-	 * With bbPress and Easy Digital Downloads active their own sensors report
-	 * forums and downloads, so this one only logs their trash; without those
-	 * plugins a type of that name is somebody else's and logged in full.
+	 * With bbPress, LearnDash, Easy Digital Downloads and ACF active, the
+	 * events their sensors report are left to them, and only those: a
+	 * download's permanent delete, a lesson's edit and a field group's trash
+	 * are nobody else's and logged here.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_forums_and_downloads_are_left_to_their_plugins_while_those_are_active(): void {
+	public function test_plugin_types_leave_only_the_events_their_sensors_report(): void {
 		require_once __DIR__ . '/Fixtures/bbpress-class.php';
+		require_once __DIR__ . '/Fixtures/acf-class.php';
+		define( 'LEARNDASH_VERSION', '4.0.0' );
 		define( 'EDD_VERSION', '3.0.0' );
 
 		$calls = $this->run_hook(
 			static function ( ContentSensor $sensor, callable $post ): void {
 				WpState::$post_types += [
-					'forum'        => true,
-					'download'     => true,
-					'sfwd-courses' => true,
+					'topic'           => true,
+					'download'        => true,
+					'sfwd-lessons'    => true,
+					'acf-field-group' => true,
 				];
+				$sensor->boot();
 
-				foreach ( [ 'forum' => 7, 'download' => 8, 'sfwd-courses' => 9 ] as $type => $id ) {
-					$sensor->on_status( 'publish', 'draft', $post( [ 'ID' => $id, 'post_type' => $type ] ) );
-					$sensor->on_status( 'trash', 'publish', $post( [ 'ID' => $id, 'post_type' => $type, 'post_status' => 'trash' ] ) );
-				}
+				// bbPress reports the publish and the delete of a topic.
+				$sensor->on_status( 'publish', 'draft', $post( [ 'ID' => 7, 'post_type' => 'topic' ] ) );
+				$sensor->on_delete( 7, $post( [ 'ID' => 7, 'post_type' => 'topic' ] ) );
+
+				// Easy Digital Downloads reports the publish, not the delete.
+				$sensor->on_status( 'publish', 'draft', $post( [ 'ID' => 8, 'post_type' => 'download' ] ) );
+				$sensor->on_delete( 8, $post( [ 'ID' => 8, 'post_type' => 'download' ] ) );
+
+				// LearnDash reports the publish, not an edit of a draft.
+				$sensor->on_status( 'publish', 'draft', $post( [ 'ID' => 9, 'post_type' => 'sfwd-lessons' ] ) );
+				self::update_post(
+					$post(
+						[
+							'ID'          => 9,
+							'post_type'   => 'sfwd-lessons',
+							'post_status' => 'draft',
+							'post_title'  => 'Lesson one',
+						]
+					),
+					$post(
+						[
+							'ID'          => 9,
+							'post_type'   => 'sfwd-lessons',
+							'post_status' => 'draft',
+							'post_title'  => 'Lesson 1',
+						]
+					)
+				);
+
+				// ACF reports every save of a field group, not its trash.
+				self::update_post(
+					$post(
+						[
+							'ID'         => 10,
+							'post_type'  => 'acf-field-group',
+							'post_title' => 'Fields',
+						]
+					),
+					$post(
+						[
+							'ID'         => 10,
+							'post_type'  => 'acf-field-group',
+							'post_title' => 'Product fields',
+						]
+					)
+				);
+				$sensor->on_status( 'trash', 'publish', $post( [ 'ID' => 10, 'post_type' => 'acf-field-group', 'post_status' => 'trash' ] ) );
 			}
 		);
 
-		$this->assertSame( [ 2003, 2003, 2003 ], array_column( $calls, 0 ) );
-		$this->assertSame( [ 'forum', 'download', 'sfwd-courses' ], array_map( static fn( array $call ): string => $call[1]['post']['type'], $calls ) );
+		$this->assertSame( [ 2005, 2006, 2003 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 'download', 'sfwd-lessons', 'acf-field-group' ], array_map( static fn( array $call ): string => $call[1]['post']['type'], $calls ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_title',
+					'old'   => 'Lesson one',
+					'new'   => 'Lesson 1',
+				],
+			],
+			$calls[1][1]['changes']
+		);
 	}
 
 	/**
+	 * Without their plugins, types of these names belong to some other
+	 * plugin and are logged like any other type.
+	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_without_their_plugins_forums_and_downloads_are_logged_like_any_other_type(): void {
+	public function test_without_their_plugins_plugin_types_are_logged_like_any_other_type(): void {
 		$calls = $this->run_hook(
 			static function ( ContentSensor $sensor, callable $post ): void {
 				WpState::$post_types += [
-					'forum'    => true,
-					'download' => true,
+					'topic'           => true,
+					'download'        => true,
+					'sfwd-lessons'    => true,
+					'acf-field-group' => true,
 				];
 
-				$sensor->on_status( 'publish', 'draft', $post( [ 'post_type' => 'forum' ] ) );
+				$sensor->on_status( 'publish', 'draft', $post( [ 'post_type' => 'topic' ] ) );
 				$sensor->on_status( 'publish', 'draft', $post( [ 'ID' => 8, 'post_type' => 'download' ] ) );
+				$sensor->on_status( 'publish', 'draft', $post( [ 'ID' => 9, 'post_type' => 'sfwd-lessons' ] ) );
+				$sensor->on_delete( 10, $post( [ 'ID' => 10, 'post_type' => 'acf-field-group' ] ) );
 			}
 		);
 
 		$this->assertFalse( class_exists( 'bbPress', false ) );
 		$this->assertFalse( defined( 'EDD_VERSION' ) );
-		$this->assertSame( [ 2001, 2001 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 2001, 2001, 2001, 2005 ], array_column( $calls, 0 ) );
 	}
 
 	/**

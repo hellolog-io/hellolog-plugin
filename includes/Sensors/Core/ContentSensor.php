@@ -37,9 +37,9 @@ defined( 'ABSPATH' ) || exit;
  * of the post: its terms named by the taxonomy, or `sticky`.
  *
  * Which post types are logged is decided by {@see self::is_tracked_type()}:
- * the types another sensor reports itself, and internal types without an
- * admin screen, are left out; the site editor's types are always logged
- * (see {@see self::SITE_EDITOR_TYPES}). Every event names the post it is
+ * internal types without an admin screen are left out, and so are the
+ * events another sensor reports itself (see {@see PostTypeOwnership}); the
+ * site editor's types are always logged (see {@see self::SITE_EDITOR_TYPES}). Every event names the post it is
  * about as its target and links to its edit screen.
  *
  * Of a file of the media library only its trash and restore are logged here
@@ -48,60 +48,6 @@ defined( 'ABSPATH' ) || exit;
  * trash is told by `trashed_post`.
  */
 final class ContentSensor extends AbstractSensor {
-
-	/**
-	 * Post types that produce no post event here but trash, restore and
-	 * revert to `auto-draft`: store products, orders and coupons, forums,
-	 * topics and replies, courses, lessons and quizzes, downloads and custom
-	 * field groups are reported by the sensors of their plugins in their own
-	 * words, files of the media library by {@see MediaSensor}, and the rest
-	 * are internal records nobody edits (revisions, menu items, customizer
-	 * drafts, embed caches, privacy requests). See
-	 * {@see self::OWNED_ELSEWHERE_CODES}. A type whose name other plugins use
-	 * too is only another sensor's while its plugin is active, see
-	 * {@see self::SHARED_NAMES}.
-	 *
-	 * @var array<int, string>
-	 */
-	public const OWNED_ELSEWHERE = [
-		'product',
-		'product_variation',
-		'shop_order',
-		'shop_order_placehold',
-		'shop_order_refund',
-		'shop_coupon',
-		'revision',
-		'nav_menu_item',
-		'customize_changeset',
-		'oembed_cache',
-		'user_request',
-		'attachment',
-		'forum',
-		'topic',
-		'reply',
-		'sfwd-courses',
-		'sfwd-lessons',
-		'sfwd-topic',
-		'sfwd-quiz',
-		'download',
-		'acf-field-group',
-	];
-
-	/**
-	 * The types of {@see self::OWNED_ELSEWHERE} whose name other plugins use
-	 * too (a shop is not the only thing with products, nor a forum plugin
-	 * the only one with topics): they are left to another sensor only while
-	 * the plugin it reports is active. Type => that plugin.
-	 *
-	 * @var array<string, string>
-	 */
-	private const SHARED_NAMES = [
-		'product'  => 'woocommerce',
-		'forum'    => 'bbpress',
-		'topic'    => 'bbpress',
-		'reply'    => 'bbpress',
-		'download' => 'edd',
-	];
 
 	/**
 	 * The post types of the site editor, by the names the editor gives them.
@@ -118,17 +64,6 @@ final class ContentSensor extends AbstractSensor {
 		'wp_navigation'    => 'Navigation menu',
 		'wp_block'         => 'Pattern',
 	];
-
-	/**
-	 * The events of {@see self::OWNED_ELSEWHERE} types this sensor leaves to
-	 * their owners. Trash (2003), restore (2004) and revert to `auto-draft`
-	 * (2013, after which WordPress deletes the post unseen) are not among
-	 * them: none of those owners reports them, so they are logged here for
-	 * every type.
-	 *
-	 * @var array<int, int>
-	 */
-	private const OWNED_ELSEWHERE_CODES = [ 2000, 2001, 2002, 2005, 2006, 2007, 2008, 2009 ];
 
 	/**
 	 * Old statuses of a save that brings a post into being: an insert (`new`)
@@ -515,29 +450,20 @@ final class ContentSensor extends AbstractSensor {
 	 * Whether an event about a post of a type is logged by this sensor.
 	 *
 	 * The site editor's types always are. Internal types without an admin
-	 * screen never are. Of the {@see self::OWNED_ELSEWHERE} types only trash,
-	 * restore and revert are, see {@see self::OWNED_ELSEWHERE_CODES}. A type
-	 * of {@see self::SHARED_NAMES} belongs to some other plugin while its own
-	 * plugin is not active (a `product` type without WooCommerce) and is
-	 * logged like any other.
+	 * screen never are. An event the type's owner reports in its own words
+	 * is left to it, see {@see PostTypeOwnership}.
 	 *
 	 * @param string $post_type    Post type name.
 	 * @param bool   $show_ui      Whether the type has an admin screen.
 	 * @param int    $code         Code of the event.
-	 * @param bool   $owner_active Whether the plugin of a {@see self::SHARED_NAMES} type is active; not read for other types.
+	 * @param bool   $owner_active Whether the plugin that owns the type is active, see {@see PostTypeOwnership::owner_active()}.
 	 */
 	public static function is_tracked_type( string $post_type, bool $show_ui, int $code, bool $owner_active ): bool {
 		if ( isset( self::SITE_EDITOR_TYPES[ $post_type ] ) ) {
 			return true;
 		}
-		if ( ! $show_ui ) {
-			return false;
-		}
-		if ( isset( self::SHARED_NAMES[ $post_type ] ) && ! $owner_active ) {
-			return true;
-		}
 
-		return ! in_array( $post_type, self::OWNED_ELSEWHERE, true ) || ! in_array( $code, self::OWNED_ELSEWHERE_CODES, true );
+		return $show_ui && ! PostTypeOwnership::is_owned_elsewhere( $post_type, $code, $owner_active );
 	}
 
 	/**
@@ -618,29 +544,10 @@ final class ContentSensor extends AbstractSensor {
 			$type,
 			(bool) ( $type_object->show_ui ?? false ),
 			$code,
-			self::owner_active( $type )
+			PostTypeOwnership::owner_active( $type )
 		);
 
 		return $tracked && ( 'attachment' !== $type || ! $this->is_upgrader_package( (int) $post->ID, $code ) );
-	}
-
-	/**
-	 * Whether the plugin a {@see self::SHARED_NAMES} type belongs to is
-	 * active; true for any other type.
-	 *
-	 * @param string $post_type Post type name.
-	 */
-	private static function owner_active( string $post_type ): bool {
-		switch ( self::SHARED_NAMES[ $post_type ] ?? '' ) {
-			case 'woocommerce':
-				return class_exists( 'WooCommerce', false );
-			case 'bbpress':
-				return class_exists( 'bbPress', false ) || function_exists( 'bbp_get_version' );
-			case 'edd':
-				return defined( 'EDD_VERSION' );
-			default:
-				return true;
-		}
 	}
 
 	/**
