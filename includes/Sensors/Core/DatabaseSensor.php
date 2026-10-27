@@ -26,10 +26,13 @@ defined( 'ABSPATH' ) || exit;
  * The sensor fails closed. Spotting is coarse: any statement whose text has
  * the word `CREATE` or `DROP` followed somewhere by the word `TABLE` or
  * `TABLES` is logged, unless the precise reading below grants it an
- * exemption. The checks run cheapest first, each linear in the length of the
- * statement and without a pattern that could give up on a large input: a
- * search for "table", the first word (rows read or written are never a
- * table), then one scan of the lower-cased text. Anything that reading can
+ * exemption. In that search a no-break space (byte 0xA0) and the opening of
+ * a comment MySQL runs, with its version digits (`/*!50000`, `/*M!100100`),
+ * separate words as a space does, so a keyword written right after one is
+ * still found. The checks run cheapest first, each linear in the length of
+ * the statement and without a pattern that could give up on a large input:
+ * a search for "table", the first word (rows read or written are never a
+ * table), then one scan of the folded text. Anything that reading can
  * not settle is logged once, as it is, under the first name after `TABLE`,
  * marked `unparsed`, with no exemption.
  *
@@ -85,6 +88,16 @@ final class DatabaseSensor extends AbstractSensor {
 
 	/** Whitespace MySQL skips between words: PHP's trim set plus form feed. */
 	private const SPACE = " \t\n\r\0\x0B\f";
+
+	/**
+	 * What the coarse search folds, byte for byte, into {@see self::FOLD_TO}:
+	 * the upper-case ASCII letters, and byte 0xA0, which MySQL reads as a
+	 * space on single-byte connections (latin1, cp1250).
+	 */
+	private const FOLD_FROM = "ABCDEFGHIJKLMNOPQRSTUVWXYZ\xA0";
+
+	/** What {@see self::FOLD_FROM} folds into. */
+	private const FOLD_TO = 'abcdefghijklmnopqrstuvwxyz ';
 
 	public function key(): string {
 		return 'core-database';
@@ -171,13 +184,14 @@ final class DatabaseSensor extends AbstractSensor {
 	/**
 	 * `CREATE` or `DROP`, whichever comes first as a word, when the word
 	 * `TABLE` or `TABLES` follows it somewhere; null otherwise. The text is
-	 * lower-cased once and searched with plain byte searches: one pass over
-	 * it, without patterns, however many words only contain the keywords.
+	 * folded once ({@see self::coarse_text()}) and searched with plain byte
+	 * searches: one pass over it, without patterns, however many words only
+	 * contain the keywords.
 	 *
 	 * @param string $sql The statement as run.
 	 */
 	private static function table_keyword( string $sql ): ?string {
-		$text    = strtr( $sql, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz' );
+		$text    = self::coarse_text( $sql );
 		$keyword = null;
 		$at      = PHP_INT_MAX;
 		foreach ( [ 'create', 'drop' ] as $word ) {
@@ -207,10 +221,48 @@ final class DatabaseSensor extends AbstractSensor {
 	}
 
 	/**
+	 * The statement as the coarse search reads it: lower-cased, with every
+	 * byte that can separate words for MySQL made a space, whatever it could
+	 * be otherwise. That is a no-break space (byte 0xA0), and the opening of
+	 * every comment MySQL runs (`/*!`, MariaDB's `/*M!`) with the version
+	 * digits that can follow it without a space, wherever it stands: a word
+	 * written right after one (`/*!50000DROP`) is still a word. One pass,
+	 * without patterns.
+	 *
+	 * @param string $sql The statement as run.
+	 */
+	private static function coarse_text( string $sql ): string {
+		$text = strtr( $sql, self::FOLD_FROM, self::FOLD_TO );
+		$pos  = strpos( $text, '/*' );
+		if ( false === $pos ) {
+			return $text;
+		}
+
+		$out  = '';
+		$from = 0;
+		while ( false !== $pos ) {
+			$at = $pos + 2;
+			if ( 'm' === ( $text[ $at ] ?? '' ) ) {
+				++$at;
+			}
+			if ( '!' !== ( $text[ $at ] ?? '' ) ) {
+				$pos = strpos( $text, '/*', $pos + 2 );
+				continue;
+			}
+			$end  = $at + 1 + strspn( $text, '0123456789', $at + 1 );
+			$out .= substr( $text, $from, $pos - $from ) . ' ';
+			$from = $end;
+			$pos  = strpos( $text, '/*', $end );
+		}
+
+		return $out . substr( $text, $from );
+	}
+
+	/**
 	 * Where a word first stands on its own (no name character on either
 	 * side); null when it does not.
 	 *
-	 * @param string $text   The text, lower-cased.
+	 * @param string $text   The text, folded.
 	 * @param string $word   The word, lower-cased.
 	 * @param int    $offset Where to start.
 	 */

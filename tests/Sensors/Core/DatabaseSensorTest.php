@@ -274,6 +274,11 @@ final class DatabaseSensorTest extends TestCase {
 			'the whole statement'      => [ '/*!50000 DROP TABLE wp_users*/', 7101, 'wp_users' ],
 			'temporary only for some'  => [ 'CREATE /*!99999 TEMPORARY */ TABLE wp_shop ( id BIGINT )', 7100, 'wp_shop' ],
 			'after the queue table'    => [ 'DROP TABLE wp_hellolog_queue /*!99999 , wp_users */', 7101, 'wp_hellolog_queue' ],
+			'the keyword alone'        => [ '/*!50000DROP*/ TABLE wp_users', 7101, 'wp_users' ],
+			'TABLE alone'              => [ 'DROP /*!50000TABLE*/ wp_users', 7101, 'wp_users' ],
+			'CREATE alone'             => [ '/*!50000CREATE*/ TABLE wp_shop (id int)', 7100, 'wp_shop' ],
+			'no space after a version' => [ '/*!40101DROP TABLE wp_users*/', 7101, 'wp_users' ],
+			'a MariaDB one, no space'  => [ '/*M!100100DROP*/ TABLE wp_users', 7101, 'wp_users' ],
 		];
 	}
 
@@ -290,6 +295,34 @@ final class DatabaseSensorTest extends TestCase {
 
 		$this->assertSame( [ $code ], array_column( $recorder->calls, 0 ) );
 		$this->assertSame( $name, $recorder->calls[0][1]['name'] );
+		$this->assertSame( 'yes', $recorder->calls[0][1]['metadata']['unparsed'] );
+	}
+
+	/**
+	 * On a single-byte connection (latin1, cp1250) MySQL reads byte 0xA0, a
+	 * no-break space there, as a space: it hides nothing either. Logged as
+	 * not read, since on other connections it is no space.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function no_break_spaces(): array {
+		return [
+			'between the keywords' => [ "DROP\xA0TABLE wp_users" ],
+			'before the statement' => [ "\xA0DROP TABLE wp_users" ],
+		];
+	}
+
+	/**
+	 * @dataProvider no_break_spaces
+	 *
+	 * @param string $query The statement.
+	 */
+	public function test_a_no_break_space_does_not_hide_a_drop( string $query ): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( $query );
+
+		$this->assertSame( [ 7101 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'wp_users', $recorder->calls[0][1]['name'] );
 		$this->assertSame( 'yes', $recorder->calls[0][1]['metadata']['unparsed'] );
 	}
 

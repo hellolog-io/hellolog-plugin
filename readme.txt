@@ -140,10 +140,11 @@ This version requires the HelloLog service release from October 2026 or later.
   per table; dropping helloLOG's own queue table is not logged.
 * Fix: Saving the API key that is already stored no longer switches logging
   off.
-* Security: Comments, unusual whitespace and the plural DROP TABLES no
-  longer hide a CREATE TABLE or DROP TABLE statement from the database
-  sensor; each table a DROP TABLE names is logged, and a statement the sensor
-  can not read precisely is logged as it is, marked as unparsed.
+* Security: Comments (version comments included), unusual whitespace (a
+  no-break space included) and the plural DROP TABLES no longer hide a
+  CREATE TABLE or DROP TABLE statement from the database sensor; each table
+  a DROP TABLE names is logged, and a statement the sensor can not read
+  precisely is logged as it is, marked as unparsed.
 
 = 0.5.0 =
 * Note: This version requires the HelloLog service release from October

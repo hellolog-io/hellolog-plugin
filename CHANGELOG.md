@@ -112,10 +112,13 @@
   verified.
 
 ### Security
-- Comments, unusual whitespace and the plural DROP TABLES no longer hide a
-  CREATE TABLE or DROP TABLE statement from the database sensor; each table
-  a DROP TABLE names is logged (not only the first), and a statement the
-  sensor can not read precisely is logged as it is, marked as unparsed.
+- Comments (including the version comments MySQL and MariaDB run, with or
+  without a space after the version), unusual whitespace (including a
+  no-break space, which single-byte connections read as a space) and the
+  plural DROP TABLES no longer hide a CREATE TABLE or DROP TABLE statement
+  from the database sensor; each table a DROP TABLE names is logged (not
+  only the first), and a statement the sensor can not read precisely is
+  logged as it is, marked as unparsed.
 
 ## [0.5.0] - 2026-10-26
 
