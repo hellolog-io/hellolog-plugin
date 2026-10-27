@@ -322,6 +322,148 @@ final class WooCommerceConfigSensorTest extends TestCase {
 		$this->assertSame( 'WC shipping method Flat rate toggled in zone Domestic.', $this->build( $code, $fields )['message'] );
 	}
 
+	/**
+	 * Deleting a zone deletes its methods with it, and the shop tells no
+	 * removal of them: the zone's name and methods are read before the
+	 * delete, and each method is told as removed from it, named by its type
+	 * (a type the shop no longer lists by its id). The filter the zone is
+	 * read on lets the delete go ahead untouched.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_deleting_a_zone_tells_each_of_its_methods_as_removed(): void {
+		$this->stubs();
+		ConfigState::$shipping_methods = [
+			'flat_rate'     => 'Flat rate',
+			'free_shipping' => 'Free shipping',
+		];
+		ConfigState::$zones            = [ 1 => 'Domestic' ];
+		$zone                          = self::zone(
+			1,
+			'Domestic',
+			[
+				'3' => 'flat_rate',
+				'4' => 'free_shipping',
+				'5' => 'gone_method',
+			]
+		);
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceConfigSensor( $recorder );
+		$this->assertNull( $sensor->on_zone_deleting( null, $zone, true ) );
+		$this->assertSame( [], $recorder->calls );
+		// The zone and its methods are gone when the shop tells the delete.
+		ConfigState::$zones = [];
+		$sensor->on_zone_deleted( 1 );
+		$sensor->on_zone_deleted( 1 );
+
+		$this->assertSame( [ 9421, 9421, 9421 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame(
+			[
+				self::target( 'shipping_method:3', 'Flat rate (Domestic)' ),
+				self::target( 'shipping_method:4', 'Free shipping (Domestic)' ),
+				self::target( 'shipping_method:5', 'gone_method (Domestic)' ),
+			],
+			array_map( static fn( array $call ): array => $call[1]['target'], $recorder->calls )
+		);
+		$this->assertSame(
+			[
+				'name' => 'Flat rate',
+				'zone' => 'Domestic',
+			],
+			$recorder->calls[0][1]['vars']
+		);
+		$this->assertSame(
+			[
+				'method_id' => 'flat_rate',
+				'zone_id'   => 1,
+			],
+			$recorder->calls[0][1]['metadata']
+		);
+		$this->assertSame( 'WC shipping method Flat rate removed from zone Domestic.', $this->build( 9421, $recorder->calls[0][1] )['message'] );
+	}
+
+	/**
+	 * A delete another filter stopped (its answer is passed on as it is), a
+	 * zone without methods, and a delete the zone was not read for tell
+	 * nothing; a zone without a name is named by its id.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_only_a_zone_read_before_its_delete_tells_its_methods(): void {
+		$this->stubs();
+		ConfigState::$shipping_methods = [ 'flat_rate' => 'Flat rate' ];
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceConfigSensor( $recorder );
+		$this->assertFalse( $sensor->on_zone_deleting( false, self::zone( 1, 'Domestic', [ '3' => 'flat_rate' ] ), true ) );
+		$sensor->on_zone_deleted( 1 );
+		$sensor->on_zone_deleting( null, self::zone( 2, 'Empty', [] ), true );
+		$sensor->on_zone_deleted( 2 );
+		$sensor->on_zone_deleted( 7 );
+		$this->assertSame( [], $recorder->calls );
+
+		$sensor->on_zone_deleting( null, self::zone( 3, '', [ '6' => 'flat_rate' ] ), true );
+		$sensor->on_zone_deleted( '3' );
+
+		$this->assertSame( [ 9421 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( self::target( 'shipping_method:6', 'Flat rate (#3)' ), $recorder->calls[0][1]['target'] );
+	}
+
+	/**
+	 * A zone id is unique on its own site only: the zone read before a delete
+	 * on one site does not name a delete of the same id on another.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_zone_read_before_its_delete_is_kept_per_site(): void {
+		$this->stubs();
+		ConfigState::$shipping_methods = [ 'flat_rate' => 'Flat rate' ];
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceConfigSensor( $recorder );
+		$sensor->on_zone_deleting( null, self::zone( 1, 'Domestic', [ '3' => 'flat_rate' ] ), true );
+		ConfigState::$blog_id = 2;
+		$sensor->on_zone_deleted( 1 );
+		$this->assertSame( [], $recorder->calls );
+
+		ConfigState::$blog_id = 1;
+		$sensor->on_zone_deleted( 1 );
+		$this->assertSame( [ 9421 ], array_column( $recorder->calls, 0 ) );
+	}
+
+	/**
+	 * Reading the zone, or telling one of its methods, can fail: it is
+	 * reported, never thrown into the shop's delete, the delete goes ahead,
+	 * and the other methods are still told.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_zone_delete_never_fails_on_what_the_sensor_reads(): void {
+		$this->stubs();
+		ConfigState::$shipping_methods = [ 'flat_rate' => 'Flat rate' ];
+
+		// The zone cannot be read.
+		ConfigState::$throws = true;
+		$sensor              = new WooCommerceConfigSensor( $this->recorder() );
+		$this->assertNull( $sensor->on_zone_deleting( null, self::zone( 1, 'Domestic', [ '3' => 'flat_rate' ] ), true ) );
+		$this->assertFailure( 9421, [ 'zone_id' => 1 ] );
+
+		// The methods cannot be told.
+		ConfigState::$throws = false;
+		WpCalls::$actions    = [];
+		$sensor              = new WooCommerceConfigSensor( $this->throwing_dispatcher() );
+		$sensor->on_zone_deleting( null, self::zone( 1, 'Domestic', [ '3' => 'flat_rate', '4' => 'flat_rate' ] ), true );
+		$sensor->on_zone_deleted( 1 );
+		$this->assertCount( 2, WpCalls::$actions );
+		$this->assertSame( [ 'instance_id' => 3 ], WpCalls::$actions[0][1][2] );
+		$this->assertSame( [ 'instance_id' => 4 ], WpCalls::$actions[1][1][2] );
+	}
+
 	// ------------------------------------------------------------------
 	// Webhooks.
 	// ------------------------------------------------------------------
@@ -816,6 +958,11 @@ final class WooCommerceConfigSensorTest extends TestCase {
 		$sensor->on_shipping_method_added( null, 'flat_rate', 1 );
 		$sensor->on_shipping_method_deleted( 3, 'flat_rate', 'zone' );
 		$sensor->on_shipping_method_status_toggled( -3, 'flat_rate', 1, 1 );
+		$this->assertNull( $sensor->on_zone_deleting( null, 'zone', true ) );
+		$this->assertSame( 'kept', $sensor->on_zone_deleting( 'kept', null, null ) );
+		$sensor->on_zone_deleting( null, new \stdClass(), true );
+		$sensor->on_zone_deleted( 'zone' );
+		$sensor->on_zone_deleted( null );
 		$sensor->on_webhook_created( 0, null );
 		$sensor->on_webhook_disabled_for_failures( 'x' );
 		$sensor->on_webhook_deleted( [], null );
@@ -850,6 +997,8 @@ final class WooCommerceConfigSensorTest extends TestCase {
 			'woocommerce_shipping_zone_method_added'             => 3,
 			'woocommerce_shipping_zone_method_deleted'           => 3,
 			'woocommerce_shipping_zone_method_status_toggled'    => 4,
+			'woocommerce_pre_delete_shipping_zone'               => 3,
+			'woocommerce_delete_shipping_zone'                   => 1,
 			'woocommerce_new_webhook'                            => 2,
 			'woocommerce_before_data_object_save'                => 1,
 			'woocommerce_webhook_disabled_due_delivery_failures' => 1,
@@ -973,6 +1122,70 @@ final class WooCommerceConfigSensorTest extends TestCase {
 			'attribute_orderby' => 'menu_order',
 			'attribute_public'  => 0,
 		];
+	}
+
+	/**
+	 * A shipping zone as the shop's filter before its delete passes it, with
+	 * its methods as its data store lists them (ids as text, the way the
+	 * database answers). Its name cannot be read while every read fails.
+	 *
+	 * @param int                   $id      Zone id.
+	 * @param string                $name    Zone name.
+	 * @param array<string, string> $methods Instance id => id of the method's type.
+	 */
+	private static function zone( int $id, string $name, array $methods ): object {
+		return new class( $id, $name, $methods ) {
+
+			/**
+			 * @param array<string, string> $methods Instance id => id of the method's type.
+			 */
+			public function __construct( private int $id, private string $name, private array $methods ) {
+			}
+
+			public function get_id(): int {
+				return $this->id;
+			}
+
+			public function get_zone_name(): string {
+				if ( ConfigState::$throws ) {
+					throw new \RuntimeException( 'no zone' );
+				}
+
+				return $this->name;
+			}
+
+			public function get_data_store(): object {
+				return new class( $this->id, $this->methods ) {
+
+					/**
+					 * @param array<string, string> $methods Instance id => id of the method's type.
+					 */
+					public function __construct( private int $zone_id, private array $methods ) {
+					}
+
+					/**
+					 * @return array<int, object>
+					 */
+					public function get_methods( int $zone_id, bool $enabled_only ): array {
+						if ( $zone_id !== $this->zone_id || $enabled_only ) {
+							throw new \LogicException( 'Every method of the zone is read.' );
+						}
+
+						$rows = [];
+						foreach ( $this->methods as $instance_id => $method_id ) {
+							$rows[] = (object) [
+								'method_id'    => $method_id,
+								'method_order' => '1',
+								'instance_id'  => (string) $instance_id,
+								'is_enabled'   => '1',
+							];
+						}
+
+						return $rows;
+					}
+				};
+			}
+		};
 	}
 
 	/**

@@ -34,7 +34,10 @@ defined( 'ABSPATH' ) || exit;
  *   covers). When a method is added its own title is not saved yet, and when
  *   it is removed it is gone, so the type names it every time. Its own
  *   settings (its title, its costs) are an option the settings sensor tells
- *   on the option's target.
+ *   on the option's target. Deleting a zone removes its methods without the
+ *   shop telling it: the zone is read before the delete, and each of its
+ *   methods is told as removed from it. The zones themselves (their
+ *   creation, name and regions) are not logged.
  * - A webhook tells its name, topic and status, and the host it posts to:
  *   never the rest of the address (a path or query often holds a token),
  *   never its secret. An edit is read from the shop's save of the webhook,
@@ -117,6 +120,15 @@ final class WooCommerceConfigSensor extends AbstractSensor {
 	 */
 	private array $attribute_labels = [];
 
+	/**
+	 * Shipping zones about to be deleted, read before the delete:
+	 * `site:zone id` => the zone's name and its methods (instance id => id of
+	 * the method's type).
+	 *
+	 * @var array<string, array{name: string, methods: array<int, string>}>
+	 */
+	private array $zones_deleting = [];
+
 	public function key(): string {
 		return 'woocommerce-config';
 	}
@@ -132,6 +144,11 @@ final class WooCommerceConfigSensor extends AbstractSensor {
 		add_action( 'woocommerce_shipping_zone_method_added', [ $this, 'on_shipping_method_added' ], 10, 3 );
 		add_action( 'woocommerce_shipping_zone_method_deleted', [ $this, 'on_shipping_method_deleted' ], 10, 3 );
 		add_action( 'woocommerce_shipping_zone_method_status_toggled', [ $this, 'on_shipping_method_status_toggled' ], 10, 4 );
+		// A zone's delete removes its methods without telling them: the zone
+		// is read before the delete (the shop's filter before any object's
+		// delete), and its methods are told once it is deleted.
+		add_filter( 'woocommerce_pre_delete_shipping_zone', [ $this, 'on_zone_deleting' ], 10, 3 );
+		add_action( 'woocommerce_delete_shipping_zone', [ $this, 'on_zone_deleted' ], 10, 1 );
 		add_action( 'woocommerce_new_webhook', [ $this, 'on_webhook_created' ], 10, 2 );
 		// Webhooks have no save hook of their own; coupons fire this one too.
 		add_action( 'woocommerce_before_data_object_save', [ $this, 'on_before_save' ], 10, 1 );
@@ -358,16 +375,111 @@ final class WooCommerceConfigSensor extends AbstractSensor {
 	}
 
 	/**
+	 * A shipping zone is about to be deleted (the shop's filter before the
+	 * delete of any of its objects): read its name and its methods while
+	 * they exist, for {@see self::on_zone_deleted()}. A delete another
+	 * filter already stopped is left alone. The filter's answer is passed on
+	 * as it came, whatever happens here.
+	 *
+	 * @param mixed $check        Whether the delete goes ahead: null, unless a filter decided otherwise.
+	 * @param mixed $zone         The zone about to be deleted.
+	 * @param mixed $force_delete Whether it skips the trash; not used.
+	 * @return mixed `$check`, unchanged.
+	 */
+	public function on_zone_deleting( $check, $zone = null, $force_delete = null ): mixed {
+		$zone_id = 0;
+		try {
+			if ( null !== $check || ! is_object( $zone ) || ! method_exists( $zone, 'get_id' ) ) {
+				return $check;
+			}
+			$zone_id = self::id_of( $zone->get_id() );
+			if ( $zone_id <= 0 ) {
+				return $check;
+			}
+
+			$methods = self::zone_methods( $zone, $zone_id );
+			if ( [] !== $methods ) {
+				$name = method_exists( $zone, 'get_zone_name' ) ? trim( self::text_of( $zone->get_zone_name() ) ) : '';
+
+				$this->zones_deleting[ self::state_key( $zone_id ) ] = [
+					'name'    => $name,
+					'methods' => $methods,
+				];
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9421, [ 'zone_id' => $zone_id ] );
+		}
+
+		return $check;
+	}
+
+	/**
+	 * A shipping zone was deleted, and every method in it with it (the shop
+	 * tells no removal of them): each method read before the delete is told
+	 * as removed from the zone, under the name the zone had.
+	 *
+	 * @param mixed $zone_id Zone id.
+	 */
+	public function on_zone_deleted( $zone_id ): void {
+		$id = 0;
+		try {
+			$id = self::id_of( $zone_id );
+			if ( $id <= 0 ) {
+				return;
+			}
+			$key  = self::state_key( $id );
+			$zone = $this->zones_deleting[ $key ] ?? null;
+			unset( $this->zones_deleting[ $key ] );
+			if ( null === $zone ) {
+				return;
+			}
+
+			$zone_name = '' !== $zone['name'] ? $zone['name'] : '#' . $id;
+			foreach ( $zone['methods'] as $instance_id => $method_id ) {
+				$this->log_shipping_method( 9421, $instance_id, $method_id, $id, null, $zone_name );
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9421, [ 'zone_id' => $id ] );
+		}
+	}
+
+	/**
+	 * The methods of a zone as its data store lists them (what its delete
+	 * removes): instance id => id of the method's type. Empty when the zone
+	 * cannot list them.
+	 *
+	 * @param object $zone    The zone.
+	 * @param int    $zone_id Its id.
+	 * @return array<int, string>
+	 */
+	private static function zone_methods( object $zone, int $zone_id ): array {
+		$store = method_exists( $zone, 'get_data_store' ) ? $zone->get_data_store() : null;
+		// The shop's data store hands its calls on to the store it wraps.
+		$rows = is_object( $store ) && is_callable( [ $store, 'get_methods' ] ) ? $store->get_methods( $zone_id, false ) : [];
+
+		$methods = [];
+		foreach ( is_array( $rows ) ? $rows : [] as $row ) {
+			$instance_id = is_object( $row ) ? self::id_of( $row->instance_id ?? null ) : 0;
+			if ( $instance_id > 0 ) {
+				$methods[ $instance_id ] = self::text_of( $row->method_id ?? null );
+			}
+		}
+
+		return $methods;
+	}
+
+	/**
 	 * Log a shipping method of a zone, named by its type and its zone. A
 	 * switch tells which way it went (`vars.state`).
 	 *
-	 * @param int   $code        9420, 9421 or 9422.
-	 * @param mixed $instance_id Id of the method in the zone.
-	 * @param mixed $method_id   Id of the method's type.
-	 * @param mixed $zone_id     Zone id.
-	 * @param mixed $is_enabled  Whether it is on now (9422 only).
+	 * @param int         $code        9420, 9421 or 9422.
+	 * @param mixed       $instance_id Id of the method in the zone.
+	 * @param mixed       $method_id   Id of the method's type.
+	 * @param mixed       $zone_id     Zone id.
+	 * @param mixed       $is_enabled  Whether it is on now (9422 only).
+	 * @param string|null $zone_name   Name of the zone, read before it was deleted; null to load it.
 	 */
-	private function log_shipping_method( int $code, $instance_id, $method_id, $zone_id, $is_enabled = null ): void {
+	private function log_shipping_method( int $code, $instance_id, $method_id, $zone_id, $is_enabled = null, ?string $zone_name = null ): void {
 		$id = 0;
 		try {
 			$id   = self::id_of( $instance_id );
@@ -381,7 +493,7 @@ final class WooCommerceConfigSensor extends AbstractSensor {
 			if ( '' === $name ) {
 				$name = '' !== $method ? $method : '#' . $id;
 			}
-			$zone_name = self::zone_name( $zone );
+			$zone_name = $zone_name ?? self::zone_name( $zone );
 			$zone_name = '' !== $zone_name ? $zone_name : '#' . $zone;
 
 			$vars     = [
