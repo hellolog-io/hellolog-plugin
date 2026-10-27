@@ -156,4 +156,15 @@ final class WpState {
 	 * @var array<int, int>
 	 */
 	public static array $revisions = [];
+
+	/**
+	 * Post id => meta key => the value `get_post_meta()` finds. A key that is
+	 * not listed reads as an empty string, as core's single read does.
+	 *
+	 * @var array<int, array<string, mixed>>
+	 */
+	public static array $post_meta = [];
+
+	/** Whether `get_post_meta()` fails the way a broken filter on it would. */
+	public static bool $post_meta_throws = false;
 }

@@ -141,6 +141,31 @@ final class ExportCatalogTest extends TestCase {
 		$this->assertSame( 'medium', $by_code[ $code ]['severity'] );
 	}
 
+	/**
+	 * @return array<string, array{0: int, 1: string, 2: string, 3: string}> Code, label, event type, severity.
+	 */
+	public static function media_codes(): array {
+		return [
+			'uploaded' => [ 2010, 'Media "{title}" uploaded.', 'created', 'info' ],
+			'edited'   => [ 2011, 'Media "{title}" edited.', 'updated', 'info' ],
+			'deleted'  => [ 2012, 'Media "{title}" deleted.', 'deleted', 'low' ],
+		];
+	}
+
+	/**
+	 * @dataProvider media_codes
+	 */
+	public function test_media_codes_are_seeded( int $code, string $label, string $event_type, string $severity ): void {
+		$by_code = array_column( $this->seeded_export(), null, 'code' );
+
+		$this->assertArrayHasKey( $code, $by_code );
+		$this->assertSame( $label, $by_code[ $code ]['label'] );
+		$this->assertSame( [ 'title' ], $by_code[ $code ]['vars'] );
+		$this->assertSame( 'media', $by_code[ $code ]['object'] );
+		$this->assertSame( $event_type, $by_code[ $code ]['event_type'] );
+		$this->assertSame( $severity, $by_code[ $code ]['severity'] );
+	}
+
 	public function test_vars_keep_first_appearance_order_without_duplicates(): void {
 		$catalog = new EventCatalog();
 		// Registered out of order on purpose: the export sorts by code.

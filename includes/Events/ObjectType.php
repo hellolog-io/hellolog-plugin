@@ -44,4 +44,5 @@ final class ObjectType {
 	public const ENTRY    = 'entry';
 	public const REDIRECT = 'redirect';
 	public const FIELD    = 'field';
+	public const MEDIA    = 'media';
 }

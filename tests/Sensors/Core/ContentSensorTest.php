@@ -118,9 +118,92 @@ final class ContentSensorTest extends TestCase {
 				'oembed_cache',
 				'user_request',
 				'attachment',
+				'forum',
+				'topic',
+				'reply',
+				'sfwd-courses',
+				'sfwd-lessons',
+				'sfwd-topic',
+				'sfwd-quiz',
+				'download',
+				'acf-field-group',
 			],
 			ContentSensor::OWNED_ELSEWHERE
 		);
+	}
+
+	public function test_site_editor_types_are_named_by_the_editors_labels(): void {
+		$this->assertSame(
+			[
+				'wp_template'      => 'Template',
+				'wp_template_part' => 'Template part',
+				'wp_global_styles' => 'Global styles',
+				'wp_navigation'    => 'Navigation menu',
+				'wp_block'         => 'Pattern',
+			],
+			ContentSensor::SITE_EDITOR_TYPES
+		);
+
+		foreach ( ContentSensor::SITE_EDITOR_TYPES as $type => $label ) {
+			$this->assertSame( $label, ContentSensor::type_label( $type ), $type );
+		}
+	}
+
+	/**
+	 * @return array<string, array{0: string, 1: string}> post type, label.
+	 */
+	public static function type_labels(): array {
+		return [
+			'post'            => [ 'post', 'Post' ],
+			'page'            => [ 'page', 'Page' ],
+			'underscored'     => [ 'wc_booking', 'Wc booking' ],
+			'hyphenated'      => [ 'sfwd-courses', 'Sfwd courses' ],
+			'attachment'      => [ 'attachment', 'Attachment' ],
+			'wrong case'      => [ 'WP_Template', 'WP Template' ],
+			'site editor-ish' => [ 'wp_template_parts', 'Wp template parts' ],
+		];
+	}
+
+	/**
+	 * Every other type is named by its own name, made readable.
+	 *
+	 * @dataProvider type_labels
+	 */
+	public function test_other_types_are_named_by_their_name( string $post_type, string $label ): void {
+		$this->assertSame( $label, ContentSensor::type_label( $post_type ) );
+	}
+
+	/**
+	 * Templates, template parts and global styles have no admin screen of
+	 * their own (they are edited in the site editor), and every event of a
+	 * site-editor type is logged.
+	 */
+	public function test_site_editor_types_are_tracked_with_or_without_an_admin_screen(): void {
+		foreach ( array_keys( ContentSensor::SITE_EDITOR_TYPES ) as $type ) {
+			foreach ( [ 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2013 ] as $code ) {
+				$this->assertTrue( ContentSensor::is_tracked_type( $type, false, $code, true ), $type . ' ' . $code );
+				$this->assertTrue( ContentSensor::is_tracked_type( $type, true, $code, false ), $type . ' ' . $code );
+			}
+		}
+	}
+
+	/**
+	 * Forums, topics, replies and downloads are common names: they are the
+	 * forum's or the download shop's only while that plugin is active, the
+	 * way a `product` is the shop's only with WooCommerce. The course and
+	 * field group types carry their plugin's prefix and are always theirs.
+	 */
+	public function test_shared_type_names_are_owned_elsewhere_only_while_their_plugin_is_active(): void {
+		foreach ( [ 'forum', 'topic', 'reply', 'download' ] as $type ) {
+			$this->assertFalse( ContentSensor::is_tracked_type( $type, true, 2006, true ), $type );
+			$this->assertTrue( ContentSensor::is_tracked_type( $type, true, 2006, false ), $type );
+			$this->assertTrue( ContentSensor::is_tracked_type( $type, true, 2003, true ), $type );
+			$this->assertFalse( ContentSensor::is_tracked_type( $type, false, 2006, false ), $type );
+		}
+		foreach ( [ 'sfwd-courses', 'sfwd-lessons', 'sfwd-topic', 'sfwd-quiz', 'acf-field-group' ] as $type ) {
+			$this->assertFalse( ContentSensor::is_tracked_type( $type, true, 2006, false ), $type );
+			$this->assertTrue( ContentSensor::is_tracked_type( $type, true, 2003, false ), $type );
+		}
 	}
 
 	/**
@@ -2007,6 +2090,268 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
+	 * A template has no admin screen, yet its save is logged, and the
+	 * message names it the way the site editor does.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_site_editor_save_is_logged_under_the_editors_label(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				WpState::$post_types += [
+					'wp_template'      => false,
+					'wp_template_part' => false,
+					'wp_global_styles' => false,
+					'wp_navigation'    => true,
+					'wp_block'         => true,
+				];
+
+				$sensor->boot();
+				self::update_post(
+					$post(
+						[
+							'post_type'  => 'wp_template',
+							'post_title' => 'Single Posts',
+						]
+					),
+					$post(
+						[
+							'post_type'    => 'wp_template',
+							'post_title'   => 'Single Posts',
+							'post_content' => '<!-- wp:post-title /-->',
+						]
+					)
+				);
+				$sensor->on_status( 'publish', 'new', $post( [ 'ID' => 8, 'post_type' => 'wp_template_part', 'post_title' => 'Header' ] ) );
+				$sensor->on_status( 'publish', 'new', $post( [ 'ID' => 9, 'post_type' => 'wp_global_styles', 'post_title' => 'Custom Styles' ] ) );
+				$sensor->on_status( 'publish', 'draft', $post( [ 'ID' => 10, 'post_type' => 'wp_navigation', 'post_title' => 'Main' ] ) );
+				$sensor->on_delete( 11, $post( [ 'ID' => 11, 'post_type' => 'wp_block', 'post_title' => 'Call to action' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2006, 2001, 2001, 2001, 2005 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[ 'Template', 'Template part', 'Global styles', 'Navigation menu', 'Pattern' ],
+			array_map( static fn( array $call ): string => $call[1]['post_type'], $calls )
+		);
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_content',
+					'old'   => null,
+					'new'   => null,
+				],
+			],
+			$calls[0][1]['changes']
+		);
+		$this->assertSame( 'wp_template', $calls[0][1]['post']['type'] );
+
+		$payloads = $this->survive_calls( $calls );
+		$this->assertSame(
+			[
+				'Template "Single Posts" updated.',
+				'Template part "Header" published.',
+				'Global styles "Custom Styles" published.',
+				'Navigation menu "Main" published.',
+				'Pattern "Call to action" permanently deleted.',
+			],
+			array_column( $payloads, 'message' )
+		);
+		$this->assertSame( 'Template', $payloads[0]['vars']['post_type'] );
+	}
+
+	/**
+	 * With bbPress and Easy Digital Downloads active their own sensors report
+	 * forums and downloads, so this one only logs their trash; without those
+	 * plugins a type of that name is somebody else's and logged in full.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_forums_and_downloads_are_left_to_their_plugins_while_those_are_active(): void {
+		require_once __DIR__ . '/Fixtures/bbpress-class.php';
+		define( 'EDD_VERSION', '3.0.0' );
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				WpState::$post_types += [
+					'forum'        => true,
+					'download'     => true,
+					'sfwd-courses' => true,
+				];
+
+				foreach ( [ 'forum' => 7, 'download' => 8, 'sfwd-courses' => 9 ] as $type => $id ) {
+					$sensor->on_status( 'publish', 'draft', $post( [ 'ID' => $id, 'post_type' => $type ] ) );
+					$sensor->on_status( 'trash', 'publish', $post( [ 'ID' => $id, 'post_type' => $type, 'post_status' => 'trash' ] ) );
+				}
+			}
+		);
+
+		$this->assertSame( [ 2003, 2003, 2003 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 'forum', 'download', 'sfwd-courses' ], array_map( static fn( array $call ): string => $call[1]['post']['type'], $calls ) );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_without_their_plugins_forums_and_downloads_are_logged_like_any_other_type(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				WpState::$post_types += [
+					'forum'    => true,
+					'download' => true,
+				];
+
+				$sensor->on_status( 'publish', 'draft', $post( [ 'post_type' => 'forum' ] ) );
+				$sensor->on_status( 'publish', 'draft', $post( [ 'ID' => 8, 'post_type' => 'download' ] ) );
+			}
+		);
+
+		$this->assertFalse( class_exists( 'bbPress', false ) );
+		$this->assertFalse( defined( 'EDD_VERSION' ) );
+		$this->assertSame( [ 2001, 2001 ], array_column( $calls, 0 ) );
+	}
+
+	/**
+	 * Core moves an attachment to the trash (only possible with `MEDIA_TRASH`)
+	 * and back without a status change hook: `wp_trash_post()` fires
+	 * `trashed_post` once the attachment is in the trash, `wp_untrash_post()`
+	 * fires `untrash_post` and `untrashed_post`. Both events name the file as
+	 * the media sensor does, so one file's history stays on one target.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_attachments_trash_and_restore_are_logged_on_its_media_target(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+
+				WpState::$posts[7] = $post(
+					[
+						'post_type'   => 'attachment',
+						'post_title'  => 'Logo',
+						'post_status' => 'trash',
+					]
+				);
+				self::fire( 'trashed_post', 7, 'inherit' );
+
+				WpState::$posts[7] = $post(
+					[
+						'post_type'   => 'attachment',
+						'post_title'  => 'Logo',
+						'post_status' => 'inherit',
+					]
+				);
+				self::fire( 'untrash_post', 7, 'inherit' );
+				self::fire( 'untrashed_post', 7, 'inherit' );
+			}
+		);
+
+		$this->assertSame( [ 2003, 2004 ], array_column( $calls, 0 ) );
+		foreach ( $calls as $call ) {
+			$this->assertSame(
+				[
+					'type'  => 'media',
+					'id'    => '7',
+					'label' => 'Logo',
+				],
+				$call[1]['target']
+			);
+			$this->assertSame( 'attachment', $call[1]['post']['type'] );
+			$this->assertSame( [ 'edit' => 'https://example.test/wp-admin/post.php?post=7&action=edit' ], $call[1]['links'] );
+		}
+		$this->assertSame( 'inherit', $calls[1][1]['metadata']['previous_status'] );
+	}
+
+	/**
+	 * `trashed_post` follows the status change of every other post, which
+	 * logged the trash already.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_trash_of_a_post_is_logged_once(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+				self::update_post( $post(), $post( [ 'post_status' => 'trash' ] ) );
+				self::fire( 'trashed_post', 7, 'publish' );
+			}
+		);
+
+		$this->assertSame( [ 2003 ], array_column( $calls, 0 ) );
+		$this->assertSame( 'post', $calls[0][1]['target']['type'] );
+	}
+
+	/**
+	 * A plugin or theme zip uploaded to be installed is kept as an attachment
+	 * until the install is done; with `MEDIA_TRASH` its clean-up moves it to
+	 * the trash. It is no file of the media library.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_installers_upload_is_not_logged_when_trashed_or_restored(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+
+				WpState::$post_meta[7]['_wp_attachment_context'] = 'upgrader';
+
+				WpState::$posts[7] = $post(
+					[
+						'post_type'   => 'attachment',
+						'post_title'  => 'plugin.zip',
+						'post_status' => 'trash',
+					]
+				);
+				self::fire( 'trashed_post', 7, 'private' );
+				self::fire( 'untrash_post', 7, 'private' );
+				self::fire( 'untrashed_post', 7, 'private' );
+			}
+		);
+
+		$this->assertSame( [], $calls );
+	}
+
+	/**
+	 * When whether an attachment is an installer's upload can not be read,
+	 * it is taken for a file of the library: the failure is reported and the
+	 * trash still logged.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_failing_read_of_an_attachments_context_is_reported_and_the_trash_still_logged(): void {
+		require_once __DIR__ . '/../../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../../Events/Fixtures/wordpress-functions.php';
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+
+				WpState::$post_meta_throws = true;
+
+				WpState::$posts[7] = $post(
+					[
+						'post_type'   => 'attachment',
+						'post_status' => 'trash',
+					]
+				);
+				self::fire( 'trashed_post', 7, 'inherit' );
+			}
+		);
+
+		$this->assertSame( [ 2003 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 'hellolog_dispatch_failed' ], array_column( WpCalls::$actions, 0 ) );
+		$this->assertSame( 2003, WpCalls::$actions[0][1][1] );
+		$this->assertSame( [ 'post_id' => 7 ], WpCalls::$actions[0][1][2] );
+	}
+
+	/**
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
@@ -2021,6 +2366,7 @@ final class ContentSensorTest extends TestCase {
 			'post_stuck'              => [ 10, 1 ],
 			'post_unstuck'            => [ 10, 1 ],
 			'before_delete_post'      => [ 10, 2 ],
+			'trashed_post'            => [ 10, 1 ],
 			'shutdown'                => [ 0, 1 ],
 		];
 		foreach ( $expected as $hook => [ $priority, $args ] ) {

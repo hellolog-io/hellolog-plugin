@@ -33,6 +33,7 @@ use HelloLog\Sensors\Core\DatabaseSensor;
 use HelloLog\Sensors\Core\FilesSensor;
 use HelloLog\Sensors\Core\FailedLoginSensor;
 use HelloLog\Sensors\Core\LoginLogoutSensor;
+use HelloLog\Sensors\Core\MediaSensor;
 use HelloLog\Sensors\Core\PluginsSensor;
 use HelloLog\Sensors\Core\AppPasswordsSensor;
 use HelloLog\Sensors\Core\MenusSensor;
@@ -270,6 +271,7 @@ final class Plugin {
 		$this->sensors->register( new FailedLoginSensor( $this->dispatcher ) );
 		$this->sensors->register( new UserProfileSensor( $this->dispatcher ) );
 		$this->sensors->register( new ContentSensor( $this->dispatcher ) );
+		$this->sensors->register( new MediaSensor( $this->dispatcher ) );
 		$this->sensors->register( new CommentsSensor( $this->dispatcher ) );
 		$this->sensors->register( new TaxonomySensor( $this->dispatcher ) );
 		$this->sensors->register( new PluginsSensor( $this->dispatcher ) );

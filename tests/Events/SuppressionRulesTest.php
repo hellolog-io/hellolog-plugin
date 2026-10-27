@@ -1501,4 +1501,57 @@ final class SuppressionRulesTest extends TestCase {
 		$this->assertSame( [ self::change( 'name', 'Main', 'Primary' ) ], $menus[0]['changes'] );
 		$this->assertSame( [ 2401 ], self::codes( $rules->apply( [ self::event( 2401, $menu, [] ) ] ) ) );
 	}
+
+	/**
+	 * A file's edit screen writes the alt text and the other texts apart:
+	 * the edits of one request are one event, and an edit that changed
+	 * nothing (or was undone) is not one. Each file is folded on its own.
+	 */
+	public function test_defaults_fold_media_edits(): void {
+		$rules = SuppressionRules::defaults();
+		$file  = [
+			'type' => 'media',
+			'id'   => '7',
+		];
+		$other = [
+			'type' => 'media',
+			'id'   => '8',
+		];
+
+		$folded = $rules->apply(
+			[
+				self::event( 2011, $file, [ self::change( 'alt', null, 'Logo' ) ] ),
+				self::event( 2011, $other, [ self::change( 'title', 'A', 'B' ) ] ),
+				self::event( 2011, $file, [ self::change( 'title', 'IMG_0042', 'Logo' ), self::change( 'description', null, null ) ] ),
+			]
+		);
+		$this->assertSame( [ 2011, 2011 ], self::codes( $folded ) );
+		$this->assertSame( [ 'alt', 'title', 'description' ], array_column( $folded[0]['changes'], 'field' ) );
+		$this->assertSame( '8', $folded[1]['target']['id'] );
+
+		$this->assertSame( [], $rules->apply( [ self::event( 2011, $file, [] ) ] ) );
+		$this->assertSame(
+			[],
+			$rules->apply(
+				[
+					self::event( 2011, $file, [ self::change( 'alt', 'Logo', 'Old logo' ) ] ),
+					self::event( 2011, $file, [ self::change( 'alt', 'Old logo', 'Logo' ) ] ),
+				]
+			)
+		);
+
+		// An upload and its deletion are never folded or dropped.
+		$this->assertSame(
+			[ 2010, 2011, 2012 ],
+			self::codes(
+				$rules->apply(
+					[
+						self::event( 2010, $file ),
+						self::event( 2011, $file, [ self::change( 'alt', null, 'Logo' ) ] ),
+						self::event( 2012, $file ),
+					]
+				)
+			)
+		);
+	}
 }

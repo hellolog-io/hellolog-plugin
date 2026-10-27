@@ -28,6 +28,7 @@ final class CatalogSeeder {
 		self::auth( $catalog );
 		self::users( $catalog );
 		self::content( $catalog );
+		self::media( $catalog );
 		self::comments( $catalog );
 		self::taxonomies( $catalog );
 		self::plugins_themes( $catalog );
@@ -74,6 +75,12 @@ final class CatalogSeeder {
 		$c->register( new EventDefinition( 2008, ObjectType::POST, EventType::SUBMITTED, Severity::INFO, '{post_type} "{title}" submitted for review.' ) );
 		$c->register( new EventDefinition( 2009, ObjectType::POST, EventType::UPDATED, Severity::LOW, '{post_type} "{title}" made private.' ) );
 		$c->register( new EventDefinition( 2013, ObjectType::POST, EventType::UPDATED, Severity::MEDIUM, '{post_type} "{title}" reverted to auto-draft.' ) );
+	}
+
+	private static function media( EventCatalog $c ): void {
+		$c->register( new EventDefinition( 2010, ObjectType::MEDIA, EventType::CREATED, Severity::INFO, 'Media "{title}" uploaded.' ) );
+		$c->register( new EventDefinition( 2011, ObjectType::MEDIA, EventType::UPDATED, Severity::INFO, 'Media "{title}" edited.' ) );
+		$c->register( new EventDefinition( 2012, ObjectType::MEDIA, EventType::DELETED, Severity::LOW, 'Media "{title}" deleted.' ) );
 	}
 
 	private static function comments( EventCatalog $c ): void {

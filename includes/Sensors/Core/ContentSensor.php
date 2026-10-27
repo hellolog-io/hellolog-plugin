@@ -38,19 +38,28 @@ defined( 'ABSPATH' ) || exit;
  *
  * Which post types are logged is decided by {@see self::is_tracked_type()}:
  * the types another sensor reports itself, and internal types without an
- * admin screen, are left out. Every event names the post it is about as its
- * target and links to its edit screen.
+ * admin screen, are left out; the site editor's types are always logged
+ * (see {@see self::SITE_EDITOR_TYPES}). Every event names the post it is
+ * about as its target and links to its edit screen.
+ *
+ * Of a file of the media library only its trash and restore are logged here
+ * (the rest is {@see MediaSensor}'s), on the file's media target. Core moves
+ * an attachment to the trash without firing `transition_post_status`, so its
+ * trash is told by `trashed_post`.
  */
 final class ContentSensor extends AbstractSensor {
 
 	/**
 	 * Post types that produce no post event here but trash, restore and
-	 * revert to `auto-draft`: store
-	 * products, orders and coupons are reported by the store sensors in their
-	 * own words, attachments are excluded, and the rest are internal records
-	 * nobody edits (revisions, menu items, customizer drafts, embed caches,
-	 * privacy requests). See {@see self::OWNED_ELSEWHERE_CODES}. A `product`
-	 * type is only the shop's while WooCommerce is active.
+	 * revert to `auto-draft`: store products, orders and coupons, forums,
+	 * topics and replies, courses, lessons and quizzes, downloads and custom
+	 * field groups are reported by the sensors of their plugins in their own
+	 * words, files of the media library by {@see MediaSensor}, and the rest
+	 * are internal records nobody edits (revisions, menu items, customizer
+	 * drafts, embed caches, privacy requests). See
+	 * {@see self::OWNED_ELSEWHERE_CODES}. A type whose name other plugins use
+	 * too is only another sensor's while its plugin is active, see
+	 * {@see self::SHARED_NAMES}.
 	 *
 	 * @var array<int, string>
 	 */
@@ -67,14 +76,55 @@ final class ContentSensor extends AbstractSensor {
 		'oembed_cache',
 		'user_request',
 		'attachment',
+		'forum',
+		'topic',
+		'reply',
+		'sfwd-courses',
+		'sfwd-lessons',
+		'sfwd-topic',
+		'sfwd-quiz',
+		'download',
+		'acf-field-group',
+	];
+
+	/**
+	 * The types of {@see self::OWNED_ELSEWHERE} whose name other plugins use
+	 * too (a shop is not the only thing with products, nor a forum plugin
+	 * the only one with topics): they are left to another sensor only while
+	 * the plugin it reports is active. Type => that plugin.
+	 *
+	 * @var array<string, string>
+	 */
+	private const SHARED_NAMES = [
+		'product'  => 'woocommerce',
+		'forum'    => 'bbpress',
+		'topic'    => 'bbpress',
+		'reply'    => 'bbpress',
+		'download' => 'edd',
+	];
+
+	/**
+	 * The post types of the site editor, by the names the editor gives them.
+	 * Templates, template parts and global styles have no admin screen of
+	 * their own, yet they decide how the whole site looks: these types are
+	 * always logged, and their messages name them by these labels.
+	 *
+	 * @var array<string, string>
+	 */
+	public const SITE_EDITOR_TYPES = [
+		'wp_template'      => 'Template',
+		'wp_template_part' => 'Template part',
+		'wp_global_styles' => 'Global styles',
+		'wp_navigation'    => 'Navigation menu',
+		'wp_block'         => 'Pattern',
 	];
 
 	/**
 	 * The events of {@see self::OWNED_ELSEWHERE} types this sensor leaves to
 	 * their owners. Trash (2003), restore (2004) and revert to `auto-draft`
 	 * (2013, after which WordPress deletes the post unseen) are not among
-	 * them: no store sensor reports those, so they are logged here for every
-	 * type.
+	 * them: none of those owners reports them, so they are logged here for
+	 * every type.
 	 *
 	 * @var array<int, int>
 	 */
@@ -148,6 +198,7 @@ final class ContentSensor extends AbstractSensor {
 		add_action( 'before_delete_post', [ $this, 'on_delete' ], 10, 2 );
 		add_action( 'untrash_post', [ $this, 'on_untrash' ], 10, 2 );
 		add_action( 'untrashed_post', [ $this, 'on_untrashed' ], 10, 2 );
+		add_action( 'trashed_post', [ $this, 'on_trashed' ], 10, 1 );
 		// Before the request's events are written, at priority 1.
 		add_action( 'shutdown', [ $this, 'flush_open_saves' ], 0 );
 	}
@@ -377,6 +428,23 @@ final class ContentSensor extends AbstractSensor {
 		}
 	}
 
+	/**
+	 * A file of the media library was moved to the trash. Core changes the
+	 * status of an attachment without firing `transition_post_status`, so
+	 * this is the only sign of it; any other post's trash was logged by its
+	 * status change.
+	 */
+	public function on_trashed( int $post_id ): void {
+		try {
+			$post = get_post( $post_id );
+			if ( $post instanceof WP_Post && 'attachment' === $post->post_type && $this->should_track( $post, 2003 ) ) {
+				$this->emit_post_event( 2003, $post );
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 2003, [ 'post_id' => $post_id ] );
+		}
+	}
+
 	public function on_delete( int $post_id, WP_Post $post ): void {
 		// Core's only caller of `wp_delete_auto_drafts()` is this cron action.
 		$cleanup = function_exists( 'doing_action' ) && doing_action( 'wp_scheduled_auto_draft_delete' );
@@ -446,25 +514,41 @@ final class ContentSensor extends AbstractSensor {
 	/**
 	 * Whether an event about a post of a type is logged by this sensor.
 	 *
-	 * Internal types without an admin screen never are. Of the
-	 * {@see self::OWNED_ELSEWHERE} types only trash, restore and revert are, see
-	 * {@see self::OWNED_ELSEWHERE_CODES}. Without WooCommerce a `product`
-	 * type belongs to some other plugin and is logged like any other.
+	 * The site editor's types always are. Internal types without an admin
+	 * screen never are. Of the {@see self::OWNED_ELSEWHERE} types only trash,
+	 * restore and revert are, see {@see self::OWNED_ELSEWHERE_CODES}. A type
+	 * of {@see self::SHARED_NAMES} belongs to some other plugin while its own
+	 * plugin is not active (a `product` type without WooCommerce) and is
+	 * logged like any other.
 	 *
-	 * @param string $post_type          Post type name.
-	 * @param bool   $show_ui            Whether the type has an admin screen.
-	 * @param int    $code               Code of the event.
-	 * @param bool   $woocommerce_active Whether WooCommerce is active.
+	 * @param string $post_type    Post type name.
+	 * @param bool   $show_ui      Whether the type has an admin screen.
+	 * @param int    $code         Code of the event.
+	 * @param bool   $owner_active Whether the plugin of a {@see self::SHARED_NAMES} type is active; not read for other types.
 	 */
-	public static function is_tracked_type( string $post_type, bool $show_ui, int $code, bool $woocommerce_active ): bool {
+	public static function is_tracked_type( string $post_type, bool $show_ui, int $code, bool $owner_active ): bool {
+		if ( isset( self::SITE_EDITOR_TYPES[ $post_type ] ) ) {
+			return true;
+		}
 		if ( ! $show_ui ) {
 			return false;
 		}
-		if ( 'product' === $post_type && ! $woocommerce_active ) {
+		if ( isset( self::SHARED_NAMES[ $post_type ] ) && ! $owner_active ) {
 			return true;
 		}
 
 		return ! in_array( $post_type, self::OWNED_ELSEWHERE, true ) || ! in_array( $code, self::OWNED_ELSEWHERE_CODES, true );
+	}
+
+	/**
+	 * How a message names a post type: the site editor's types by the
+	 * editor's labels, any other by its name made readable (`wc_booking` is
+	 * `Wc booking`).
+	 *
+	 * @param string $post_type Post type name.
+	 */
+	public static function type_label( string $post_type ): string {
+		return self::SITE_EDITOR_TYPES[ $post_type ] ?? ucfirst( str_replace( [ '_', '-' ], ' ', $post_type ) );
 	}
 
 	/**
@@ -520,19 +604,61 @@ final class ContentSensor extends AbstractSensor {
 
 	/**
 	 * Whether an event about this post is logged, see {@see self::is_tracked_type()}.
+	 * A plugin or theme zip the installer keeps as an attachment is no file
+	 * of the media library and never logged, see {@see MediaSensor::is_upgrader_package()}.
 	 *
 	 * @param WP_Post $post Post the event is about.
 	 * @param int     $code Code of the event.
 	 */
 	private function should_track( WP_Post $post, int $code ): bool {
-		$type_object = get_post_type_object( $post->post_type );
+		$type        = (string) $post->post_type;
+		$type_object = get_post_type_object( $type );
 
-		return self::is_tracked_type(
-			(string) $post->post_type,
+		$tracked = self::is_tracked_type(
+			$type,
 			(bool) ( $type_object->show_ui ?? false ),
 			$code,
-			class_exists( 'WooCommerce', false )
+			self::owner_active( $type )
 		);
+
+		return $tracked && ( 'attachment' !== $type || ! $this->is_upgrader_package( (int) $post->ID, $code ) );
+	}
+
+	/**
+	 * Whether the plugin a {@see self::SHARED_NAMES} type belongs to is
+	 * active; true for any other type.
+	 *
+	 * @param string $post_type Post type name.
+	 */
+	private static function owner_active( string $post_type ): bool {
+		switch ( self::SHARED_NAMES[ $post_type ] ?? '' ) {
+			case 'woocommerce':
+				return class_exists( 'WooCommerce', false );
+			case 'bbpress':
+				return class_exists( 'bbPress', false ) || function_exists( 'bbp_get_version' );
+			case 'edd':
+				return defined( 'EDD_VERSION' );
+			default:
+				return true;
+		}
+	}
+
+	/**
+	 * Whether an attachment is a zip the plugin and theme installer keeps.
+	 * When that can not be read the failure is reported and the attachment
+	 * taken for a file of the library: its event is logged.
+	 *
+	 * @param int $post_id Attachment id.
+	 * @param int $code    Code of the event.
+	 */
+	private function is_upgrader_package( int $post_id, int $code ): bool {
+		try {
+			return MediaSensor::is_upgrader_package( $post_id );
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, $code, [ 'post_id' => $post_id ] );
+
+			return false;
+		}
 	}
 
 	/**
@@ -686,9 +812,11 @@ final class ContentSensor extends AbstractSensor {
 				'type'   => (string) $post->post_type,
 				'status' => (string) $post->post_status,
 			],
-			'target'    => self::post_target( $id, (string) $post->post_title ),
+			'target'    => 'attachment' === $post->post_type
+				? MediaSensor::media_target( $id, (string) $post->post_title )
+				: self::post_target( $id, (string) $post->post_title ),
 			'title'     => (string) $post->post_title,
-			'post_type' => ucfirst( str_replace( [ '_', '-' ], ' ', (string) $post->post_type ) ),
+			'post_type' => self::type_label( (string) $post->post_type ),
 			'metadata'  => array_merge(
 				[
 					'slug'   => (string) $post->post_name,

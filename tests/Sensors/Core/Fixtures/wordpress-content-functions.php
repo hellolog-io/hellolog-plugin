@@ -159,6 +159,20 @@ namespace {
 		];
 	}
 
+	/**
+	 * @param int    $post_id Post id.
+	 * @param string $key     Meta key.
+	 * @param bool   $single  Only the single read is stubbed.
+	 * @return mixed
+	 */
+	function get_post_meta( int $post_id, string $key = '', bool $single = false ) {
+		if ( WpState::$post_meta_throws ) {
+			throw new \RuntimeException( 'unreadable' );
+		}
+
+		return WpState::$post_meta[ $post_id ][ $key ] ?? '';
+	}
+
 	function get_comment( int $id ): ?WP_Comment {
 		return WpState::$comment;
 	}
