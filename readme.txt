@@ -141,7 +141,9 @@ This version requires the HelloLog service release from October 2026 or later.
   per table; dropping helloLOG's own queue table is not logged.
 * Fix: Saving the API key that is already stored no longer switches logging
   off.
-* Fix: `wp hellolog enable-sensor` turns on a sensor that is off by default.
+* Fix: Sensors that are off by default show as off in the settings, so
+  saving the filters no longer turns them on; `wp hellolog enable-sensor`
+  turns them on.
 * Security: Comments (version comments included), unusual whitespace (a
   no-break space included) and the plural DROP TABLES no longer hide a
   CREATE TABLE or DROP TABLE statement from the database sensor; each table

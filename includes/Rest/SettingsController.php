@@ -120,15 +120,6 @@ final class SettingsController {
 	 * @return array<int, array{key: string, label: string, enabled: bool}>
 	 */
 	private function sensor_descriptions( Options $opts ): array {
-		$disabled = $opts->sensor_filters();
-		$out      = [];
-		foreach ( Plugin::instance()->sensors()->switchable() as $key ) {
-			$out[] = [
-				'key'     => $key,
-				'label'   => ucwords( str_replace( [ '-', '_' ], ' ', $key ) ),
-				'enabled' => empty( $disabled[ $key ] ),
-			];
-		}
-		return $out;
+		return Plugin::instance()->sensors()->switches( $opts->sensor_filters() );
 	}
 }

@@ -58,16 +58,7 @@ final class BootstrapPayload {
 	 * @return array<int, array{key:string,label:string,enabled:bool}>
 	 */
 	private function sensors_payload( Plugin $plugin, Options $options ): array {
-		$disabled = $options->sensor_filters();
-		$out      = [];
-		foreach ( $plugin->sensors()->switchable() as $key ) {
-			$out[] = [
-				'key'     => $key,
-				'label'   => ucwords( str_replace( [ '-', '_' ], ' ', $key ) ),
-				'enabled' => empty( $disabled[ $key ] ),
-			];
-		}
-		return $out;
+		return $plugin->sensors()->switches( $options->sensor_filters() );
 	}
 
 	/**

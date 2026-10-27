@@ -214,6 +214,30 @@ final class SensorManager {
 	}
 
 	/**
+	 * The switches the settings screen offers: every sensor an operator can
+	 * switch ({@see self::switchable()}), with a label made from its key and
+	 * whether it runs under the stored flags. A sensor that is off by
+	 * default reads as off until the flags turn it on, so saving the screen
+	 * as shown changes nothing.
+	 *
+	 * @param array<string, bool> $flags Stored settings: sensor key => disabled.
+	 * @return array<int, array{key: string, label: string, enabled: bool}>
+	 */
+	public function switches( array $flags ): array {
+		$off = self::disabled_by( $flags );
+		$out = [];
+		foreach ( $this->switchable() as $key ) {
+			$out[] = [
+				'key'     => $key,
+				'label'   => ucwords( str_replace( [ '-', '_' ], ' ', $key ) ),
+				'enabled' => ! in_array( $key, $off, true ),
+			];
+		}
+
+		return $out;
+	}
+
+	/**
 	 * The stored-settings flags of the sensors an operator can switch
 	 * ({@see self::switchable()}); flags of any other key are dropped. Made-up
 	 * keys saved with real ones would otherwise crowd the real changes out of

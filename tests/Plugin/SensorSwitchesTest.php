@@ -127,6 +127,30 @@ final class SensorSwitchesTest extends TestCase {
 		$this->assertSame( [ 'core-auth' => true ], Wp::$options[1][ Options::KEY_SENSOR_FILTERS ] );
 	}
 
+	/**
+	 * The settings screen shows a sensor that is off by default as off while
+	 * the settings do not mention it, so saving the screen as shown leaves it
+	 * off instead of turning it on.
+	 */
+	public function test_the_settings_screen_shows_a_sensor_off_by_default_as_off(): void {
+		$this->boot_with( self::key(), true, [ Options::KEY_SENSOR_FILTERS => [ 'core-media' => true ] ] );
+		$controller = new SettingsController();
+
+		$shown = array_column( $controller->get_settings()->get_data()['sensors'], 'enabled', 'key' );
+		$this->assertFalse( $shown['core-request'] );
+		$this->assertFalse( $shown['core-failed-login'] );
+		$this->assertFalse( $shown['core-media'] );
+		$this->assertTrue( $shown['core-auth'] );
+
+		$as_shown = [];
+		foreach ( $shown as $key => $enabled ) {
+			$as_shown[ $key ] = ! $enabled;
+		}
+		$controller->save_settings( new \WP_REST_Request( [ 'sensorFilters' => $as_shown ] ) );
+
+		$this->assertContains( 'core-request', SensorManager::disabled_by( Wp::$options[1][ Options::KEY_SENSOR_FILTERS ] ) );
+	}
+
 	public function test_the_command_line_switches_a_sensor_before_the_key_is_verified(): void {
 		$this->boot_with( self::key(), false );
 
