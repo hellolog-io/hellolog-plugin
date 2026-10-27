@@ -177,6 +177,17 @@ final class ExportCatalogTest extends TestCase {
 		$this->assertSame( 'critical', $by_code[6005]['severity'] );
 	}
 
+	public function test_the_hellolog_settings_code_is_seeded(): void {
+		$by_code = array_column( $this->seeded_export(), null, 'code' );
+
+		$this->assertArrayHasKey( 6600, $by_code );
+		$this->assertSame( 'HelloLog settings changed.', $by_code[6600]['label'] );
+		$this->assertSame( [], $by_code[6600]['vars'] );
+		$this->assertSame( 'setting', $by_code[6600]['object'] );
+		$this->assertSame( 'updated', $by_code[6600]['event_type'] );
+		$this->assertSame( 'critical', $by_code[6600]['severity'] );
+	}
+
 	public function test_vars_keep_first_appearance_order_without_duplicates(): void {
 		$catalog = new EventCatalog();
 		// Registered out of order on purpose: the export sorts by code.

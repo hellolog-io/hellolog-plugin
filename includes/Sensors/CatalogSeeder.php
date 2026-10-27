@@ -121,6 +121,7 @@ final class CatalogSeeder {
 		$c->register( new EventDefinition( 6003, ObjectType::SETTING, EventType::UPDATED, Severity::MEDIUM, 'Permalink structure changed.' ) );
 		$c->register( new EventDefinition( 6004, ObjectType::SETTING, EventType::UPDATED, Severity::HIGH, 'Search-engine visibility toggled to {state}.' ) );
 		$c->register( new EventDefinition( 6005, ObjectType::SETTING, EventType::UPDATED, Severity::CRITICAL, 'User role capabilities changed.' ) );
+		$c->register( new EventDefinition( 6600, ObjectType::SETTING, EventType::UPDATED, Severity::CRITICAL, 'HelloLog settings changed.' ) );
 
 		$c->register( new EventDefinition( 6100, ObjectType::SYSTEM, EventType::UPDATED, Severity::HIGH, 'WordPress core updated to {version}.' ) );
 	}

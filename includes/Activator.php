@@ -28,23 +28,11 @@ final class Activator {
 	/** Longest time network activation spends setting up sites, in seconds. */
 	private const NETWORK_ACTIVATION_BUDGET = 5.0;
 
-	/**
-	 * Sensors that are noisy on a typical site (REST polling, XML-RPC,
-	 * 404 monitor) and not useful enough to justify their volume by
-	 * default. Operators can toggle them back on from Filters tab.
-	 */
-	private const DEFAULT_DISABLED_SENSORS = [
-		'core-request'      => true,
-		// Failed-login attempts are noisy on internet-exposed sites
-		// (bot dictionary attacks fire dozens per minute). Off by
-		// default; operators flip it on for incident investigation.
-		'core-failed-login' => true,
-	];
-
 	private const DEFAULT_OPTS = [
 		'hellolog_token'          => '',
 		'hellolog_anonymize_ip'   => false,
-		'hellolog_sensor_filters' => self::DEFAULT_DISABLED_SENSORS,
+		// The noisy sensors start off; operators can turn them on in the settings.
+		'hellolog_sensor_filters' => Sensors\SensorManager::OFF_BY_DEFAULT,
 	];
 
 	/**

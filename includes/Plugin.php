@@ -39,6 +39,7 @@ use HelloLog\Sensors\Core\AppPasswordsSensor;
 use HelloLog\Sensors\Core\MenusSensor;
 use HelloLog\Sensors\Core\MultisiteSensor;
 use HelloLog\Sensors\Core\RequestSensor;
+use HelloLog\Sensors\Core\SelfAuditSensor;
 use HelloLog\Sensors\Core\SettingsSensor;
 use HelloLog\Sensors\Core\SystemSensor;
 use HelloLog\Sensors\Core\TaxonomySensor;
@@ -242,28 +243,10 @@ final class Plugin {
 		( new IntegrationsLoader() )->attach( $this->sensors, $this->dispatcher );
 		( new LwLoader() )->attach( $this->sensors, $this->dispatcher );
 
-		// Apply operator-stored sensor flags on top of the
-		// "off by default" list. A sensor is disabled if either:
-		// - the stored options say so explicitly (`key => true`), or
-		// - it's in the off-by-default list AND the stored options
-		// don't mention it at all (operator hasn't expressed an
-		// opinion, so we keep our default).
-		// Explicit `key => false` in the stored options always wins.
-		$stored         = $this->options->sensor_filters();
-		$off_by_default = [ 'core-request', 'core-failed-login' ];
-
-		$disabled = [];
-		foreach ( $stored as $key => $is_disabled ) {
-			if ( $is_disabled ) {
-				$disabled[] = $key;
-			}
-		}
-		foreach ( $off_by_default as $key ) {
-			if ( ! array_key_exists( $key, $stored ) ) {
-				$disabled[] = $key;
-			}
-		}
-		$this->sensors->disable( $disabled );
+		// Apply operator-stored sensor flags on top of the "off by default"
+		// list: explicit flags win, a sensor the settings do not mention
+		// keeps its default, see SensorManager::disabled_by().
+		$this->sensors->disable( SensorManager::disabled_by( $this->options->sensor_filters() ) );
 	}
 
 	private function register_core_sensors(): void {
@@ -277,6 +260,7 @@ final class Plugin {
 		$this->sensors->register( new PluginsSensor( $this->dispatcher ) );
 		$this->sensors->register( new ThemesSensor( $this->dispatcher ) );
 		$this->sensors->register( new SettingsSensor( $this->dispatcher ) );
+		$this->sensors->register( new SelfAuditSensor( $this->dispatcher ) );
 		$this->sensors->register( new SystemSensor( $this->dispatcher ) );
 		$this->sensors->register( new FilesSensor( $this->dispatcher ) );
 		$this->sensors->register( new DatabaseSensor( $this->dispatcher ) );

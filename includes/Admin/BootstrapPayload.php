@@ -60,7 +60,7 @@ final class BootstrapPayload {
 	private function sensors_payload( Plugin $plugin, Options $options ): array {
 		$disabled = $options->sensor_filters();
 		$out      = [];
-		foreach ( $plugin->sensors()->sensors() as $key => $_sensor ) {
+		foreach ( $plugin->sensors()->toggleable() as $key => $_sensor ) {
 			$out[] = [
 				'key'     => $key,
 				'label'   => ucwords( str_replace( [ '-', '_' ], ' ', $key ) ),

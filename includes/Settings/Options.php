@@ -121,7 +121,17 @@ final class Options {
 	 * @return array<string, bool>
 	 */
 	public function sensor_filters(): array {
-		$raw = get_option( self::KEY_SENSOR_FILTERS, [] );
+		return self::flags( get_option( self::KEY_SENSOR_FILTERS, [] ) );
+	}
+
+	/**
+	 * A stored sensor-filters value as sensor key => disabled: only string
+	 * keys count, and anything but an array holds no flags.
+	 *
+	 * @param mixed $raw The stored value.
+	 * @return array<string, bool>
+	 */
+	public static function flags( $raw ): array {
 		if ( ! is_array( $raw ) ) {
 			return [];
 		}

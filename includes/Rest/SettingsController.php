@@ -120,7 +120,7 @@ final class SettingsController {
 	 */
 	private function sensor_descriptions( Options $opts ): array {
 		$disabled = $opts->sensor_filters();
-		$sensors  = Plugin::instance()->sensors()->sensors();
+		$sensors  = Plugin::instance()->sensors()->toggleable();
 		$out      = [];
 		foreach ( $sensors as $key => $_sensor ) {
 			$out[] = [
