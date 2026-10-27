@@ -1418,6 +1418,8 @@ final class ContentSensorTest extends TestCase {
 
 				$sensor->boot();
 				self::set_terms( 7, 'category', [ '16' ], true );
+				// A term the post already has, appended again: nothing changed.
+				self::set_terms( 7, 'category', [ 15 ], true );
 				// The same terms again, in another order: nothing changed.
 				self::set_terms( 7, 'category', [ 16, 15 ] );
 				// Post formats are not tracked, product tags are not on posts.
@@ -1453,6 +1455,53 @@ final class ContentSensorTest extends TestCase {
 					'field' => 'category',
 					'old'   => 'News, Reviews',
 					'new'   => '',
+				],
+			],
+			$calls[1][1]['changes']
+		);
+	}
+
+	/**
+	 * Core passes no old terms when it appends: the old ones are the terms
+	 * the post has now, less the ones the call added.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_appending_terms_reports_the_terms_the_post_had(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				self::term( 25, 9, 'a', 'post_tag' );
+				self::term( 26, 10, 'b', 'post_tag' );
+				self::term( 27, 11, 'c', 'post_tag' );
+				WpState::$posts[7]                  = $post();
+				WpState::$post_terms[7]['post_tag'] = [ 25 ];
+
+				$sensor->boot();
+				// wp_add_object_terms(): one new term and one the post has.
+				self::set_terms( 7, 'post_tag', [ 26, 25 ], true );
+				self::set_terms( 7, 'post_tag', [ 27 ], true );
+				self::set_terms( 7, 'post_tag', [ 26, 27 ], true );
+			}
+		);
+
+		$this->assertSame( [ 2006, 2006 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_tag',
+					'old'   => 'a',
+					'new'   => 'a, b',
+				],
+			],
+			$calls[0][1]['changes']
+		);
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_tag',
+					'old'   => 'a, b',
+					'new'   => 'a, b, c',
 				],
 			],
 			$calls[1][1]['changes']
@@ -1828,11 +1877,12 @@ final class ContentSensorTest extends TestCase {
 				$sensor->boot();
 				WpState::$term_reads_throw = true;
 				self::set_terms( 7, 'category', [ 15 ] );
+				self::set_terms( 7, 'post_tag', [ 25 ], true );
 			}
 		);
 
 		$this->assertSame( [], $calls );
-		$this->assertSame( [ 'hellolog_dispatch_failed' ], array_column( WpCalls::$actions, 0 ) );
+		$this->assertSame( [ 'hellolog_dispatch_failed', 'hellolog_dispatch_failed' ], array_column( WpCalls::$actions, 0 ) );
 		$this->assertSame(
 			[
 				'post_id'  => 7,
@@ -1850,13 +1900,14 @@ final class ContentSensorTest extends TestCase {
 		$this->run_hook( static fn( ContentSensor $sensor ) => $sensor->boot() );
 
 		$expected = [
-			'pre_post_update'        => [ 10, 1 ],
-			'transition_post_status' => [ 10, 3 ],
-			'set_object_terms'       => [ 10, 6 ],
-			'post_stuck'             => [ 10, 1 ],
-			'post_unstuck'           => [ 10, 1 ],
-			'before_delete_post'     => [ 10, 2 ],
-			'shutdown'               => [ 0, 1 ],
+			'pre_post_update'         => [ 10, 1 ],
+			'transition_post_status'  => [ 10, 3 ],
+			'set_object_terms'        => [ 10, 6 ],
+			'added_term_relationship' => [ 10, 3 ],
+			'post_stuck'              => [ 10, 1 ],
+			'post_unstuck'            => [ 10, 1 ],
+			'before_delete_post'      => [ 10, 2 ],
+			'shutdown'                => [ 0, 1 ],
 		];
 		foreach ( $expected as $hook => [ $priority, $args ] ) {
 			$this->assertSame(
@@ -1979,12 +2030,15 @@ final class ContentSensorTest extends TestCase {
 
 	/**
 	 * Set the terms of a post in one taxonomy the way `wp_set_object_terms()`
-	 * does, with the term taxonomy ids before and after.
+	 * does: `added_term_relationship` for each term the post did not have
+	 * yet, then `set_object_terms` with the term taxonomy ids of every term
+	 * given and the ones the post had before, which core leaves empty when
+	 * appending.
 	 *
-	 * @param int                   $post_id  Post id.
-	 * @param string                $taxonomy Taxonomy name.
+	 * @param int                    $post_id  Post id.
+	 * @param string                 $taxonomy Taxonomy name.
 	 * @param array<int, int|string> $tt_ids   Term taxonomy ids given.
-	 * @param bool                  $append   Whether they are added to the post's terms.
+	 * @param bool                   $append   Whether they are added to the post's terms.
 	 */
 	private static function set_terms( int $post_id, string $taxonomy, array $tt_ids, bool $append = false ): void {
 		$old = WpState::$post_terms[ $post_id ][ $taxonomy ] ?? [];
@@ -1992,7 +2046,10 @@ final class ContentSensorTest extends TestCase {
 		$new = $append ? array_values( array_unique( array_merge( $old, $ids ) ) ) : $ids;
 
 		WpState::$post_terms[ $post_id ][ $taxonomy ] = $new;
-		self::fire( 'set_object_terms', $post_id, $tt_ids, $tt_ids, $taxonomy, $append, $old );
+		foreach ( array_diff( $ids, $old ) as $tt_id ) {
+			self::fire( 'added_term_relationship', $post_id, $tt_id, $taxonomy );
+		}
+		self::fire( 'set_object_terms', $post_id, $tt_ids, $tt_ids, $taxonomy, $append, $append ? [] : $old );
 	}
 
 	/**

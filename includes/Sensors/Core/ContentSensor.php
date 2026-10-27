@@ -107,6 +107,15 @@ final class ContentSensor extends AbstractSensor {
 	private array $pending = [];
 
 	/**
+	 * Term relationships `wp_set_object_terms()` added in the call that is
+	 * running: `site:object id:taxonomy` => term taxonomy ids. Taken by the
+	 * `set_object_terms` that ends the call.
+	 *
+	 * @var array<string, array<int, int>>
+	 */
+	private array $added = [];
+
+	/**
 	 * Posts `wp_untrash_post()` is restoring right now: `site:post id` => the
 	 * status the post had when it was trashed. Set on `untrash_post`, taken by
 	 * the status change that follows it.
@@ -132,6 +141,7 @@ final class ContentSensor extends AbstractSensor {
 		add_action( 'transition_post_status', [ $this, 'on_status' ], 10, 3 );
 		// After core saved the revision of the save, at priority 9.
 		add_action( 'wp_after_insert_post', [ $this, 'on_after_insert' ], 10, 1 );
+		add_action( 'added_term_relationship', [ $this, 'on_term_added' ], 10, 3 );
 		add_action( 'set_object_terms', [ $this, 'on_terms_set' ], 10, 6 );
 		add_action( 'post_stuck', [ $this, 'on_stuck' ], 10, 1 );
 		add_action( 'post_unstuck', [ $this, 'on_unstuck' ], 10, 1 );
@@ -240,28 +250,49 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	/**
+	 * `wp_set_object_terms()` gave an object a term it did not have. Noted
+	 * for the `set_object_terms` that ends the call: when appending, core
+	 * passes it no old terms, so these tell what the call changed.
+	 *
+	 * @param int    $object_id Object id.
+	 * @param mixed  $tt_id     Term taxonomy id.
+	 * @param string $taxonomy  Taxonomy name.
+	 */
+	public function on_term_added( int $object_id, $tt_id, string $taxonomy ): void {
+		if ( TaxonomySensor::is_tracked( $taxonomy ) ) {
+			$this->added[ self::state_key( $object_id ) . ':' . $taxonomy ][] = (int) $tt_id;
+		}
+	}
+
+	/**
 	 * Terms of an object were set. Outside a save whose start this sensor saw
 	 * (that save's event compares the terms itself), a change of the terms of
 	 * a post it logs is an update of the post, named by the taxonomy.
 	 *
+	 * When appending, core passes no old terms (and every term given, the
+	 * ones the object had included): the old terms are the post's terms now,
+	 * less the relationships this call added, and a call that added none
+	 * changed nothing.
+	 *
 	 * @param int    $object_id  Object id.
 	 * @param mixed  $terms      The terms as given; not used.
-	 * @param mixed  $tt_ids     Term taxonomy ids set: the added ones when appending.
+	 * @param mixed  $tt_ids     Term taxonomy ids of every term given, those the object already had included.
 	 * @param string $taxonomy   Taxonomy name.
 	 * @param mixed  $append     Whether the terms were added to the object's terms.
-	 * @param mixed  $old_tt_ids Term taxonomy ids the object had before.
+	 * @param mixed  $old_tt_ids Term taxonomy ids the object had before; empty when appending.
 	 */
 	public function on_terms_set( int $object_id, $terms, $tt_ids, string $taxonomy, $append = false, $old_tt_ids = [] ): void {
-		if ( ! TaxonomySensor::is_tracked( $taxonomy ) || isset( $this->before[ self::state_key( $object_id ) ] ) ) {
+		$key   = self::state_key( $object_id );
+		$added = self::ids( $this->added[ $key . ':' . $taxonomy ] ?? [] );
+		unset( $this->added[ $key . ':' . $taxonomy ] );
+
+		if ( ! TaxonomySensor::is_tracked( $taxonomy ) || isset( $this->before[ $key ] ) ) {
 			return;
 		}
 
 		$old = self::ids( $old_tt_ids );
 		$new = self::ids( $tt_ids );
-		if ( $append ) {
-			$new = self::ids( array_merge( $old, $new ) );
-		}
-		if ( $old === $new ) {
+		if ( $append ? [] === $added : $old === $new ) {
 			return;
 		}
 
@@ -273,10 +304,19 @@ final class ContentSensor extends AbstractSensor {
 				return;
 			}
 
-			$changes = PostSnapshot::term_changes(
-				[ $taxonomy => self::term_names( $old, $taxonomy ) ],
-				[ $taxonomy => self::term_names( $new, $taxonomy ) ]
-			);
+			if ( $append ) {
+				$after = self::post_terms( $object_id, $taxonomy );
+				if ( null === $after ) {
+					return;
+				}
+				$after += self::term_names( array_values( array_diff( $added, array_keys( $after ) ) ), $taxonomy );
+				$before = array_diff_key( $after, array_flip( $added ) );
+			} else {
+				$before = self::term_names( $old, $taxonomy );
+				$after  = self::term_names( $new, $taxonomy );
+			}
+
+			$changes = PostSnapshot::term_changes( [ $taxonomy => $before ], [ $taxonomy => $after ] );
 			if ( [] !== $changes ) {
 				$this->emit_update( $post, $changes );
 			}
@@ -688,7 +728,7 @@ final class ContentSensor extends AbstractSensor {
 	/**
 	 * The terms of a post in every tracked taxonomy of its type: taxonomy
 	 * name => term taxonomy id => term name. A taxonomy whose terms could not
-	 * be read is left out.
+	 * be read is left out (see {@see self::post_terms()}).
 	 *
 	 * @return array<string, array<int, string>>
 	 */
@@ -699,18 +739,35 @@ final class ContentSensor extends AbstractSensor {
 				continue;
 			}
 
-			// False is a post without terms there; anything else but a list
-			// (an error) is terms that could not be read.
-			$found = get_the_terms( (int) $post->ID, $taxonomy );
-			if ( false !== $found && ! is_array( $found ) ) {
-				continue;
+			$found = self::post_terms( (int) $post->ID, $taxonomy );
+			if ( null !== $found ) {
+				$terms[ $taxonomy ] = $found;
 			}
+		}
 
-			$terms[ $taxonomy ] = [];
-			foreach ( is_array( $found ) ? $found : [] as $term ) {
-				if ( is_object( $term ) && isset( $term->term_taxonomy_id ) ) {
-					$terms[ $taxonomy ][ (int) $term->term_taxonomy_id ] = (string) ( $term->name ?? '' );
-				}
+		return $terms;
+	}
+
+	/**
+	 * The terms a post has in one taxonomy: term taxonomy id => term name;
+	 * null when they could not be read.
+	 *
+	 * @param int    $post_id  Post id.
+	 * @param string $taxonomy Taxonomy name.
+	 * @return array<int, string>|null
+	 */
+	private static function post_terms( int $post_id, string $taxonomy ): ?array {
+		// False is a post without terms there; anything else but a list (an
+		// error) is terms that could not be read.
+		$found = get_the_terms( $post_id, $taxonomy );
+		if ( false !== $found && ! is_array( $found ) ) {
+			return null;
+		}
+
+		$terms = [];
+		foreach ( is_array( $found ) ? $found : [] as $term ) {
+			if ( is_object( $term ) && isset( $term->term_taxonomy_id ) ) {
+				$terms[ (int) $term->term_taxonomy_id ] = (string) ( $term->name ?? '' );
 			}
 		}
 
