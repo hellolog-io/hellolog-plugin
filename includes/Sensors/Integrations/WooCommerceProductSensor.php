@@ -28,9 +28,10 @@ defined( 'ABSPATH' ) || exit;
  * and links to its parent's edit screen.
  *
  * An edit tells which of {@see self::PRODUCT_FIELDS} changed, the
- * descriptions ({@see self::CONTENT_FIELDS}) without their values, terms,
- * the shipping class and images by their names. It is read from three
- * places, which the buffer merges into one event per product and request:
+ * descriptions and the purchase note ({@see self::CONTENT_FIELDS}) without
+ * their values, terms, the shipping class and images by their names. It is
+ * read from three places, which the buffer merges into one event per product
+ * and request:
  *
  * - the shop's save of a product or variation, from the values stored and
  *   those the save is about to write;
@@ -125,11 +126,13 @@ final class WooCommerceProductSensor extends AbstractSensor {
 
 	/**
 	 * The fields of {@see self::PRODUCT_FIELDS} told as changed, without
-	 * their values: texts of any length.
+	 * their values: the descriptions, texts of any length, and the purchase
+	 * note, which only the product's buyers see (often with how to download
+	 * or access what they bought).
 	 *
 	 * @var array<int, string>
 	 */
-	public const CONTENT_FIELDS = [ 'short_description', 'description' ];
+	public const CONTENT_FIELDS = [ 'purchase_note', 'short_description', 'description' ];
 
 	/** Meta key of the product image of a post. */
 	private const IMAGE_META_KEY = '_thumbnail_id';

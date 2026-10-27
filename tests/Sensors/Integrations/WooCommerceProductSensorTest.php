@@ -152,6 +152,32 @@ final class WooCommerceProductSensorTest extends TestCase {
 	}
 
 	/**
+	 * The purchase note is shown only to the buyers of the product (often
+	 * with how to download or access what they bought): it is told as
+	 * changed, without its text.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_changed_purchase_note_is_told_without_its_text(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceProductSensor( $recorder ) )->on_before_save(
+			new FakeProduct(
+				5,
+				self::stored( [ 'purchase_note' => 'Your key: AAAA-1111.' ] ),
+				[ 'purchase_note' => 'Download it from https://example.com/dl/s3cr3t-link.' ]
+			)
+		);
+
+		$this->assertSame( [ self::change( 'purchase_note', null, null ) ], $recorder->calls[0][1]['changes'] );
+		$json = (string) json_encode( $this->build( $recorder ) );
+		$this->assertStringNotContainsString( 'AAAA-1111', $json );
+		$this->assertStringNotContainsString( 's3cr3t-link', $json );
+	}
+
+	/**
 	 * Each field of the product is told; the price the shop computes, the
 	 * attributes and the meta are not among them.
 	 *
@@ -214,7 +240,7 @@ final class WooCommerceProductSensorTest extends TestCase {
 				self::change( 'length', '', '10' ),
 				self::change( 'virtual', 'no', 'yes' ),
 				self::change( 'downloadable', 'no', 'yes' ),
-				self::change( 'purchase_note', '', 'Thanks!' ),
+				self::change( 'purchase_note', null, null ),
 			],
 			$recorder->calls[0][1]['changes']
 		);
