@@ -1514,6 +1514,135 @@ final class WooCommerceProductSensorTest extends TestCase {
 	}
 
 	/**
+	 * A job that runs inside the request (Action Scheduler runs some at
+	 * once) and writes a stock level tells its own writes when it ends; a
+	 * write the request made before it stays the request's, told by the
+	 * request, even when the job writes the same product's stock.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_stock_write_held_by_the_request_is_not_told_by_a_job(): void {
+		$this->stubs();
+		$recorder = new BuildingRecorder();
+		ActionSchedulerContext::register();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+
+		self::write_stock( self::stocked( 5, 8 ), self::stocked( 5, 10 ) );
+		Hooks::fire( 'action_scheduler_begin_execute', 41, 'WP Cron' );
+		self::write_stock( self::stocked( 5, 10 ), self::stocked( 5, 9 ) );
+		self::reduce( self::stocked( 5, 9 ), 10, 9 );
+		self::write_stock( self::stocked( 6, 4, 'Plate' ), self::stocked( 6, 5, 'Plate' ) );
+		Hooks::fire( 'action_scheduler_after_execute', 41, null, 'WP Cron' );
+
+		$this->assertSame( [ 9005, 9001 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertSame( [ self::change( 'stock_quantity', '10', '9' ) ], $recorder->payloads[0]['changes'] );
+		$this->assertSame( [ self::change( 'stock_quantity', '4', '5' ) ], $recorder->payloads[1]['changes'] );
+		$this->assertSame( [ 'action-scheduler', 'action-scheduler' ], array_column( $recorder->payloads, 'source' ) );
+
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 9005, 9001, 9001 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertSame( '5', $recorder->payloads[2]['target']['id'] );
+		$this->assertSame( [ self::change( 'stock_quantity', '8', '10' ) ], $recorder->payloads[2]['changes'] );
+		$this->assertNotSame( 'action-scheduler', $recorder->payloads[2]['source'] );
+	}
+
+	/**
+	 * An order reduces the stock of each of its lines in turn, two lines of
+	 * one product included: one stock event per line, and no edit.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_each_line_an_order_reduces_is_one_stock_event(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+		self::write_stock( self::stocked( 5, 10 ), self::stocked( 5, 9 ) );
+		self::reduce( self::stocked( 5, 9 ), 10, 9 );
+		self::write_stock( self::stocked( 6, 4, 'Plate' ), self::stocked( 6, 2, 'Plate' ) );
+		self::reduce( self::stocked( 6, 2, 'Plate' ), 4, 2 );
+		self::write_stock( self::stocked( 5, 9 ), self::stocked( 5, 8 ) );
+		self::reduce( self::stocked( 5, 8 ), 9, 8 );
+		Hooks::fire( 'shutdown' );
+
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 9005, 9005, 9005 ], array_column( $survivors, 'code' ) );
+		$this->assertSame(
+			[ [ '5', '10', '9' ], [ '6', '4', '2' ], [ '5', '9', '8' ] ],
+			array_map( static fn( array $p ): array => [ $p['target']['id'], $p['changes'][0]['old'], $p['changes'][0]['new'] ], $survivors )
+		);
+	}
+
+	/**
+	 * Outside a bulk edit WooCommerce saves the product between the write and
+	 * its end, so the stock status follows the level: that save tells the
+	 * status, the write tells the level, once.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_save_inside_a_stock_write_tells_the_status_and_the_level_once(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+		// A restock: 0 → 3, back in stock.
+		Hooks::fire( 'woocommerce_product_before_set_stock', self::stocked( 5, 0 ) );
+		Hooks::fire( 'woocommerce_updated_product_stock', 5 );
+		Hooks::fire(
+			'woocommerce_before_product_object_save',
+			new FakeProduct(
+				5,
+				self::stored(
+					[
+						'stock_quantity' => 3,
+						'stock_status'   => 'outofstock',
+					]
+				),
+				[ 'stock_status' => 'instock' ]
+			)
+		);
+		Hooks::fire( 'woocommerce_product_set_stock', self::stocked( 5, 3 ) );
+		// An order taking the last piece: 1 → 0, out of stock.
+		Hooks::fire( 'woocommerce_product_before_set_stock', self::stocked( 6, 1, 'Plate' ) );
+		Hooks::fire( 'woocommerce_updated_product_stock', 6 );
+		Hooks::fire(
+			'woocommerce_before_product_object_save',
+			new FakeProduct(
+				6,
+				self::stored(
+					[
+						'id'             => 6,
+						'name'           => 'Plate',
+						'stock_quantity' => 0,
+					]
+				),
+				[ 'stock_status' => 'outofstock' ]
+			)
+		);
+		Hooks::fire( 'woocommerce_product_set_stock', self::stocked( 6, 0, 'Plate' ) );
+		self::reduce( self::stocked( 6, 0, 'Plate' ), 1, 0 );
+		Hooks::fire( 'shutdown' );
+
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 9001, 9001, 9005 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( '5', $survivors[0]['target']['id'] );
+		$this->assertSame(
+			[
+				self::change( 'stock_status', 'outofstock', 'instock' ),
+				self::change( 'stock_quantity', '0', '3' ),
+			],
+			$survivors[0]['changes']
+		);
+		$this->assertSame( '6', $survivors[1]['target']['id'] );
+		$this->assertSame( [ self::change( 'stock_status', 'instock', 'outofstock' ) ], $survivors[1]['changes'] );
+		$this->assertSame( [ self::change( 'stock_quantity', '1', '0' ) ], $survivors[2]['changes'] );
+	}
+
+	/**
 	 * The shop's save of a product runs before it writes it: whatever fails
 	 * while reading the product is reported, never thrown.
 	 *

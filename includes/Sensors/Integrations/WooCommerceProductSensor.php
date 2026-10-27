@@ -68,7 +68,9 @@ defined( 'ABSPATH' ) || exit;
  * and after it. An order says it reduced the stock right after the write:
  * that is a stock event of its own (9005), naming the order. Any other such
  * write is an edit of `stock_quantity` (9001), told once the next stock write
- * begins or the request (or the job) ends, so the order had its say.
+ * begins or the request (or the job) ends, so the order had its say. A write
+ * belongs to the request or to the Action Scheduler job that made it: a job
+ * run inside the request tells only its own.
  *
  * Every handler runs inside the work of WordPress or WooCommerce on the
  * product (the shop's save of a product has no guard around its hooks), so
@@ -290,8 +292,9 @@ final class WooCommerceProductSensor extends AbstractSensor {
 
 	/**
 	 * Stock levels written straight to the database, held until it is known
-	 * whether an order reduced them: `site:product id` => the site, the jobs
-	 * running at the write, the change and the fields of the product's event.
+	 * whether an order reduced them: `jobs running|site:product id` (see
+	 * {@see self::held_stock_key()}) => the site, the jobs running at the
+	 * write, the change and the fields of the product's event.
 	 *
 	 * @var array<string, array{blog: int, depth: int, change: array{field: string, old: ?string, new: ?string}, fields: array<string, mixed>}>
 	 */
@@ -821,15 +824,17 @@ final class WooCommerceProductSensor extends AbstractSensor {
 
 	/**
 	 * WooCommerce is about to write a product's or variation's stock level:
-	 * read the level it has now. A write held before this one is told first:
-	 * no order said it reduced the stock, so it is an edit.
+	 * read the level it has now. A write held before this one, by the same
+	 * request or job (or a job it ran), is told first: no order said it
+	 * reduced the stock, so it is an edit. One held by the request while a
+	 * job runs inside it stays the request's.
 	 *
 	 * @param mixed $product The product or variation whose stock is written.
 	 */
 	public function on_before_set_stock( $product ): void {
 		$product_id = 0;
 		try {
-			$this->tell_stock_written();
+			$this->tell_stock_written( ActionSchedulerContext::depth() );
 			if ( ! is_object( $product ) || ! method_exists( $product, 'get_id' ) || ! method_exists( $product, 'get_stock_quantity' ) ) {
 				return;
 			}
@@ -905,9 +910,11 @@ final class WooCommerceProductSensor extends AbstractSensor {
 				return;
 			}
 
-			$this->stock_written[ $key ] = [
+			$depth = ActionSchedulerContext::depth();
+
+			$this->stock_written[ self::held_stock_key( $key, $depth ) ] = [
 				'blog'   => self::blog_id(),
-				'depth'  => ActionSchedulerContext::depth(),
+				'depth'  => $depth,
 				'change' => $change,
 				'fields' => $this->product_fields( $product_id, self::name_of( $product ), $parent_id, $parent_id > 0 ? self::VARIATION_TYPE : self::PRODUCT_TYPE ),
 			];
@@ -941,8 +948,9 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			}
 
 			$owner_id = method_exists( $product, 'get_stock_managed_by_id' ) ? self::id_of( $product->get_stock_managed_by_id() ) : 0;
-			$key      = self::state_key( $owner_id > 0 ? $owner_id : $product_id );
-			$fields   = $this->stock_written[ $key ]['fields'] ?? null;
+			// The write and the order's word come in the same request or job.
+			$key    = self::held_stock_key( self::state_key( $owner_id > 0 ? $owner_id : $product_id ), ActionSchedulerContext::depth() );
+			$fields = $this->stock_written[ $key ]['fields'] ?? null;
 			unset( $this->stock_written[ $key ] );
 			if ( null === $fields ) {
 				$parent_id = method_exists( $product, 'get_parent_id' ) ? max( 0, (int) $product->get_parent_id() ) : 0;
@@ -1156,13 +1164,14 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	/**
 	 * Tell the stock levels written straight to the database that no order
 	 * said it reduced, as edits of `stock_quantity`, each on its own site:
-	 * those written from at least `$depth` running jobs on, or all of them.
+	 * those written from at least `$depth` running jobs on (0: all of them).
+	 * The rest stays held.
 	 *
-	 * @param int|null $depth Jobs running at the write, at least; null for every write.
+	 * @param int $depth Jobs running at the write, at least.
 	 */
-	private function tell_stock_written( ?int $depth = null ): void {
+	private function tell_stock_written( int $depth ): void {
 		foreach ( $this->stock_written as $key => $written ) {
-			if ( null !== $depth && $written['depth'] < $depth ) {
+			if ( $written['depth'] < $depth ) {
 				continue;
 			}
 			unset( $this->stock_written[ $key ] );
@@ -1173,6 +1182,18 @@ final class WooCommerceProductSensor extends AbstractSensor {
 				$this->report_failure( $e, 9001, [ 'product_id' => (int) ( $written['fields']['metadata']['product_id'] ?? 0 ) ] );
 			}
 		}
+	}
+
+	/**
+	 * The key of a held stock write: the jobs running at the write and the
+	 * product's `site:product id`. The request and a job it runs can each
+	 * hold a write of the same product.
+	 *
+	 * @param string $key   `site:product id`, see {@see self::state_key()}.
+	 * @param int    $depth Jobs running at the write.
+	 */
+	private static function held_stock_key( string $key, int $depth ): string {
+		return $depth . '|' . $key;
 	}
 
 	/**
