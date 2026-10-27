@@ -201,6 +201,26 @@ final class CatalogSeeder {
 		// Settings
 		$c->register( new EventDefinition( 9400, ObjectType::SETTING, EventType::UPDATED, Severity::MEDIUM, 'WC setting {option} changed.' ) );
 		$c->register( new EventDefinition( 9401, ObjectType::SETTING, EventType::UPDATED, Severity::CRITICAL, 'Bank account details (BACS) changed.' ) );
+
+		// Tax rates
+		$c->register( new EventDefinition( 9410, ObjectType::SETTING, EventType::CREATED, Severity::HIGH, 'WC tax rate {name} added.' ) );
+		$c->register( new EventDefinition( 9411, ObjectType::SETTING, EventType::UPDATED, Severity::HIGH, 'WC tax rate {name} changed.' ) );
+		$c->register( new EventDefinition( 9412, ObjectType::SETTING, EventType::DELETED, Severity::HIGH, 'WC tax rate {name} deleted.' ) );
+
+		// Shipping methods of a zone
+		$c->register( new EventDefinition( 9420, ObjectType::SETTING, EventType::CREATED, Severity::MEDIUM, 'WC shipping method {name} added in zone {zone}.' ) );
+		$c->register( new EventDefinition( 9421, ObjectType::SETTING, EventType::DELETED, Severity::MEDIUM, 'WC shipping method {name} removed from zone {zone}.' ) );
+		$c->register( new EventDefinition( 9422, ObjectType::SETTING, EventType::UPDATED, Severity::MEDIUM, 'WC shipping method {name} toggled in zone {zone}.' ) );
+
+		// Webhooks
+		$c->register( new EventDefinition( 9430, ObjectType::SETTING, EventType::CREATED, Severity::HIGH, 'WC webhook "{name}" created.' ) );
+		$c->register( new EventDefinition( 9431, ObjectType::SETTING, EventType::UPDATED, Severity::HIGH, 'WC webhook "{name}" changed.' ) );
+		$c->register( new EventDefinition( 9432, ObjectType::SETTING, EventType::DELETED, Severity::HIGH, 'WC webhook "{name}" deleted.' ) );
+
+		// Product attributes
+		$c->register( new EventDefinition( 9440, ObjectType::SETTING, EventType::CREATED, Severity::LOW, 'WC attribute "{name}" created.' ) );
+		$c->register( new EventDefinition( 9441, ObjectType::SETTING, EventType::UPDATED, Severity::LOW, 'WC attribute "{name}" changed.' ) );
+		$c->register( new EventDefinition( 9442, ObjectType::SETTING, EventType::DELETED, Severity::LOW, 'WC attribute "{name}" deleted.' ) );
 	}
 
 	private static function forms( EventCatalog $c ): void {

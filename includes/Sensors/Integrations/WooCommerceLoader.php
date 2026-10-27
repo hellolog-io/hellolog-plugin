@@ -28,5 +28,6 @@ final class WooCommerceLoader {
 		$manager->register( new WooCommerceCouponSensor( $dispatcher ) );
 		$manager->register( new WooCommerceCustomerSensor( $dispatcher ) );
 		$manager->register( new WooCommerceSettingsSensor( $dispatcher ) );
+		$manager->register( new WooCommerceConfigSensor( $dispatcher ) );
 	}
 }

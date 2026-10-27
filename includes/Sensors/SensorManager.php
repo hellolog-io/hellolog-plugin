@@ -85,6 +85,7 @@ final class SensorManager {
 		'woocommerce-coupon',
 		'woocommerce-customer',
 		'woocommerce-settings',
+		'woocommerce-config',
 		'gravity-forms',
 		'wpforms',
 		'contact-form-7',

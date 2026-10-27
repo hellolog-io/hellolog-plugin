@@ -233,6 +233,46 @@ final class ExportCatalogTest extends TestCase {
 		$this->assertSame( 'info', $by_code[9005]['severity'] );
 	}
 
+	/**
+	 * @return array<string, array{0: int, 1: string, 2: array<int, string>, 3: string, 4: string}> Code, label, vars, event type, severity.
+	 */
+	public static function shop_configuration_codes(): array {
+		return [
+			'tax rate added'          => [ 9410, 'WC tax rate {name} added.', [ 'name' ], 'created', 'high' ],
+			'tax rate changed'        => [ 9411, 'WC tax rate {name} changed.', [ 'name' ], 'updated', 'high' ],
+			'tax rate deleted'        => [ 9412, 'WC tax rate {name} deleted.', [ 'name' ], 'deleted', 'high' ],
+			'shipping method added'   => [ 9420, 'WC shipping method {name} added in zone {zone}.', [ 'name', 'zone' ], 'created', 'medium' ],
+			'shipping method removed' => [ 9421, 'WC shipping method {name} removed from zone {zone}.', [ 'name', 'zone' ], 'deleted', 'medium' ],
+			'shipping method toggled' => [ 9422, 'WC shipping method {name} toggled in zone {zone}.', [ 'name', 'zone' ], 'updated', 'medium' ],
+			'webhook created'         => [ 9430, 'WC webhook "{name}" created.', [ 'name' ], 'created', 'high' ],
+			'webhook changed'         => [ 9431, 'WC webhook "{name}" changed.', [ 'name' ], 'updated', 'high' ],
+			'webhook deleted'         => [ 9432, 'WC webhook "{name}" deleted.', [ 'name' ], 'deleted', 'high' ],
+			'attribute created'       => [ 9440, 'WC attribute "{name}" created.', [ 'name' ], 'created', 'low' ],
+			'attribute changed'       => [ 9441, 'WC attribute "{name}" changed.', [ 'name' ], 'updated', 'low' ],
+			'attribute deleted'       => [ 9442, 'WC attribute "{name}" deleted.', [ 'name' ], 'deleted', 'low' ],
+		];
+	}
+
+	/**
+	 * @dataProvider shop_configuration_codes
+	 *
+	 * @param int                $code       Code.
+	 * @param string             $label      Message template.
+	 * @param array<int, string> $vars       Template vars.
+	 * @param string             $event_type Event type.
+	 * @param string             $severity   Severity.
+	 */
+	public function test_shop_configuration_codes_are_seeded( int $code, string $label, array $vars, string $event_type, string $severity ): void {
+		$by_code = array_column( $this->seeded_export(), null, 'code' );
+
+		$this->assertArrayHasKey( $code, $by_code );
+		$this->assertSame( $label, $by_code[ $code ]['label'] );
+		$this->assertSame( $vars, $by_code[ $code ]['vars'] );
+		$this->assertSame( 'setting', $by_code[ $code ]['object'] );
+		$this->assertSame( $event_type, $by_code[ $code ]['event_type'] );
+		$this->assertSame( $severity, $by_code[ $code ]['severity'] );
+	}
+
 	public function test_the_bank_account_code_is_seeded(): void {
 		$by_code = array_column( $this->seeded_export(), null, 'code' );
 
