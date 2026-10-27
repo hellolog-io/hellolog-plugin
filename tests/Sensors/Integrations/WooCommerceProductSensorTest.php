@@ -2221,7 +2221,12 @@ final class WooCommerceProductSensorTest extends TestCase {
 	 * @return array<int|string, mixed>
 	 */
 	private static function state( WooCommerceProductSensor $sensor, string $property ): array {
-		$value = ( new \ReflectionProperty( $sensor, $property ) )->getValue( $sensor );
+		// A closure run in the sensor's scope reads a private property on
+		// every supported PHP; reflection needs setAccessible() before 8.1,
+		// which 8.5 deprecates.
+		$value = ( function () use ( $property ) {
+			return $this->{$property};
+		} )->call( $sensor );
 
 		return is_array( $value ) ? $value : [];
 	}
