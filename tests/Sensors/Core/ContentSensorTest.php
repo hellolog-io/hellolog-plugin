@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Sensors\Core;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
@@ -19,6 +20,8 @@ use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\ContentSensor;
 use HelloLog\Sensors\Core\PostTypeOwnership;
 use HelloLog\Tests\Events\Fixtures\WpCalls;
+use HelloLog\Tests\Sensors\Core\Fixtures\BuildingRecorder;
+use HelloLog\Tests\Sensors\Core\Fixtures\Hooks;
 use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
 use PHPUnit\Framework\TestCase;
 
@@ -1860,6 +1863,73 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
+	 * @return array<string, array{0: string}>
+	 */
+	public static function job_ends(): array {
+		return [
+			'a job that succeeds' => [ 'action_scheduler_after_execute' ],
+			'a job that fails'    => [ 'action_scheduler_failed_execution' ],
+		];
+	}
+
+	/**
+	 * A save an Action Scheduler job opened and never finished is logged when
+	 * the job ends, while the job is still the context: the event comes from
+	 * the job and keeps who set it in motion, instead of reading as the doing
+	 * of whoever loaded the page that started the queue runner.
+	 *
+	 * @dataProvider job_ends
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param string $end The hook that ends the job.
+	 */
+	public function test_a_save_a_job_never_finishes_is_logged_when_the_job_ends_as_the_job( string $end ): void {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
+		$recorder = new BuildingRecorder();
+		ActionSchedulerContext::register();
+		( new ContentSensor( $recorder ) )->boot();
+
+		Hooks::fire( 'action_scheduler_begin_execute', 41, 'WP Cron' );
+		self::update_post( self::job_post( 'Old title' ), self::job_post( 'New title' ), null, false );
+		Hooks::fire( $end, 41, 'action_scheduler_failed_execution' === $end ? new \RuntimeException( 'failed' ) : null, 'WP Cron' );
+
+		$this->assertSame( [ 2006 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertSame( 'New title', $recorder->payloads[0]['changes'][0]['new'] );
+		$this->assertSame( 'action-scheduler', $recorder->payloads[0]['source'] );
+		$this->assertSame( 'admin', $recorder->payloads[0]['metadata']['initiated_by'] );
+
+		Hooks::fire( 'shutdown' );
+		$this->assertCount( 1, $recorder->payloads, 'Not again at shutdown.' );
+	}
+
+	/**
+	 * Only the saves a job opened are logged when it ends: a save open
+	 * around the job (one that runs the job from its own hooks) goes on and
+	 * is logged as usual.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_save_open_before_a_job_is_not_logged_when_the_job_ends(): void {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
+		$recorder = new BuildingRecorder();
+		ActionSchedulerContext::register();
+		( new ContentSensor( $recorder ) )->boot();
+
+		self::update_post( self::job_post( 'Old title' ), self::job_post( 'New title' ), null, false );
+		Hooks::fire( 'action_scheduler_begin_execute', 41, 'WP Cron' );
+		Hooks::fire( 'action_scheduler_after_execute', 41, null, 'WP Cron' );
+		$this->assertSame( [], $recorder->payloads );
+
+		Hooks::fire( 'shutdown' );
+		$this->assertSame( [ 2006 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertNotSame( 'action-scheduler', $recorder->payloads[0]['source'] );
+	}
+
+	/**
 	 * `wp_publish_post()` (a scheduled post going live) changes the status
 	 * without `pre_post_update`: there is nothing to compare, so the status
 	 * change is logged as it happens, once.
@@ -2434,6 +2504,9 @@ final class ContentSensorTest extends TestCase {
 			'before_delete_post'      => [ 10, 2 ],
 			'trashed_post'            => [ 10, 1 ],
 			'shutdown'                => [ 0, 1 ],
+			// When a job ends, before its context closes at PHP_INT_MAX.
+			'action_scheduler_after_execute'    => [ PHP_INT_MAX - 1, 0 ],
+			'action_scheduler_failed_execution' => [ PHP_INT_MAX - 1, 0 ],
 		];
 		foreach ( $expected as $hook => [ $priority, $args ] ) {
 			$this->assertSame(
@@ -2490,6 +2563,24 @@ final class ContentSensorTest extends TestCase {
 		$hooks( new ContentSensor( $dispatcher ), $post, $dispatcher );
 
 		return $dispatcher->calls;
+	}
+
+	/**
+	 * A published post (id 7) of a job's save, with the given title.
+	 *
+	 * @param string $title The title.
+	 */
+	private static function job_post( string $title ): \WP_Post {
+		return new \WP_Post(
+			[
+				'ID'          => 7,
+				'post_title'  => $title,
+				'post_type'   => 'post',
+				'post_status' => 'publish',
+				'post_name'   => 'hello',
+				'post_author' => '1',
+			]
+		);
 	}
 
 	/**

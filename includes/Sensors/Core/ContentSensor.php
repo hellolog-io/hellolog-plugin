@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Sensors\Core;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
 use Throwable;
@@ -29,7 +30,9 @@ defined( 'ABSPATH' ) || exit;
  * `wp_after_insert_post` from that snapshot and the post as it ends up: the
  * status event when the status change is one, carrying the other changes,
  * otherwise an update (2006). A save that never gets to `wp_after_insert_post`
- * (a REST save whose terms failed) is logged at shutdown. A status change
+ * (a REST save whose terms failed) is logged at shutdown, or, when an Action
+ * Scheduler job opened it, when that job ends, while it is still the job's
+ * context (so the event comes from the job). A status change
  * outside a save this sensor saw start (a scheduled post going live, a post
  * inserted) has nothing to compare and is logged as it happens.
  *
@@ -96,6 +99,14 @@ final class ContentSensor extends AbstractSensor {
 	private array $pending = [];
 
 	/**
+	 * How many Action Scheduler jobs were running when a save opened (see
+	 * {@see ActionSchedulerContext::depth()}): `site:post id` => depth.
+	 *
+	 * @var array<string, int>
+	 */
+	private array $opened_in = [];
+
+	/**
 	 * Term relationships `wp_set_object_terms()` added in the call that is
 	 * running: `site:object id:taxonomy` => term taxonomy ids. Taken by the
 	 * `set_object_terms` that ends the call.
@@ -140,6 +151,9 @@ final class ContentSensor extends AbstractSensor {
 		add_action( 'trashed_post', [ $this, 'on_trashed' ], 10, 1 );
 		// Before the request's events are written, at priority 1.
 		add_action( 'shutdown', [ $this, 'flush_open_saves' ], 0 );
+		// The saves a job opened, before its context ends at PHP_INT_MAX.
+		add_action( 'action_scheduler_after_execute', [ $this, 'flush_job_saves' ], PHP_INT_MAX - 1, 0 );
+		add_action( 'action_scheduler_failed_execution', [ $this, 'flush_job_saves' ], PHP_INT_MAX - 1, 0 );
 	}
 
 	/**
@@ -159,7 +173,8 @@ final class ContentSensor extends AbstractSensor {
 		try {
 			$post = get_post( $post_id );
 			if ( $post instanceof WP_Post && $this->should_track( $post, 2006 ) ) {
-				$this->before[ $key ] = $this->snapshot( $post );
+				$this->before[ $key ]    = $this->snapshot( $post );
+				$this->opened_in[ $key ] = ActionSchedulerContext::depth();
 			}
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 2006, [ 'post_id' => $post_id ] );
@@ -211,7 +226,7 @@ final class ContentSensor extends AbstractSensor {
 
 		$before  = $this->before[ $key ];
 		$pending = $this->pending[ $key ] ?? null;
-		unset( $this->before[ $key ], $this->pending[ $key ] );
+		unset( $this->before[ $key ], $this->pending[ $key ], $this->opened_in[ $key ] );
 
 		$this->log_save( $post_id, $before, $pending );
 	}
@@ -221,10 +236,40 @@ final class ContentSensor extends AbstractSensor {
 	 * site it happened on. Runs at shutdown, once.
 	 */
 	public function flush_open_saves(): void {
-		$open          = $this->before;
-		$pending       = $this->pending;
-		$this->before  = [];
-		$this->pending = [];
+		$this->flush_saves( 0 );
+	}
+
+	/**
+	 * Log the saves the Action Scheduler job that is ending opened and never
+	 * finished, while it is still the context. Nothing outside a job.
+	 */
+	public function flush_job_saves(): void {
+		$depth = ActionSchedulerContext::depth();
+		if ( $depth > 0 ) {
+			$this->flush_saves( $depth );
+		}
+	}
+
+	/**
+	 * Log the open saves opened while at least `$depth` jobs were running,
+	 * each on the site it happened on, and forget them; the others stay
+	 * open.
+	 *
+	 * @param int $depth Jobs running when the save opened, at least.
+	 */
+	private function flush_saves( int $depth ): void {
+		$open    = [];
+		$pending = [];
+		foreach ( $this->before as $key => $before ) {
+			if ( ( $this->opened_in[ $key ] ?? 0 ) < $depth ) {
+				continue;
+			}
+			$open[ $key ] = $before;
+			if ( isset( $this->pending[ $key ] ) ) {
+				$pending[ $key ] = $this->pending[ $key ];
+			}
+			unset( $this->before[ $key ], $this->pending[ $key ], $this->opened_in[ $key ] );
+		}
 
 		foreach ( $open as $key => $before ) {
 			$parts   = explode( ':', (string) $key, 2 );
