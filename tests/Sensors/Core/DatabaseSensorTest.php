@@ -128,6 +128,8 @@ final class DatabaseSensorTest extends TestCase {
 			'a comma inside a quoted name'      => [ 'DROP TABLE `wp_hellolog_queue`, `odd,name`', [ 'odd,name' ] ],
 			'a dot inside a quoted name'        => [ 'DROP TABLE `old.wp_hellolog_queue`', [ 'old.wp_hellolog_queue' ] ],
 			'a name of digits'                  => [ 'DROP TABLE `2024`', [ '2024' ] ],
+			'the plural keyword'                => [ 'DROP TABLES wp_a, wp_b', [ 'wp_a', 'wp_b' ] ],
+			'plural, if exists, queue table'    => [ 'drop tables if exists wp_hellolog_queue, wp_users', [ 'wp_users' ] ],
 			'line breaks between the keywords'  => [ "DROP\n\tTABLE\n  wp_users", [ 'wp_users' ] ],
 		];
 	}
@@ -160,16 +162,47 @@ final class DatabaseSensorTest extends TestCase {
 	}
 
 	/**
-	 * A list the sensor can not read to the end (a comment in it, say) is
-	 * logged as it is, even when it starts with the queue table: it is never
-	 * taken for the queue table alone.
+	 * @return array<string, array{0: string, 1: int, 2: string}>
 	 */
-	public function test_a_list_that_can_not_be_read_is_logged_whole(): void {
+	public static function unreadable_statements(): array {
+		return [
+			'a comment in the list'         => [ 'DROP TABLE wp_hellolog_queue /* old */, wp_users', 7101, 'wp_hellolog_queue' ],
+			'a comment before the keyword'  => [ 'DROP /* comment */ TABLE wp_users', 7101, 'wp_users' ],
+			'a comment before a queue drop' => [ 'DROP /* x */ TABLE IF EXISTS wp_hellolog_queue', 7101, 'wp_hellolog_queue' ],
+			'create or replace'             => [ 'CREATE OR REPLACE TABLE wp_shop ( id BIGINT )', 7100, 'wp_shop' ],
+		];
+	}
+
+	/**
+	 * A statement that starts like a table statement but can not be read to
+	 * its end is logged once, as it is, with no exemption: it is never taken
+	 * for the queue table alone.
+	 *
+	 * @dataProvider unreadable_statements
+	 *
+	 * @param string $query The statement.
+	 * @param int    $code  The event it must leave.
+	 * @param string $name  The table it is logged under: the first one it names.
+	 */
+	public function test_a_statement_that_can_not_be_read_is_logged_as_it_is( string $query, int $code, string $name ): void {
 		$recorder = $this->recorder();
-		( new DatabaseSensor( $recorder ) )->on_query( 'DROP TABLE wp_hellolog_queue /* old */, wp_users' );
+		( new DatabaseSensor( $recorder ) )->on_query( $query );
+
+		$this->assertSame( [ $code ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( $name, $recorder->calls[0][1]['name'] );
+		$this->assertSame( $query, $recorder->calls[0][1]['metadata']['query'] );
+	}
+
+	/**
+	 * Not even while a network site is set up or deleted.
+	 */
+	public function test_a_statement_that_can_not_be_read_is_logged_in_a_site_action_too(): void {
+		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
+		WpState::$doing_action = 'wp_uninitialize_site';
+		$recorder              = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( 'DROP /* x */ TABLE wp_users' );
 
 		$this->assertSame( [ 7101 ], array_column( $recorder->calls, 0 ) );
-		$this->assertSame( 'DROP TABLE wp_hellolog_queue /* old */, wp_users', $recorder->calls[0][1]['metadata']['query'] );
 	}
 
 	public function test_a_qualified_quoted_table_is_named_by_database_and_table(): void {
@@ -185,16 +218,21 @@ final class DatabaseSensorTest extends TestCase {
 
 	/**
 	 * Statements that only look alike leave no event: a temporary table never
-	 * outlives its connection (dropping one never drops a stored table), and
-	 * a tablespace is not a table.
+	 * outlives its connection (creating one changes no stored table, dropping
+	 * one never drops a stored table), and a tablespace, an index or a view
+	 * is not a table.
 	 *
 	 * @return array<string, array{0: string}>
 	 */
 	public static function not_table_statements(): array {
 		return [
 			'temporary drop'    => [ 'DROP TEMPORARY TABLE IF EXISTS wp_users' ],
+			'temporary drops'   => [ 'drop temporary tables wp_tmp_a, wp_tmp_b' ],
+			'temporary create'  => [ 'CREATE TEMPORARY TABLE wp_tmp ( id BIGINT )' ],
 			'tablespace create' => [ "CREATE TABLESPACE ts1 ADD DATAFILE 'ts1.ibd'" ],
 			'tablespace drop'   => [ 'DROP TABLESPACE ts1' ],
+			'index create'      => [ 'CREATE INDEX wp_table_idx ON wp_shop ( id )' ],
+			'view drop'         => [ 'DROP VIEW wp_shop_view' ],
 			'a select'          => [ 'SELECT * FROM wp_users' ],
 		];
 	}

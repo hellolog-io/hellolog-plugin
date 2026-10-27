@@ -22,10 +22,13 @@ defined( 'ABSPATH' ) || exit;
  * is covered here. Migration tools running outside the WP request are
  * not (run an ops-side migration audit instead).
  *
- * A `DROP TABLE` can name several tables; each one is logged as its own
- * event. A list that can not be read to its end (a comment in it, say) is
- * logged once, as it is. A temporary table never outlives its connection
- * and is not logged.
+ * A `DROP TABLE` (or `DROP TABLES`) can name several tables; each one is
+ * logged as its own event. A temporary table never outlives its connection,
+ * so creating or dropping one changes no stored table and is not logged.
+ * The sensor fails closed: a statement that starts with `CREATE` or `DROP`
+ * and has the word `TABLE` or `TABLES` in it, but can not be read to its end
+ * (a comment in it, say), is logged once, as it is, under the first name
+ * after that word, and none of the exemptions below apply to it.
  *
  * helloLOG creating or dropping its own queue table (on activation, for a
  * new site, on a site's first event; on uninstall, with a deleted site) is
@@ -68,39 +71,56 @@ final class DatabaseSensor extends AbstractSensor {
 			return $query;
 		}
 
-		if ( 1 === preg_match( '/^CREATE\s+TABLE\b\s*(?:IF\s+NOT\s+EXISTS\b\s*)?/i', $trimmed, $m ) ) {
-			$code  = 7100;
-			$names = self::table_names( substr( $trimmed, strlen( $m[0] ) ), false );
-		} elseif ( 1 === preg_match( '/^DROP\s+TABLE\b\s*(?:IF\s+EXISTS\b\s*)?/i', $trimmed, $m ) ) {
-			$code  = 7101;
-			$names = self::table_names( substr( $trimmed, strlen( $m[0] ) ), true );
+		$is_drop = 'DROP' === $head;
+		$pattern = $is_drop
+			? '/^DROP\s+(TEMPORARY\s+)?TABLES?\b\s*(?:IF\s+EXISTS\b\s*)?/i'
+			: '/^CREATE\s+(TEMPORARY\s+)?TABLE\b\s*(?:IF\s+NOT\s+EXISTS\b\s*)?/i';
+		if ( 1 === preg_match( $pattern, $trimmed, $m ) ) {
+			if ( '' !== ( $m[1] ?? '' ) ) {
+				return $query; // A temporary table: never a stored table.
+			}
+			$names = self::table_names( substr( $trimmed, strlen( $m[0] ) ), $is_drop );
+		} elseif ( 1 === preg_match( '/\bTABLES?\b/i', $trimmed ) ) {
+			$names = null; // Reads like a table statement, but not one this sensor can read.
 		} else {
+			return $query; // An index, a view, a tablespace…
+		}
+
+		$code = $is_drop ? 7101 : 7100;
+		if ( null === $names ) {
+			// Fail closed: logged as it is, with no exemption.
+			$this->emit_table( $code, self::name_after_keyword( $trimmed ), $trimmed );
 			return $query;
 		}
 
 		if ( self::in_site_action() ) {
 			return $query;
 		}
-
-		if ( null === $names ) {
-			// Not read to its end: logged as it is, never taken for a queue table.
-			$names = [ self::first_word( substr( $trimmed, strlen( $m[0] ) ) ) ];
-		} else {
-			// A numeric name became an integer key: back to text.
-			$names = array_map( 'strval', array_keys( array_filter( $names, static fn( string $table ): bool => ! self::is_own_queue_table( $table ) ) ) );
-		}
-
-		foreach ( $names as $name ) {
-			$this->emit(
-				$code,
-				[
-					'name'     => $name,
-					'metadata' => [ 'query' => substr( $trimmed, 0, 256 ) ],
-				]
-			);
+		foreach ( $names as $name => $table ) {
+			if ( ! self::is_own_queue_table( $table ) ) {
+				// A numeric name became an integer key: back to text.
+				$this->emit_table( $code, (string) $name, $trimmed );
+			}
 		}
 
 		return $query;
+	}
+
+	/**
+	 * Emit the creation or drop of one table.
+	 *
+	 * @param int    $code      7100 or 7101.
+	 * @param string $name      Table name as logged.
+	 * @param string $statement The statement, shortened in the metadata.
+	 */
+	private function emit_table( int $code, string $name, string $statement ): void {
+		$this->emit(
+			$code,
+			[
+				'name'     => $name,
+				'metadata' => [ 'query' => substr( $statement, 0, 256 ) ],
+			]
+		);
 	}
 
 	/**
@@ -159,13 +179,14 @@ final class DatabaseSensor extends AbstractSensor {
 	}
 
 	/**
-	 * The first word after the keywords, quotes dropped, for a statement
-	 * whose list could not be read.
+	 * For a statement that can not be read: the first name after its first
+	 * `TABLE` or `TABLES` (and `IF [NOT] EXISTS`), quotes dropped; empty when
+	 * there is none.
 	 *
-	 * @param string $rest The statement after its keywords.
+	 * @param string $statement The statement.
 	 */
-	private static function first_word( string $rest ): string {
-		preg_match( '/^[`"\']?([\w\.]+)[`"\']?/', ltrim( $rest ), $matches );
+	private static function name_after_keyword( string $statement ): string {
+		preg_match( '/\bTABLES?\b\s*(?:IF\s+(?:NOT\s+)?EXISTS\b\s*)?[`"\']?([\w\.]+)/i', $statement, $matches );
 		return $matches[1] ?? '';
 	}
 
