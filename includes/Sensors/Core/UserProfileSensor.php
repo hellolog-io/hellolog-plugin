@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Sensors\Core;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
 use Throwable;
@@ -46,7 +47,11 @@ defined( 'ABSPATH' ) || exit;
  * tells the whole change. So a role given or taken on its own (`add_role()`,
  * `remove_role()`) is only noted when it happens; `set_user_role` strikes
  * the notes `set_role()` made, and the rest go out at shutdown, before the
- * request's events are written.
+ * request's events are written (and again, before the final flush, for the
+ * notes later shutdown callbacks made). What an Action Scheduler job noted
+ * goes out when the job ends, while it is still the job's context: the
+ * event then comes from the job, not from whoever loaded the page that
+ * started the queue runner.
  */
 final class UserProfileSensor extends AbstractSensor {
 
@@ -86,10 +91,11 @@ final class UserProfileSensor extends AbstractSensor {
 
 	/**
 	 * Roles given or taken one by one in this request and not yet emitted,
-	 * oldest first. Each note keeps the site it happened on and the user's
-	 * roles before and after, as they were at that moment.
+	 * oldest first. Each note keeps the site it happened on, the user's
+	 * roles before and after, as they were at that moment, and how many
+	 * Action Scheduler jobs were running (see {@see ActionSchedulerContext::depth()}).
 	 *
-	 * @var array<int, array{blog: int, user: int, login: string, added: bool, role: string, old: string, new: string}>
+	 * @var array<int, array{blog: int, user: int, login: string, added: bool, role: string, old: string, new: string, job: int}>
 	 */
 	private static array $pending_roles = [];
 
@@ -108,6 +114,12 @@ final class UserProfileSensor extends AbstractSensor {
 		add_action( 'delete_user', [ $this, 'on_delete' ], 10, 3 );
 		// Before the request's events are written, at priority 1.
 		add_action( 'shutdown', [ $this, 'emit_pending_role_changes' ], 0 );
+		// Notes made by later shutdown callbacks, before the final flush at
+		// PHP_INT_MAX.
+		add_action( 'shutdown', [ $this, 'emit_pending_role_changes' ], PHP_INT_MAX - 1 );
+		// What a job noted, before its context ends at PHP_INT_MAX.
+		add_action( 'action_scheduler_after_execute', [ $this, 'emit_job_role_changes' ], PHP_INT_MAX - 1, 0 );
+		add_action( 'action_scheduler_failed_execution', [ $this, 'emit_job_role_changes' ], PHP_INT_MAX - 1, 0 );
 	}
 
 	public function on_register( int $user_id ): void {
@@ -271,11 +283,41 @@ final class UserProfileSensor extends AbstractSensor {
 
 	/**
 	 * Emit the roles given or taken on their own in this request, each on the
-	 * site it happened on. Runs at shutdown, once.
+	 * site it happened on. Runs at shutdown, twice: what the first run
+	 * emitted is not emitted again.
 	 */
 	public function emit_pending_role_changes(): void {
-		$pending             = self::$pending_roles;
-		self::$pending_roles = [];
+		$this->emit_role_notes( 0 );
+	}
+
+	/**
+	 * Emit the roles given or taken on their own by the Action Scheduler job
+	 * that is ending, while it is still the context. Nothing outside a job.
+	 */
+	public function emit_job_role_changes(): void {
+		$depth = ActionSchedulerContext::depth();
+		if ( $depth > 0 ) {
+			$this->emit_role_notes( $depth );
+		}
+	}
+
+	/**
+	 * Emit the pending notes made while at least `$depth` jobs were running,
+	 * and forget them; the others stay.
+	 *
+	 * @param int $depth Jobs running when the note was made, at least.
+	 */
+	private function emit_role_notes( int $depth ): void {
+		$pending = [];
+		$kept    = [];
+		foreach ( self::$pending_roles as $note ) {
+			if ( $note['job'] >= $depth ) {
+				$pending[] = $note;
+			} else {
+				$kept[] = $note;
+			}
+		}
+		self::$pending_roles = $kept;
 
 		foreach ( $pending as $note ) {
 			try {
@@ -489,6 +531,7 @@ final class UserProfileSensor extends AbstractSensor {
 				'role'  => $role,
 				'old'   => $old,
 				'new'   => $new,
+				'job'   => ActionSchedulerContext::depth(),
 			];
 		} catch ( Throwable $e ) {
 			$this->report_failure(

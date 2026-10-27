@@ -96,4 +96,23 @@ final class ActionSchedulerContextTest extends TestCase {
 		ActionSchedulerContext::end();
 		$this->assertFalse( ActionSchedulerContext::is_running() );
 	}
+
+	/**
+	 * How many jobs run, one inside the other: what a job did can be told
+	 * from what was done around it.
+	 */
+	public function test_the_depth_counts_the_jobs_that_run(): void {
+		$this->assertSame( 0, ActionSchedulerContext::depth() );
+
+		ActionSchedulerContext::begin( 1 );
+		ActionSchedulerContext::begin( 2 );
+		$this->assertSame( 2, ActionSchedulerContext::depth() );
+
+		ActionSchedulerContext::end( 2 );
+		ActionSchedulerContext::end( 2 );
+		$this->assertSame( 1, ActionSchedulerContext::depth() );
+
+		ActionSchedulerContext::end( 1 );
+		$this->assertSame( 0, ActionSchedulerContext::depth() );
+	}
 }

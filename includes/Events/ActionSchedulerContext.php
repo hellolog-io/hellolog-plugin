@@ -94,6 +94,15 @@ final class ActionSchedulerContext {
 	}
 
 	/**
+	 * How many jobs are executing right now, one inside the other; 0 outside
+	 * any job. Something noted at a depth of at least the current one, while
+	 * a job ends, was done by that job.
+	 */
+	public static function depth(): int {
+		return self::$depth;
+	}
+
+	/**
 	 * An action id as text; null when there is none.
 	 *
 	 * @param mixed $action_id What the hook passed.

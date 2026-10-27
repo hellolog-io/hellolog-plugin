@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Sensors\Core;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
@@ -22,6 +23,8 @@ use HelloLog\Sensors\Core\TwoFactorSensor;
 use HelloLog\Sensors\Core\UserProfileSensor;
 use HelloLog\Sensors\Integrations\WooCommerceCustomerSensor;
 use HelloLog\Tests\Events\Fixtures\WpCalls;
+use HelloLog\Tests\Sensors\Core\Fixtures\BuildingRecorder;
+use HelloLog\Tests\Sensors\Core\Fixtures\Hooks;
 use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
 use PHPUnit\Framework\TestCase;
 
@@ -1533,8 +1536,106 @@ final class UserTargetTest extends TestCase {
 		$this->assertSame( 2, WpState::$actions['add_user_role']['accepted_args'] );
 		$this->assertSame( 2, WpState::$actions['remove_user_role']['accepted_args'] );
 		$this->assertSame( 3, WpState::$actions['set_user_role']['accepted_args'] );
-		// Before the buffer is written at priority 1.
-		$this->assertSame( 0, WpState::$actions['shutdown']['priority'] );
+		// Before the buffer is written at priority 1, and again before the
+		// final flush at PHP_INT_MAX for notes made by later callbacks.
+		$this->assertSame( [ 0, PHP_INT_MAX - 1 ], array_column( WpState::$callbacks['shutdown'], 'priority' ) );
+		// When a job ends, before its context closes at PHP_INT_MAX.
+		foreach ( [ 'action_scheduler_after_execute', 'action_scheduler_failed_execution' ] as $hook ) {
+			$this->assertSame(
+				[
+					'priority'      => PHP_INT_MAX - 1,
+					'accepted_args' => 0,
+				],
+				WpState::$actions[ $hook ],
+				$hook
+			);
+		}
+	}
+
+	/**
+	 * A role a shutdown callback gives (after the first emission) still goes
+	 * out, before the final flush.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_given_by_a_later_shutdown_callback_still_goes_out(): void {
+		$this->wp_user( 7, 'bob', [ 'administrator', 'subscriber' ] );
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->boot();
+		add_action( 'shutdown', static fn() => $sensor->on_role_added( 7, 'administrator' ), 5 );
+
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 4002 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'administrator, subscriber', $recorder->calls[0][1]['changes'][0]['new'] );
+	}
+
+	/**
+	 * @return array<string, array{0: string}>
+	 */
+	public static function job_ends(): array {
+		return [
+			'a job that succeeds' => [ 'action_scheduler_after_execute' ],
+			'a job that fails'    => [ 'action_scheduler_failed_execution' ],
+		];
+	}
+
+	/**
+	 * A role an Action Scheduler job gives on its own goes out when the job
+	 * ends, while the job is still the context: the event comes from the job
+	 * and keeps who set it in motion, instead of reading as the doing of
+	 * whoever loaded the page that started the queue runner.
+	 *
+	 * @dataProvider job_ends
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 *
+	 * @param string $end The hook that ends the job.
+	 */
+	public function test_a_role_a_job_gives_goes_out_when_the_job_ends_as_the_job( string $end ): void {
+		$this->wp_user( 7, 'bob', [ 'administrator', 'subscriber' ] );
+		$recorder = new BuildingRecorder();
+		ActionSchedulerContext::register();
+		$sensor = new UserProfileSensor( $recorder );
+		$sensor->boot();
+
+		Hooks::fire( 'action_scheduler_begin_execute', 41, 'WP Cron' );
+		$sensor->on_role_added( 7, 'administrator' );
+		Hooks::fire( $end, 41, 'action_scheduler_failed_execution' === $end ? new \RuntimeException( 'failed' ) : null, 'WP Cron' );
+
+		$this->assertSame( [ 4002 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertSame( 'action-scheduler', $recorder->payloads[0]['source'] );
+		$this->assertSame( 'admin', $recorder->payloads[0]['metadata']['initiated_by'] );
+		$this->assertArrayNotHasKey( 'user', $recorder->payloads[0] );
+
+		Hooks::fire( 'shutdown' );
+		$this->assertCount( 1, $recorder->payloads, 'Not again at shutdown.' );
+	}
+
+	/**
+	 * Only what the job did goes out when it ends: a role given before the
+	 * job began waits for shutdown, outside the job.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_given_before_a_job_waits_for_shutdown(): void {
+		$this->wp_user( 7, 'bob', [ 'administrator', 'subscriber' ] );
+		$recorder = new BuildingRecorder();
+		ActionSchedulerContext::register();
+		$sensor = new UserProfileSensor( $recorder );
+		$sensor->boot();
+
+		$sensor->on_role_added( 7, 'administrator' );
+		Hooks::fire( 'action_scheduler_begin_execute', 41, 'WP Cron' );
+		Hooks::fire( 'action_scheduler_after_execute', 41, null, 'WP Cron' );
+		$this->assertSame( [], $recorder->payloads );
+
+		Hooks::fire( 'shutdown' );
+		$this->assertSame( [ 4002 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertNotSame( 'action-scheduler', $recorder->payloads[0]['source'] );
 	}
 
 	// ---- profile fields kept in user meta -----------------------------------
