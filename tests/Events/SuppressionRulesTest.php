@@ -1744,4 +1744,148 @@ final class SuppressionRulesTest extends TestCase {
 			)
 		);
 	}
+
+	// ---- products ------------------------------------------------------
+
+	/**
+	 * @return array{type: string, id: string}
+	 */
+	private static function product( int $id ): array {
+		return [
+			'type' => 'product',
+			'id'   => (string) $id,
+		];
+	}
+
+	/**
+	 * A product edit (9001) says nothing next to the product's creation or
+	 * its permanent delete in the same request: a creation tells no changes,
+	 * and the edits of a deleted product do not matter.
+	 */
+	public function test_defaults_drop_product_edits_under_creation_and_delete(): void {
+		$rules = SuppressionRules::defaults();
+		$edit  = [ self::change( 'regular_price', '1000', '1200' ) ];
+
+		foreach ( [ 9000, 9002 ] as $winner ) {
+			$result = $rules->apply(
+				[
+					self::event( 9001, self::product( 5 ), $edit ),
+					self::event( $winner, self::product( 5 ) ),
+					self::event( 9001, self::product( 6 ), $edit ),
+				]
+			);
+			$this->assertSame( [ $winner, 9001 ], self::codes( $result ), "9001 yields to $winner on the same product only" );
+			$this->assertArrayNotHasKey( 'changes', $result[0], "9001 is dropped under $winner, not folded" );
+		}
+	}
+
+	/**
+	 * A product edit goes into the trash, restore or revert of its product in
+	 * the same request, without the status: the event says that itself.
+	 */
+	public function test_defaults_fold_product_edits_into_trash_restore_and_revert_without_the_status(): void {
+		$rules = SuppressionRules::defaults();
+
+		foreach ( [ 2003, 2004, 2013 ] as $code ) {
+			$result = $rules->apply(
+				[
+					self::event(
+						9001,
+						self::product( 5 ),
+						[
+							self::change( 'status', 'publish', 'trash' ),
+							self::change( 'regular_price', '1000', '1200' ),
+						]
+					),
+					self::event( $code, self::product( 5 ) ),
+					self::event( 9001, self::product( 6 ), [ self::change( 'status', 'publish', 'draft' ) ] ),
+				]
+			);
+			$this->assertSame( [ $code, 9001 ], self::codes( $result ), "9001 goes into $code on the same product only" );
+			$this->assertSame( [ self::change( 'regular_price', '1000', '1200' ) ], $result[0]['changes'], "$code carries the edit but not the status" );
+			$this->assertSame( [ self::change( 'status', 'publish', 'draft' ) ], $result[1]['changes'], 'an edit that is not folded keeps its status' );
+		}
+
+		$status_only = $rules->apply(
+			[
+				self::event( 9001, self::product( 5 ), [ self::change( 'status', 'publish', 'trash' ) ] ),
+				self::event( 2003, self::product( 5 ) ),
+			]
+		);
+		$this->assertSame( [ 2003 ], self::codes( $status_only ) );
+		$this->assertArrayNotHasKey( 'changes', $status_only[0] );
+	}
+
+	/**
+	 * The edits of a product in one request (core's write of the post, the
+	 * shop's saves) are one event; an edit that changed nothing is none.
+	 */
+	public function test_defaults_merge_product_edits_and_drop_empty_ones(): void {
+		$rules = SuppressionRules::defaults();
+
+		$merged = $rules->apply(
+			[
+				self::event( 9001, self::product( 5 ), [ self::change( 'name', 'Mug', 'Big mug' ) ] ),
+				self::event( 9001, self::product( 5 ), [] ),
+				self::event( 9001, self::product( 5 ), [ self::change( 'regular_price', '10', '12' ) ] ),
+			]
+		);
+		$this->assertSame( [ 9001 ], self::codes( $merged ) );
+		$this->assertSame( [ 'name', 'regular_price' ], array_column( $merged[0]['changes'], 'field' ) );
+
+		$this->assertSame( [], $rules->apply( [ self::event( 9001, self::product( 5 ), [] ) ] ) );
+	}
+
+	/**
+	 * A suppressed payload can leave fields out of what it folds: the event
+	 * it folds into tells them itself. Its own changes stay whole.
+	 */
+	public function test_a_fold_leaves_out_the_fields_listed_for_the_folded_code(): void {
+		$rules = new SuppressionRules( [ 9001 => [ 2003 ] ], [], [], [], [ 9001 => [ 2003 ] ], [ 9001 => [ 'status' ] ] );
+
+		$result = $rules->apply(
+			[
+				self::event(
+					9001,
+					self::product( 5 ),
+					[
+						self::change( 'status', 'publish', 'trash' ),
+						self::change( 'sku', 'A', 'B' ),
+					]
+				),
+				self::event( 2003, self::product( 5 ), [ self::change( 'status', 'draft', 'trash' ) ] ),
+			]
+		);
+
+		$this->assertSame( [ 2003 ], self::codes( $result ) );
+		$this->assertSame(
+			[
+				self::change( 'sku', 'A', 'B' ),
+				self::change( 'status', 'draft', 'trash' ),
+			],
+			$result[0]['changes']
+		);
+	}
+
+	public function test_with_unions_the_fields_a_fold_leaves_out(): void {
+		$base  = new SuppressionRules( [ 9001 => [ 2003 ] ], [], [], [], [ 9001 => [ 2003 ] ], [ 9001 => [ 'status' ] ] );
+		$other = new SuppressionRules( [], [], [], [], [], [ 9001 => [ 'slug' ] ] );
+
+		$result = $base->with( $other )->apply(
+			[
+				self::event(
+					9001,
+					self::product( 5 ),
+					[
+						self::change( 'status', 'publish', 'trash' ),
+						self::change( 'slug', 'mug', 'cup' ),
+						self::change( 'sku', 'A', 'B' ),
+					]
+				),
+				self::event( 2003, self::product( 5 ) ),
+			]
+		);
+
+		$this->assertSame( [ self::change( 'sku', 'A', 'B' ) ], $result[0]['changes'] );
+	}
 }

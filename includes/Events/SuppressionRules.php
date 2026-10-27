@@ -30,7 +30,9 @@ defined( 'ABSPATH' ) || exit;
  *    A dropped payload of a fold code hands its changes to a surviving
  *    payload on the same target of one of the codes listed for it (the last
  *    one before it, else the first one after it), folded in time order;
- *    without such a payload it is just dropped.
+ *    without such a payload it is just dropped. Fields listed for its code
+ *    (ones the event it folds into tells itself) stay out of what it hands
+ *    over.
  * 2. Merge. Payloads of a merge code on the same target become one, at the
  *    position of the first, with their changes folded together.
  * 3. Drop empty. A payload of a drop-empty code that has no changes left is
@@ -111,6 +113,14 @@ final class SuppressionRules {
 	private array $fold = [];
 
 	/**
+	 * Code => fields a suppressed payload of that code leaves out of the
+	 * changes it folds.
+	 *
+	 * @var array<int, array<int, string>>
+	 */
+	private array $fold_without = [];
+
+	/**
 	 * @param array<int, array<int, int>>         $suppress   Code => codes; the key code is dropped when any listed
 	 *                                                        code exists for the same target.
 	 * @param array<int, int>                     $merge      Codes whose payloads on one target are folded into one.
@@ -120,8 +130,11 @@ final class SuppressionRules {
 	 * @param array<int, array<int, int>>         $fold       Code => codes; a suppressed payload of the key code
 	 *                                                        folds its changes into a surviving payload of a listed
 	 *                                                        code on the same target instead of losing them.
+	 * @param array<int, array<int, string>>      $fold_without Code => fields; a suppressed payload of the key code
+	 *                                                        folds its changes without these fields, which the
+	 *                                                        event it folds into tells itself.
 	 */
-	public function __construct( array $suppress = [], array $merge = [], array $drop_empty = [], array $conditions = [], array $fold = [] ) {
+	public function __construct( array $suppress = [], array $merge = [], array $drop_empty = [], array $conditions = [], array $fold = [], array $fold_without = [] ) {
 		foreach ( $suppress as $code => $others ) {
 			$this->suppress[ (int) $code ] = self::codes( (array) $others );
 		}
@@ -132,6 +145,9 @@ final class SuppressionRules {
 		}
 		foreach ( $fold as $code => $into ) {
 			$this->fold[ (int) $code ] = self::codes( (array) $into );
+		}
+		foreach ( $fold_without as $code => $fields ) {
+			$this->fold_without[ (int) $code ] = self::fields( (array) $fields );
 		}
 	}
 
@@ -171,14 +187,21 @@ final class SuppressionRules {
 
 				// A status change out of the trash is the restore.
 				9101 => [ 9110 ],
+
+				// A product edit says nothing of its own next to the product's
+				// creation (it tells no changes) or permanent delete, and goes
+				// into its trash, restore or revert (see the folds below).
+				9001 => [ 9000, 9002, 2003, 2004, 2013 ],
 			],
 			// Role changes are not merged: folding two of them would keep the
 			// message of the first and understate the final privilege. A
-			// restore can arrive from up to three hooks of one request.
-			[ 2006, 4001, 2121, 2401, 2011, 9105, 9110 ],
+			// restore can arrive from up to three hooks of one request. A
+			// product edit can arrive from WordPress's write of the post, its
+			// terms, its status change and two saves of the shop.
+			[ 2006, 4001, 2121, 2401, 2011, 9105, 9110, 9001 ],
 			// A menu save without changes of its own stays: it saved the
 			// menu's items.
-			[ 2006, 4001, 2121, 2011, 9105 ],
+			[ 2006, 4001, 2121, 2011, 9105, 9001 ],
 			[
 				// Only the note that is nothing but WooCommerce's sentence about the
 				// status change repeats it, whoever it is filed under. Everything
@@ -221,6 +244,15 @@ final class SuppressionRules {
 				// Only under the creation alone it is dropped: a creation tells
 				// no changes.
 				9105 => [ 9101, 9110, 9109, 9102 ],
+
+				// A product edit made in the request that trashes, restores or
+				// reverts the product goes into that event.
+				9001 => [ 2003, 2004, 2013 ],
+			],
+			[
+				// A product edit folded into the trash, restore or revert of its
+				// product leaves its status out: that event says it.
+				9001 => [ 'status' ],
 			]
 		);
 	}
@@ -255,12 +287,18 @@ final class SuppressionRules {
 			$fold[ $code ] = array_merge( $fold[ $code ] ?? [], $codes );
 		}
 
+		$fold_without = $this->fold_without;
+		foreach ( $other->fold_without as $code => $fields ) {
+			$fold_without[ $code ] = array_merge( $fold_without[ $code ] ?? [], $fields );
+		}
+
 		return new self(
 			$suppress,
 			array_merge( $this->merge, $other->merge ),
 			array_merge( $this->drop_empty, $other->drop_empty ),
 			$conditions,
-			$fold
+			$fold,
+			$fold_without
 		);
 	}
 
@@ -296,7 +334,8 @@ final class SuppressionRules {
 	 * changes of that payload and of everything folded into it are folded
 	 * in dispatch order (earliest `old`, latest `new`, a field back where it
 	 * started is dropped) and clamped to the wire limits; its
-	 * `metadata.changed`, when it has one, follows them.
+	 * `metadata.changed`, when it has one, follows them. A folded payload
+	 * hands over its changes without the fields listed for its code.
 	 *
 	 * @param array<int, array<string, mixed>> $payloads   Payloads, as a list.
 	 * @param array<int, bool>                 $suppressed Index => whether the payload is suppressed.
@@ -324,7 +363,11 @@ final class SuppressionRules {
 
 			$changes = [];
 			foreach ( $order as $index ) {
-				$changes = ChangeSet::merge( $changes, self::changes_of( $payloads[ $index ] ) );
+				$items = self::changes_of( $payloads[ $index ] );
+				if ( $index !== $target ) {
+					$items = $this->foldable( $payloads[ $index ], $items );
+				}
+				$changes = ChangeSet::merge( $changes, $items );
 			}
 			$changes = self::clamp_changes( $changes );
 
@@ -337,6 +380,29 @@ final class SuppressionRules {
 		}
 
 		return $payloads;
+	}
+
+	/**
+	 * The changes a suppressed payload hands over when it folds: all but the
+	 * fields listed for its code.
+	 *
+	 * @param array<string, mixed>                                         $payload The folded payload.
+	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes Its changes.
+	 *
+	 * @return array<int, array{field: string, old: ?string, new: ?string}>
+	 */
+	private function foldable( array $payload, array $changes ): array {
+		$without = $this->fold_without[ self::code_of( $payload ) ] ?? [];
+		if ( [] === $without ) {
+			return $changes;
+		}
+
+		return array_values(
+			array_filter(
+				$changes,
+				static fn( $item ): bool => ! is_array( $item ) || ! in_array( (string) ( $item['field'] ?? '' ), $without, true )
+			)
+		);
 	}
 
 	/**
@@ -684,6 +750,17 @@ final class SuppressionRules {
 		}
 
 		return mb_substr( $text, 0, $max - 1, 'UTF-8' ) . self::ELLIPSIS;
+	}
+
+	/**
+	 * Field names as a de-duplicated list of strings.
+	 *
+	 * @param array<int|string, mixed> $fields Field names.
+	 *
+	 * @return array<int, string>
+	 */
+	private static function fields( array $fields ): array {
+		return array_values( array_unique( array_map( 'strval', array_filter( $fields, 'is_scalar' ) ) ) );
 	}
 
 	/**
