@@ -44,13 +44,13 @@ queue.
 * Multisite: sites, super admin grants, network settings
 * helloLOG itself: changes to its own settings (the API key, never its value;
   IP anonymization; sensors turned on or off) and its deactivation
-* WooCommerce: orders (edits, items, refunds, notes, trash, restore,
-  deletion), products and variations (field changes, stock), coupons,
-  payment gateway settings and bank accounts, tax rates, shipping methods,
-  webhooks, attributes
-* Integrations: WooCommerce, Gravity Forms, WPForms, Yoast SEO, RankMath, ACF,
-  bbPress, LearnDash, MemberPress, Paid Memberships Pro, TablePress,
-  Redirection, MainWP, and more
+* WooCommerce: orders (creation, edits, items, refunds, notes, trash,
+  restore, deletion), products and variations (creation, field changes,
+  stock), coupons, payment gateway settings and bank accounts, tax rates,
+  shipping methods (those of a deleted zone included), webhooks, attributes
+* Integrations: Gravity Forms, WPForms, Yoast SEO, RankMath, ACF, bbPress,
+  LearnDash, MemberPress, Paid Memberships Pro, TablePress, Redirection,
+  MainWP, and more
 
 Sensors lazy-load — an integration's hooks only register when the integration
 is actually active on the site.
@@ -98,7 +98,9 @@ This version requires the HelloLog service release from October 2026 or later.
   the order's own history, with HPOS or with orders kept as posts. Edits of
   the same request are listed on that event.
 * New: A new order records its total, currency, payment method and where it
-  was created.
+  was created, as they stand once the request or background task that
+  created it ends, so an order created through the REST API or by a
+  subscription renewal records its calculated total.
 * New: Order items added (with the quantity for a product), changed (name,
   quantity, amounts) and removed are logged on the order. Items of refunds
   and of orders still being created are not listed; a retried checkout does
@@ -109,13 +111,15 @@ This version requires the HelloLog service release from October 2026 or later.
   gateway returned the money.
 * New: Product and variation edits list what changed (name, status, slug,
   SKU, prices and sale dates, stock, visibility, tax, weight and dimensions,
-  shipping class, categories, tags, images, purchase note), the classic
-  product screen and the product image included. Descriptions are reported
-  as changed, without their text.
+  shipping class, categories, tags, images), the classic product screen and
+  the product image included. Descriptions and the purchase note are
+  reported as changed, without their text.
 * New: Product events name the product (each variation as its own); trash,
   restore and revert land on the same history with the edits of the same
   request. A variable product's trash, restore or delete is one event, not
-  one per variation. A variation deleted on its own is logged.
+  one per variation. A variation added to a product is logged as created,
+  unless the product is created in the same request; a variation deleted on
+  its own is logged.
 * New: Stock reduced by an order is a new event, with the order. Stock
   written without a product save (restocks, order item edits, bulk and
   quick edit) is logged as a stock quantity change.
@@ -134,9 +138,9 @@ This version requires the HelloLog service release from October 2026 or later.
   account are logged.
 * New: Tax rates, webhooks and product attributes are logged when added,
   changed or deleted, and shipping methods when added to a zone, removed
-  from it, or turned on or off, by the new `woocommerce-config` sensor (on
-  by default). Webhook events show only the host of the delivery URL and
-  never the secret.
+  from it (deleting a zone logs each of its methods as removed), or turned
+  on or off, by the new `woocommerce-config` sensor (on by default). Webhook
+  events show only the host of the delivery URL and never the secret.
 * Change: Customer personal details on orders (billing and shipping names,
   company, addresses, e-mail address, phone, customer note) and a coupon's
   allowed e-mail addresses are logged as changed; their values are never
@@ -160,7 +164,9 @@ This version requires the HelloLog service release from October 2026 or later.
   that only touches its postcodes or cities is not logged (WooCommerce
   reports none). A payment gateway's settings saved for the very first time
   before WooCommerce has loaded its payment gateways (from WP-CLI, for
-  instance) are not logged.
+  instance) are not logged. Shipping zones themselves (adding, renaming or
+  deleting a zone, changing its regions) are not logged; only their shipping
+  methods are.
 
 = 0.6.0 =
 * New: Post events also compare the status, the terms, the sticky flag, the

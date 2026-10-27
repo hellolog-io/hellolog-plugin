@@ -44,10 +44,14 @@ defined( 'ABSPATH' ) || exit;
  * changed (9105), read from the order before WooCommerce writes it; the
  * customer's details among them ({@see self::CONTENT_FIELDS}) without their
  * values. A save of an order that is still being created tells nothing (its
- * creation is 9100). No event sends the customer's contact details. A
- * status change carries the status as a change, and a status
- * change out of the trash is also a restore (9110), as are WooCommerce's
- * own restore and WordPress's restore of an order stored as a post.
+ * creation is 9100). No event sends the values of the customer's address
+ * fields or note, and a new order sends none of them; the text of a note,
+ * the reason of a refund and the name of an item are sent as written (a
+ * note's secrets masked, see {@see self::note_text()}), so a contact detail
+ * typed into one of them is sent too. A status change carries the status
+ * as a change, and a status change out of the trash is also a restore
+ * (9110), as are WooCommerce's own restore and WordPress's restore of an
+ * order stored as a post.
  *
  * Every handler runs inside WooCommerce's work on the order (an exception in
  * the hook before a save aborts the write of the order), so whatever fails
@@ -84,7 +88,9 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * details: every field of the billing and shipping addresses (names,
 	 * company, address, postcode, country, e-mail, phone, and whatever else a
 	 * shop keeps there) and the customer's note. They are told as changed,
-	 * never with their values, so no contact detail leaves the site.
+	 * never with their values, so the values of these fields never leave the
+	 * site. Texts the order holds elsewhere (a note, a refund's reason, an
+	 * item's name) are sent as written.
 	 *
 	 * @var array<int, string>
 	 */

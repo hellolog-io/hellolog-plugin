@@ -42,14 +42,17 @@ in `CHANGELOG.md` for the rationale.
 | Range | Area |
 |---|---|
 | 1000–1099 | Auth (login / logout / failed / password reset) |
-| 2000–2499 | Content, taxonomies, comments, menus, widgets |
+| 2000–2499 | Content, media library, taxonomies, comments, menus, widgets |
 | 4000–4599 | User profile / role, multisite, 2FA, app passwords |
-| 5000–5599 | Plugins, themes, Redirection, TablePress, PMP, ACF |
+| 5000–5599 | Plugins, themes, Redirection, TablePress, ACF, PMP |
 | 5700–5899 | Form plugins (Gravity, WPForms, CF7, Fluent) |
 | 6000–6499 | Settings / system / files / 404 / REST / XML-RPC |
+| 6500–6599 | MemberPress |
+| 6600 | helloLOG's own settings |
 | 7100–7799 | Database DDL + MainWP |
 | 8000–8999 | bbPress, LearnDash, SEO (Yoast, RankMath), EDD, Termly |
-| 9000–9499 | WooCommerce (products, orders, coupons, customers, settings) |
+| 9000–9499 | WooCommerce (products, orders, coupons, customers, settings, payment gateways and bank accounts, tax rates, shipping methods, webhooks, attributes) |
+| 9500–9999 | LW plugins (lw-firewall, lw-seo, lw-disable, lw-cookie, lw-zenadmin) |
 
 Each integration sensor is lazy-loaded — a sensor only attaches its
 hooks when the underlying plugin is active, and you can disable any

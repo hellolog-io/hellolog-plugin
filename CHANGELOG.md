@@ -17,7 +17,10 @@
   event.
 - A new order records its total and currency, the payment method, and where
   it was created (checkout, the admin screen, the REST API and so on), as
-  WooCommerce records it.
+  WooCommerce records it once the request or background task that created
+  the order ends: an order created through the REST API or by a
+  subscription renewal records its calculated total, not the zero
+  WooCommerce announces it with.
 - Order items are logged on the order: an item added (with the quantity for
   a product), an item changed (its name, quantity, subtotal, total or total
   tax; one event per item) and an item removed. Items of refunds and of
@@ -36,17 +39,21 @@
   status, backorders and the low stock amount; the catalog visibility, the
   featured flag, the tax status and the tax class; the weight and the
   dimensions; the shipping class, the categories and tags, the product image
-  and the gallery images (by name); virtual, downloadable and the purchase
-  note. The short description and the description are reported as changed,
-  without their text. Edits made on the classic product screen are included:
-  a rename, publishing or unpublishing, the slug, the descriptions, the
-  categories and tags, and the product image.
+  and the gallery images (by name); virtual and downloadable. The short
+  description, the description and the purchase note (shown only to the
+  product's buyers, often with download or access details) are reported as
+  changed, without their text. Edits made on the classic product screen are
+  included: a rename, publishing or unpublishing, the slug, the
+  descriptions, the categories and tags, and the product image.
 - Product events name the product as their target (each variation as its
   own) and link to the product's edit screen. Moving a product to the
   trash, restoring it and reverting it to auto-draft are recorded on the
   same history and list the edits saved in the same request. Trashing,
   restoring or deleting a variable product is one event for the product,
-  not one per variation. A variation deleted for good on its own is logged.
+  not one per variation. A variation added to a product (with the "Add
+  variation" button, generated from the attributes, through the REST API or
+  an import) is logged as created, unless the product itself is created in
+  the same request. A variation deleted for good on its own is logged.
 - Stock reduced by an order is a new event on the product whose stock moved,
   with the order it belongs to. Stock written without a product save (the
   restock of a cancelled or failed order or of a refund, an item edited on
@@ -83,7 +90,8 @@
   rate as it is after the change and which of its columns were written;
   WooCommerce does not pass the earlier values.
 - Shipping methods added to a shipping zone, removed from it, and turned on
-  or off are logged, named by the method's type and the zone.
+  or off are logged, named by the method's type and the zone. Deleting a
+  zone logs each of its methods as removed from it.
 - Webhooks created, changed and deleted are logged as high-severity events.
   A created or deleted webhook is recorded with its name, topic, status and
   the host of its delivery URL; a change lists which of the name, status,
@@ -142,6 +150,9 @@
 - A payment gateway's settings saved for the very first time before
   WooCommerce has loaded its payment gateways (from WP-CLI, for instance)
   are not logged; later changes are.
+- Shipping zones themselves are not logged: adding a zone, renaming it,
+  changing its regions or deleting it. Their shipping methods are, those of
+  a deleted zone included.
 
 ## [0.6.0] - 2026-10-27
 
