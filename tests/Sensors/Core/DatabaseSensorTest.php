@@ -115,6 +115,103 @@ final class DatabaseSensorTest extends TestCase {
 	}
 
 	/**
+	 * @return array<string, array{0: string, 1: array<int, string>}>
+	 */
+	public static function table_lists(): array {
+		return [
+			'queue table and a core table'      => [ 'DROP TABLE wp_hellolog_queue, wp_users', [ 'wp_users' ] ],
+			'if exists, core table second'      => [ 'DROP TABLE IF EXISTS wp_hellolog_queue, wp_options', [ 'wp_options' ] ],
+			'core table first'                  => [ 'DROP TABLE wp_users,wp_3_hellolog_queue', [ 'wp_users' ] ],
+			'two other tables'                  => [ 'DROP TABLE wp_shop_orders, wp_shop_items', [ 'wp_shop_orders', 'wp_shop_items' ] ],
+			'quoted, qualified, cascade, ;'     => [ 'DROP TABLE `wordpress`.`wp_hellolog_queue` , `wordpress`.`wp_users` CASCADE;', [ 'wordpress.wp_users' ] ],
+			'restrict'                          => [ 'drop table if exists wp_a, wp_b restrict', [ 'wp_a', 'wp_b' ] ],
+			'a comma inside a quoted name'      => [ 'DROP TABLE `wp_hellolog_queue`, `odd,name`', [ 'odd,name' ] ],
+			'a dot inside a quoted name'        => [ 'DROP TABLE `old.wp_hellolog_queue`', [ 'old.wp_hellolog_queue' ] ],
+			'a name of digits'                  => [ 'DROP TABLE `2024`', [ '2024' ] ],
+			'line breaks between the keywords'  => [ "DROP\n\tTABLE\n  wp_users", [ 'wp_users' ] ],
+		];
+	}
+
+	/**
+	 * A statement can drop several tables: every one that is not the queue
+	 * table is logged, each as its own event, whatever its place in the list.
+	 *
+	 * @dataProvider table_lists
+	 *
+	 * @param string             $query  The statement.
+	 * @param array<int, string> $tables The tables that must be logged, in order.
+	 */
+	public function test_every_dropped_table_but_the_queue_table_is_logged( string $query, array $tables ): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( $query );
+
+		$this->assertSame( array_fill( 0, count( $tables ), 7101 ), array_column( $recorder->calls, 0 ) );
+		$this->assertSame( $tables, array_column( array_column( $recorder->calls, 1 ), 'name' ) );
+		foreach ( $recorder->calls as [ , $fields ] ) {
+			$this->assertSame( ltrim( $query ), $fields['metadata']['query'] );
+		}
+	}
+
+	public function test_dropping_only_queue_tables_is_not_logged(): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( 'DROP TABLE IF EXISTS `wp_hellolog_queue`, wp_2_hellolog_queue;' );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * A list the sensor can not read to the end (a comment in it, say) is
+	 * logged as it is, even when it starts with the queue table: it is never
+	 * taken for the queue table alone.
+	 */
+	public function test_a_list_that_can_not_be_read_is_logged_whole(): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( 'DROP TABLE wp_hellolog_queue /* old */, wp_users' );
+
+		$this->assertSame( [ 7101 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'DROP TABLE wp_hellolog_queue /* old */, wp_users', $recorder->calls[0][1]['metadata']['query'] );
+	}
+
+	public function test_a_qualified_quoted_table_is_named_by_database_and_table(): void {
+		$recorder = $this->recorder();
+		$sensor   = new DatabaseSensor( $recorder );
+
+		$sensor->on_query( 'CREATE TABLE `wordpress`.`wp_3_hellolog_queue` ( id BIGINT )' );
+		$sensor->on_query( "CREATE TABLE IF NOT EXISTS `wordpress`.`wp_shop`(\n id BIGINT )" );
+
+		$this->assertSame( [ 7100 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'wordpress.wp_shop', $recorder->calls[0][1]['name'] );
+	}
+
+	/**
+	 * Statements that only look alike leave no event: a temporary table never
+	 * outlives its connection (dropping one never drops a stored table), and
+	 * a tablespace is not a table.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function not_table_statements(): array {
+		return [
+			'temporary drop'    => [ 'DROP TEMPORARY TABLE IF EXISTS wp_users' ],
+			'tablespace create' => [ "CREATE TABLESPACE ts1 ADD DATAFILE 'ts1.ibd'" ],
+			'tablespace drop'   => [ 'DROP TABLESPACE ts1' ],
+			'a select'          => [ 'SELECT * FROM wp_users' ],
+		];
+	}
+
+	/**
+	 * @dataProvider not_table_statements
+	 *
+	 * @param string $query The statement.
+	 */
+	public function test_statements_that_only_look_alike_are_not_logged( string $query ): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( $query );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
 	 * @return array<string, array{0: string, 1: string}>
 	 */
 	public static function site_lifecycle_statements(): array {
