@@ -21,6 +21,9 @@ namespace {
 		/** @var array<int, string> */
 		public static array $successes = [];
 
+		/** @var array<int, array<int, array<string, mixed>>> */
+		public static array $tables = [];
+
 		/**
 		 * @param string $message Message.
 		 * @throws \LogicException Always.
@@ -32,5 +35,21 @@ namespace {
 		public static function success( string $message ): void {
 			self::$successes[] = $message;
 		}
+	}
+}
+
+namespace WP_CLI\Utils {
+
+	use WP_CLI;
+
+	/**
+	 * Keeps the rows of every table printed.
+	 *
+	 * @param string                           $format Output format.
+	 * @param array<int, array<string, mixed>> $items  Rows.
+	 * @param array<int, string>               $fields Columns.
+	 */
+	function format_items( string $format, array $items, array $fields ): void {
+		WP_CLI::$tables[] = $items;
 	}
 }

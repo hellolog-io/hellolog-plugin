@@ -303,7 +303,7 @@ final class Plugin {
 		$this->sensors->register( new PluginsSensor( $this->dispatcher ) );
 		$this->sensors->register( new ThemesSensor( $this->dispatcher ) );
 		$this->sensors->register( new SettingsSensor( $this->dispatcher ) );
-		$this->sensors->register( new SelfAuditSensor( $this->dispatcher, $this->delivery ) );
+		$this->sensors->register( new SelfAuditSensor( $this->dispatcher, $this->delivery, $this->sensors ) );
 		$this->sensors->register( new SystemSensor( $this->dispatcher ) );
 		$this->sensors->register( new FilesSensor( $this->dispatcher ) );
 		$this->sensors->register( new DatabaseSensor( $this->dispatcher ) );

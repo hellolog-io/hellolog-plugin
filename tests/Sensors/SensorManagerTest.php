@@ -58,6 +58,28 @@ final class SensorManagerTest extends TestCase {
 		$this->assertSame( [ 'core-media', 'core-self-audit' ], array_keys( $manager->sensors() ) );
 	}
 
+	public function test_only_flags_of_switchable_registered_sensors_are_kept(): void {
+		$manager = new SensorManager();
+		$manager->register( $this->sensor( 'core-auth' ) );
+		$manager->register( $this->sensor( 'core-media' ) );
+		$manager->register( $this->sensor( 'core-self-audit' ) );
+
+		$this->assertSame(
+			[
+				'core-auth'  => true,
+				'core-media' => false,
+			],
+			$manager->known_flags(
+				[
+					'core-auth'       => true,
+					'junk-1'          => true,
+					'core-media'      => false,
+					'core-self-audit' => true,
+				]
+			)
+		);
+	}
+
 	public function test_the_noisy_sensors_are_off_by_default(): void {
 		$this->assertSame(
 			[

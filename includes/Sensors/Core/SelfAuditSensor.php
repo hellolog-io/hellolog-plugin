@@ -40,7 +40,9 @@ defined( 'ABSPATH' ) || exit;
  *     {@see \HelloLog\Events\ChangeSet::diff()}: sensor keys are identifiers,
  *     and one that reads like a credential (`core-auth`) must not be masked.
  *     A flag for a sensor that can not be turned off changes nothing and is
- *     not reported.
+ *     not reported, and neither is one for a key that is no sensor of the
+ *     plugin: made-up keys must not crowd the real changes out of the event,
+ *     which keeps at most 50.
  *
  *   - the API key no longer verified (`key_verified`, `yes` to `no`): a new
  *     key, a cleared one, a failed connection test. The daily recheck
@@ -92,10 +94,13 @@ final class SelfAuditSensor extends AbstractSensor {
 	 * @param EventDispatcher    $dispatcher Where events are dispatched.
 	 * @param FinalDelivery|null $delivery   Sends events at once, bound to the key the request started with;
 	 *                                       without it every event is only dispatched.
+	 * @param SensorManager|null $sensors    The plugin's sensors: only theirs are reported as switched;
+	 *                                       without it every key is.
 	 */
 	public function __construct(
 		EventDispatcher $dispatcher,
-		private ?FinalDelivery $delivery = null
+		private ?FinalDelivery $delivery = null,
+		private ?SensorManager $sensors = null
 	) {
 		parent::__construct( $dispatcher );
 	}
@@ -148,17 +153,18 @@ final class SelfAuditSensor extends AbstractSensor {
 	 * empty for any other option and for a write that changes nothing. See
 	 * the class description for each setting.
 	 *
-	 * @param string $option Option name.
-	 * @param mixed  $old    Value before the write; null when there was none.
-	 * @param mixed  $new    Value after the write; null when it was deleted.
+	 * @param string                  $option      Option name.
+	 * @param mixed                   $old         Value before the write; null when there was none.
+	 * @param mixed                   $new         Value after the write; null when it was deleted.
+	 * @param array<int, string>|null $sensor_keys The sensors that can be switched; null for any key.
 	 * @return array<int, array{field: string, old: ?string, new: ?string}>
 	 */
-	public static function changes_for( string $option, mixed $old, mixed $new ): array {
+	public static function changes_for( string $option, mixed $old, mixed $new, ?array $sensor_keys = null ): array {
 		return match ( $option ) {
 			Options::KEY_TOKEN          => self::token_changes( $old, $new ),
 			Options::KEY_TOKEN_VERIFIED => self::verified_changes( $old, $new ),
 			Options::KEY_ANONYMIZE_IP   => self::anonymize_changes( $old, $new ),
-			Options::KEY_SENSOR_FILTERS => self::sensor_changes( $old, $new ),
+			Options::KEY_SENSOR_FILTERS => self::sensor_changes( $old, $new, $sensor_keys ),
 			default                     => [],
 		};
 	}
@@ -177,7 +183,7 @@ final class SelfAuditSensor extends AbstractSensor {
 
 		// Nothing here may reach the request that saved the setting.
 		try {
-			$changes = self::changes_for( $option, $old, $new );
+			$changes = self::changes_for( $option, $old, $new, null === $this->sensors ? null : array_keys( $this->sensors->toggleable() ) );
 			if ( [] === $changes ) {
 				return;
 			}
@@ -286,11 +292,12 @@ final class SelfAuditSensor extends AbstractSensor {
 	 * One item per sensor whose state differs, in the order the settings
 	 * name them (the old ones first).
 	 *
-	 * @param mixed $old Stored sensor flags before the write.
-	 * @param mixed $new Stored sensor flags after the write.
+	 * @param mixed                   $old         Stored sensor flags before the write.
+	 * @param mixed                   $new         Stored sensor flags after the write.
+	 * @param array<int, string>|null $sensor_keys The sensors that can be switched; null for any key.
 	 * @return array<int, array{field: string, old: ?string, new: ?string}>
 	 */
-	private static function sensor_changes( $old, $new ): array {
+	private static function sensor_changes( $old, $new, ?array $sensor_keys ): array {
 		$before   = Options::flags( $old );
 		$after    = Options::flags( $new );
 		$off_then = SensorManager::disabled_by( $before );
@@ -298,6 +305,9 @@ final class SelfAuditSensor extends AbstractSensor {
 
 		$changes = [];
 		foreach ( array_keys( $before + $after ) as $key ) {
+			if ( null !== $sensor_keys && ! in_array( (string) $key, $sensor_keys, true ) ) {
+				continue;
+			}
 			$was_off = in_array( (string) $key, $off_then, true );
 			$is_off  = in_array( (string) $key, $off_now, true );
 			if ( $was_off === $is_off ) {

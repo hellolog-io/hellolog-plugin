@@ -224,17 +224,15 @@ final class Command {
 	}
 
 	/**
-	 * List every registered sensor and whether it's currently enabled.
+	 * List every sensor that can be switched and whether it runs.
 	 *
 	 * ## EXAMPLES
 	 *
 	 *     wp hellolog sensors
 	 */
 	public function sensors(): void {
-		$disabled = new Options();
-		$disabled = $disabled->sensor_filters();
-
-		$sensors = Plugin::instance()->sensors()->sensors();
+		$manager = Plugin::instance()->sensors();
+		$sensors = $manager->toggleable();
 		if ( empty( $sensors ) ) {
 			WP_CLI::warning( 'No sensors registered (plugin booted?).' );
 			return;
@@ -244,7 +242,7 @@ final class Command {
 		foreach ( $sensors as $key => $sensor ) {
 			$rows[] = [
 				'key'     => $key,
-				'enabled' => empty( $disabled[ $key ] ) ? 'yes' : 'NO',
+				'enabled' => $manager->is_disabled( $key ) ? 'NO' : 'yes',
 				'class'   => substr( get_class( $sensor ), strrpos( get_class( $sensor ), '\\' ) + 1 ),
 			];
 		}
@@ -289,6 +287,9 @@ final class Command {
 		}
 		if ( $disable && in_array( $key, SensorManager::ALWAYS_ON, true ) ) {
 			WP_CLI::error( sprintf( 'Sensor %s logs changes to helloLOG itself and can not be turned off.', $key ) );
+		}
+		if ( ! array_key_exists( $key, Plugin::instance()->sensors()->toggleable() ) ) {
+			WP_CLI::error( sprintf( 'Unknown sensor %s. Run `wp hellolog sensors` to list them.', $key ) );
 		}
 		$filters         = (array) get_option( Options::KEY_SENSOR_FILTERS, [] );
 		$filters[ $key ] = $disable;

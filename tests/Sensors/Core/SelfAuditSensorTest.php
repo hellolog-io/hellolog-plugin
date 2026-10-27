@@ -230,6 +230,23 @@ final class SelfAuditSensorTest extends TestCase {
 	}
 
 	/**
+	 * Only sensors the plugin has are reported: flags for made-up keys can
+	 * not crowd the real ones out of an event's limited list of changes.
+	 */
+	public function test_flags_of_unknown_sensors_are_left_out(): void {
+		$new = [ 'core-auth' => true ];
+		for ( $i = 1; $i <= 60; $i++ ) {
+			$new[ 'junk-' . $i ] = true;
+		}
+		$new['core-app-passwords'] = true;
+
+		$changes = SelfAuditSensor::changes_for( Options::KEY_SENSOR_FILTERS, [], $new, [ 'core-auth', 'core-app-passwords', 'core-media' ] );
+
+		$this->assertSame( [ 'sensor:core-auth', 'sensor:core-app-passwords' ], array_column( $changes, 'field' ) );
+		$this->assertCount( 62, SelfAuditSensor::changes_for( Options::KEY_SENSOR_FILTERS, [], $new ), 'Without a list every key counts.' );
+	}
+
+	/**
 	 * Flags that do nothing are not reported: one for the self-audit itself
 	 * (it can not be turned off), and keys that are not sensor names.
 	 */

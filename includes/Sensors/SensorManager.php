@@ -142,4 +142,17 @@ final class SensorManager {
 	public function toggleable(): array {
 		return array_diff_key( $this->sensors, array_flip( self::ALWAYS_ON ) );
 	}
+
+	/**
+	 * The stored-settings flags of the sensors an operator can switch here
+	 * ({@see self::toggleable()}); flags of any other key are dropped. Made-up
+	 * keys saved with real ones would otherwise crowd the real changes out of
+	 * the settings event.
+	 *
+	 * @param array<string, bool> $flags Sensor key => disabled.
+	 * @return array<string, bool>
+	 */
+	public function known_flags( array $flags ): array {
+		return array_intersect_key( $flags, $this->toggleable() );
+	}
 }
