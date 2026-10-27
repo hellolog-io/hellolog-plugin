@@ -1455,20 +1455,20 @@ final class SuppressionRulesTest extends TestCase {
 	}
 
 	/**
-	 * An order edit (9105) and its item events (9106–9108) say nothing next
-	 * to the order's creation (not 9107: creating an order removes no item),
-	 * trash or delete in the same request; an edit next to a status change
-	 * goes into the status event.
+	 * An order edit (9105) and the item events that add or change an item
+	 * (9106, 9108) say nothing next to the order's creation in the same
+	 * request; item events (9106–9108) say nothing next to its permanent
+	 * delete. Creating an order removes no item, so 9107 stays next to it.
 	 */
-	public function test_defaults_drop_order_edits_under_creation_trash_and_delete(): void {
+	public function test_defaults_drop_order_edits_under_creation_and_items_under_delete(): void {
 		$rules = SuppressionRules::defaults();
-		$edit  = [ self::change( 'billing.city', 'Budapest', 'Szeged' ) ];
+		$edit  = [ self::change( 'total', '25.00', '30.00' ) ];
 
 		$beaten_by = [
-			9105 => [ 9100, 9102, 9109 ],
-			9106 => [ 9100, 9102, 9109 ],
-			9107 => [ 9102, 9109 ],
-			9108 => [ 9100, 9102, 9109 ],
+			9105 => [ 9100 ],
+			9106 => [ 9100, 9102 ],
+			9107 => [ 9102 ],
+			9108 => [ 9100, 9102 ],
 		];
 		foreach ( $beaten_by as $code => $winners ) {
 			foreach ( $winners as $winner ) {
@@ -1485,6 +1485,34 @@ final class SuppressionRulesTest extends TestCase {
 		}
 
 		$this->assertSame( [ 9100, 9107 ], self::codes( $rules->apply( [ self::event( 9100, self::order( 5 ) ), self::event( 9107, self::order( 5 ), $edit ) ] ) ) );
+	}
+
+	/**
+	 * An order edit is never lost to another event of its order in the same
+	 * request: it goes into the status change, the restore, the trash or the
+	 * delete. Moving an order to the trash hides none of its item events.
+	 */
+	public function test_defaults_fold_order_edits_into_status_restore_trash_and_delete(): void {
+		$rules = SuppressionRules::defaults();
+		$edit  = [ self::change( 'total', '25.00', '30.00' ) ];
+
+		$into = [
+			9101 => [ 'metadata' => [ 'old_status' => 'on-hold' ] ],
+			9110 => [ 'metadata' => [ 'previous_status' => 'processing' ] ],
+			9109 => [],
+			9102 => [],
+		];
+		foreach ( $into as $code => $extra ) {
+			$result = $rules->apply(
+				[
+					self::event( 9105, self::order( 5 ), $edit ),
+					self::event( $code, self::order( 5 ), null, $extra ),
+					self::event( 9105, self::order( 6 ), $edit ),
+				]
+			);
+			$this->assertSame( [ $code, 9105 ], self::codes( $result ), "9105 goes into $code on the same order only" );
+			$this->assertSame( $edit, $result[0]['changes'], "$code carries the edit" );
+		}
 
 		$folded = $rules->apply(
 			[
@@ -1493,7 +1521,18 @@ final class SuppressionRulesTest extends TestCase {
 			]
 		);
 		$this->assertSame( [ 9101 ], self::codes( $folded ) );
-		$this->assertSame( [ 'billing.city', 'status' ], array_column( $folded[0]['changes'], 'field' ) );
+		$this->assertSame( [ 'total', 'status' ], array_column( $folded[0]['changes'], 'field' ) );
+
+		foreach ( [ 9106, 9107, 9108 ] as $code ) {
+			$kept = $rules->apply(
+				[
+					self::event( $code, self::order( 5 ), [ self::change( 'quantity', '1', '2' ) ] ),
+					self::event( 9109, self::order( 5 ) ),
+				]
+			);
+			$this->assertSame( [ $code, 9109 ], self::codes( $kept ), "$code stays next to the trash" );
+			$this->assertArrayNotHasKey( 'changes', $kept[1] );
+		}
 	}
 
 	/**

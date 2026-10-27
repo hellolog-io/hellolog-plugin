@@ -157,13 +157,16 @@ final class SuppressionRules {
 				2003 => [ 9109 ],
 				2004 => [ 9110 ],
 
-				// An order edit and its item events say nothing next to the
-				// order's creation (creating an order removes no item), trash or
-				// delete; an edit next to a status change goes into that event.
-				9105 => [ 9100, 9101, 9102, 9109 ],
-				9106 => [ 9100, 9102, 9109 ],
-				9107 => [ 9102, 9109 ],
-				9108 => [ 9100, 9102, 9109 ],
+				// An order edit says nothing of its own next to the order's
+				// creation, status change, restore, trash or delete in the same
+				// request (it goes into them, see the folds below). Item events
+				// say nothing next to the order's creation (creating an order
+				// removes no item) or its permanent delete; a trash hides none of
+				// them.
+				9105 => [ 9100, 9101, 9102, 9109, 9110 ],
+				9106 => [ 9100, 9102 ],
+				9107 => [ 9102 ],
+				9108 => [ 9100, 9102 ],
 
 				// A status change out of the trash is the restore.
 				9101 => [ 9110 ],
@@ -211,10 +214,12 @@ final class SuppressionRules {
 				// request are just dropped.
 				2011 => [ 2010 ],
 
-				// An order edit goes into the status change of its save; when that
-				// status change is a restore, into the restore. Under a creation,
-				// trash or delete alone it is just dropped.
-				9105 => [ 9101, 9110 ],
+				// An order edit is never lost to another event of its order: it
+				// goes into the status change of its save, the restore, the trash
+				// or the delete, so a trash cannot hide a change of the total.
+				// Only under the creation alone it is dropped: a creation tells
+				// no changes.
+				9105 => [ 9101, 9110, 9109, 9102 ],
 			]
 		);
 	}

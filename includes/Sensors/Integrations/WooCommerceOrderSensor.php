@@ -25,9 +25,11 @@ defined( 'ABSPATH' ) || exit;
  * {@see self::note_type()}.
  *
  * A save of an existing order tells which of {@see self::ORDER_FIELDS}
- * changed (9105), read from the order before WooCommerce writes it; a save
- * of an order that is still being created tells nothing (its creation is
- * 9100). A status change carries the status as a change, and a status
+ * changed (9105), read from the order before WooCommerce writes it; the
+ * customer's details among them ({@see self::CONTENT_FIELDS}) without their
+ * values. A save of an order that is still being created tells nothing (its
+ * creation is 9100). No event sends the customer's contact details. A
+ * status change carries the status as a change, and a status
  * change out of the trash is also a restore (9110), as are WooCommerce's
  * own restore and WordPress's restore of an order stored as a post.
  *
@@ -59,6 +61,21 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		'transaction_id',
 		'date_paid',
 		'date_completed',
+	];
+
+	/**
+	 * The fields of {@see self::ORDER_FIELDS} that hold the customer's own
+	 * details: every field of the billing and shipping addresses (names,
+	 * company, address, postcode, country, e-mail, phone, and whatever else a
+	 * shop keeps there) and the customer's note. They are told as changed,
+	 * never with their values, so no contact detail leaves the site.
+	 *
+	 * @var array<int, string>
+	 */
+	public const CONTENT_FIELDS = [
+		'billing.*',
+		'shipping.*',
+		'customer_note',
 	];
 
 	/**
@@ -367,7 +384,7 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 					return;
 				}
 				$stored  = self::order_values( $data );
-				$changes = WcObjectDiff::changes( $stored, self::real_changes( $stored, $pending ), self::ORDER_FIELDS );
+				$changes = WcObjectDiff::changes( $stored, self::real_changes( $stored, $pending ), self::ORDER_FIELDS, self::CONTENT_FIELDS );
 			}
 
 			$this->emit(

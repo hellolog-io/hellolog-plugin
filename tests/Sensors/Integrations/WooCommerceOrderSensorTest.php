@@ -34,6 +34,9 @@ use PHPUnit\Framework\TestCase;
 final class WooCommerceOrderSensorTest extends TestCase {
 
 	/**
+	 * The city is the customer's address: it is told as changed, without its
+	 * values.
+	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
@@ -48,7 +51,7 @@ final class WooCommerceOrderSensorTest extends TestCase {
 		$this->assertCount( 1, $recorder->calls );
 		[ $code, $fields ] = $recorder->calls[0];
 		$this->assertSame( 9105, $code );
-		$this->assertSame( [ self::change( 'billing.city', 'Budapest', 'Szeged' ) ], $fields['changes'] );
+		$this->assertSame( [ self::change( 'billing.city', null, null ) ], $fields['changes'] );
 		$this->assertSame( WooCommerceOrderSensor::order_target( 5, 'A-17' ), $fields['target'] );
 		$this->assertSame( [ 'edit' => 'https://shop.test/wp-admin/order/5' ], $fields['links'] );
 		$this->assertSame( 5, $fields['id'] );
@@ -267,7 +270,7 @@ final class WooCommerceOrderSensorTest extends TestCase {
 		$survivors = $this->survive( $recorder );
 		$this->assertSame( [ 9101 ], array_column( $survivors, 'code' ) );
 		$this->assertSame(
-			[ self::change( 'billing.city', 'Budapest', 'Szeged' ), self::change( 'status', 'on-hold', 'completed' ) ],
+			[ self::change( 'billing.city', null, null ), self::change( 'status', 'on-hold', 'completed' ) ],
 			$survivors[0]['changes']
 		);
 	}
@@ -321,7 +324,7 @@ final class WooCommerceOrderSensorTest extends TestCase {
 			)
 		);
 
-		$this->assertSame( [ self::change( 'billing.city', 'Budapest', 'Szeged' ) ], $recorder->calls[0][1]['changes'] );
+		$this->assertSame( [ self::change( 'billing.city', null, null ) ], $recorder->calls[0][1]['changes'] );
 	}
 
 	/**
@@ -376,13 +379,13 @@ final class WooCommerceOrderSensorTest extends TestCase {
 			],
 			array_column( $recorder->calls[0][1]['changes'], 'field' )
 		);
-		$this->assertSame( self::change( 'customer_note', '', 'Ring twice' ), $recorder->calls[0][1]['changes'][8] );
+		$this->assertSame( self::change( 'customer_note', null, null ), $recorder->calls[0][1]['changes'][8] );
 	}
 
 	/**
 	 * An amount written in another form, an empty value that was null, or a
 	 * date set again to the same moment in another zone is no change; a
-	 * phone number losing its leading zero is one.
+	 * phone number losing its leading zero is one (told without its values).
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
@@ -417,7 +420,7 @@ final class WooCommerceOrderSensorTest extends TestCase {
 			)
 		);
 
-		$this->assertSame( [ self::change( 'billing.phone', '0612345', '612345' ) ], $recorder->calls[0][1]['changes'] );
+		$this->assertSame( [ self::change( 'billing.phone', null, null ) ], $recorder->calls[0][1]['changes'] );
 	}
 
 	/**
@@ -447,7 +450,7 @@ final class WooCommerceOrderSensorTest extends TestCase {
 			)
 		);
 
-		$this->assertSame( [ self::change( 'billing.city', 'Budapest', 'Szeged' ) ], $recorder->calls[0][1]['changes'] );
+		$this->assertSame( [ self::change( 'billing.city', null, null ) ], $recorder->calls[0][1]['changes'] );
 		$this->assertSame( [], OrderNoteState::$fired );
 	}
 
@@ -767,18 +770,19 @@ final class WooCommerceOrderSensorTest extends TestCase {
 
 			$survivors = $this->survive( $recorder );
 			$this->assertSame( [ 9110 ], array_column( $survivors, 'code' ) );
-			$this->assertSame( [ self::change( 'billing.city', 'Budapest', 'Szeged' ) ], $survivors[0]['changes'] );
+			$this->assertSame( [ self::change( 'billing.city', null, null ) ], $survivors[0]['changes'] );
 		}
 	}
 
 	/**
-	 * Edits of an order that is trashed or deleted in the same request say
-	 * nothing that matters.
+	 * An order edited and then trashed or deleted in the same request is one
+	 * event, the trash or the delete, and it carries the edit: moving an
+	 * order to the trash cannot hide a change of its total.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_an_edit_of_an_order_trashed_or_deleted_in_the_same_request_is_dropped(): void {
+	public function test_an_edit_of_an_order_trashed_or_deleted_in_the_same_request_is_carried_by_it(): void {
 		$this->stubs();
 		OrderNoteState::$orders[5] = $this->order( 5 );
 
@@ -788,13 +792,141 @@ final class WooCommerceOrderSensorTest extends TestCase {
 		] as $hook => $code ) {
 			$recorder = $this->recorder();
 			$sensor   = new WooCommerceOrderSensor( $recorder );
-			$sensor->on_before_save( $this->order( 5, self::stored(), [ 'billing' => [ 'city' => 'Szeged' ] ] ) );
+			$sensor->on_before_save( $this->order( 5, self::stored(), [ 'total' => '30.00' ] ) );
 			$sensor->$hook( 5 );
 
 			$survivors = $this->survive( $recorder );
 			$this->assertSame( [ $code ], array_column( $survivors, 'code' ), $hook );
-			$this->assertArrayNotHasKey( 'changes', $survivors[0], $hook );
+			$this->assertSame( [ self::change( 'total', '25.00', '30.00' ) ], $survivors[0]['changes'], $hook );
 		}
+	}
+
+	/**
+	 * The customer's contact details (names, company, address, e-mail,
+	 * phone) and the customer's note are told as changed, never with their
+	 * values; what the order is worth and how it was paid stay readable.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_customers_details_are_told_without_their_values(): void {
+		$this->stubs();
+		$stored  = self::stored(
+			[
+				'billing'       => [
+					'first_name' => 'Anna',
+					'last_name'  => 'Kovacs',
+					'company'    => 'Kovacs Ltd',
+					'address_1'  => 'Fo utca 1',
+					'address_2'  => '2nd floor',
+					'city'       => 'Budapest',
+					'state'      => 'BU',
+					'postcode'   => '1011',
+					'country'    => 'HU',
+					'email'      => 'anna@example.test',
+					'phone'      => '+36301234567',
+				],
+				'shipping'      => [
+					'first_name' => 'Anna',
+					'address_1'  => 'Fo utca 1',
+					'city'       => 'Budapest',
+					'postcode'   => '1011',
+					'phone'      => '+36301234567',
+				],
+				'customer_note' => 'Leave it at the door',
+			]
+		);
+		$pending = [
+			'billing'        => [
+				'first_name' => 'Bea',
+				'last_name'  => 'Nagy',
+				'company'    => 'Nagy Bt',
+				'address_1'  => 'Kossuth ter 9',
+				'address_2'  => 'Door 4',
+				'city'       => 'Szeged',
+				'state'      => 'CS',
+				'postcode'   => '6720',
+				'country'    => 'AT',
+				'email'      => 'bea@example.com',
+				'phone'      => '+36709876543',
+			],
+			'shipping'       => [
+				'first_name' => 'Bea',
+				'address_1'  => 'Kossuth ter 9',
+				'city'       => 'Szeged',
+				'postcode'   => '6720',
+				'phone'      => '+36709876543',
+			],
+			'customer_note'  => 'Ring at Nagy',
+			'transaction_id' => 'txn_1001',
+			'total'          => '30.00',
+		];
+
+		$recorder = $this->recorder();
+		( new WooCommerceOrderSensor( $recorder ) )->on_before_save( $this->order( 5, $stored, $pending ) );
+
+		$payloads = $this->build( $recorder );
+		$changes  = array_column( $payloads[0]['changes'], null, 'field' );
+		foreach ( [ 'first_name', 'last_name', 'company', 'address_1', 'address_2', 'city', 'state', 'postcode', 'country', 'email', 'phone' ] as $key ) {
+			$this->assertSame( self::change( 'billing.' . $key, null, null ), $changes[ 'billing.' . $key ] ?? null, 'billing.' . $key );
+		}
+		foreach ( [ 'first_name', 'address_1', 'city', 'postcode', 'phone' ] as $key ) {
+			$this->assertSame( self::change( 'shipping.' . $key, null, null ), $changes[ 'shipping.' . $key ] ?? null, 'shipping.' . $key );
+		}
+		$this->assertSame( self::change( 'customer_note', null, null ), $changes['customer_note'] );
+		$this->assertSame( self::change( 'transaction_id', '', 'txn_1001' ), $changes['transaction_id'] );
+		$this->assertSame( self::change( 'total', '25.00', '30.00' ), $changes['total'] );
+
+		$json = (string) json_encode( $payloads[0] );
+		foreach ( [ $stored['billing'], $stored['shipping'], $pending['billing'], $pending['shipping'] ] as $values ) {
+			foreach ( $values as $key => $value ) {
+				$this->assertStringNotContainsString( json_encode( $value ), $json, $key );
+			}
+		}
+		foreach ( [ 'Leave it at the door', 'Ring at Nagy', 'anna@example', 'bea@example', '36301234567', '36709876543', 'Kovacs', 'Nagy' ] as $value ) {
+			$this->assertStringNotContainsString( $value, $json );
+		}
+	}
+
+	/**
+	 * A new order tells nothing of the customer's contact details, whatever
+	 * the order can answer about them.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_new_order_tells_nothing_of_the_customers_contact_details(): void {
+		$this->stubs();
+		$details = [
+			'total'          => '25.00',
+			'payment_method' => 'bacs',
+		];
+		$order   = new class( 5, 'A-17', null, self::stored(), [], $details ) extends FakeOrder {
+			public function get_billing_email(): string {
+				return 'anna@example.test';
+			}
+
+			public function get_billing_phone(): string {
+				return '+36301234567';
+			}
+
+			public function get_formatted_billing_full_name(): string {
+				return 'Anna Kovacs';
+			}
+
+			public function get_formatted_billing_address(): string {
+				return 'Fo utca 1, Budapest';
+			}
+		};
+
+		$recorder = $this->recorder();
+		( new WooCommerceOrderSensor( $recorder ) )->on_created( 5, $order );
+
+		$json = (string) json_encode( $this->build( $recorder )[0] );
+		foreach ( [ 'anna@example', '36301234567', 'Anna', 'Kovacs', 'Fo utca', 'Budapest' ] as $value ) {
+			$this->assertStringNotContainsString( $value, $json );
+		}
+		$this->assertStringContainsString( '"payment_method":"bacs"', $json );
 	}
 
 	/**
