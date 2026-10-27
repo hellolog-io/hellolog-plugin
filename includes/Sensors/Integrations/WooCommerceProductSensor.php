@@ -60,7 +60,10 @@ defined( 'ABSPATH' ) || exit;
  * variations first, emptying the trash takes them in any order), and the
  * product's own event says it. So a variation's status change or delete is
  * held until the request (or the job that made it) ends, and told then
- * unless its product was trashed, restored or deleted in the same request.
+ * unless its product was trashed, restored or deleted in the same request;
+ * what is held for a product's variations is let go as soon as the product
+ * goes. What a job created is made when the job ends: a later job of the
+ * same run (the command line runs many in one process) edits it.
  * The removal of a deleted post's image along with it is no edit.
  *
  * WooCommerce also writes stock levels straight to the database, with no save
@@ -217,10 +220,13 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	];
 
 	/**
-	 * The products created in this request: `site:product id` => true. A
-	 * product id is unique on its own site only.
+	 * The products and variations created in this request: `site:product id`
+	 * => how many Action Scheduler jobs were running (see
+	 * {@see ActionSchedulerContext::depth()}). A product id is unique on its
+	 * own site only. What a job created is made when the job ends: a later
+	 * job of the same run edits it.
 	 *
-	 * @var array<string, true>
+	 * @var array<string, int>
 	 */
 	private array $created = [];
 
@@ -260,15 +266,17 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	private array $opened_in = [];
 
 	/**
-	 * Posts being trashed, restored or deleted in this request:
-	 * `site:post id` => true. The variations of such a product go with it.
+	 * Products and variations being trashed, restored or deleted in this
+	 * request: `site:post id` => true. The variations of such a product go
+	 * with it. Other posts are not noted.
 	 *
 	 * @var array<string, true>
 	 */
 	private array $cascading = [];
 
 	/**
-	 * Posts being deleted for good in this request: `site:post id` => true.
+	 * Products and variations being deleted for good in this request:
+	 * `site:post id` => true. Other posts are not noted.
 	 *
 	 * @var array<string, true>
 	 */
@@ -794,12 +802,15 @@ final class WooCommerceProductSensor extends AbstractSensor {
 
 	/**
 	 * Tell what the Action Scheduler job that is ending made and is still
-	 * held, while the job is still the context. Nothing outside a job.
+	 * held, while the job is still the context, and forget which products it
+	 * created: a later job of the same run that edits one logs the edit.
+	 * Nothing outside a job.
 	 */
 	public function flush_job_saves(): void {
 		$depth = ActionSchedulerContext::depth();
 		if ( $depth > 0 ) {
 			$this->flush( $depth );
+			$this->created = array_filter( $this->created, static fn( int $at ): bool => $at < $depth );
 		}
 	}
 
@@ -819,9 +830,6 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			if ( $product_id <= 0 ) {
 				return;
 			}
-			// WordPress deletes the post's meta next, its image among it.
-			$key                    = self::state_key( $product_id );
-			$this->deleting[ $key ] = true;
 			if ( ! $post instanceof WP_Post ) {
 				$post = function_exists( 'get_post' ) ? get_post( $product_id ) : null;
 				if ( ! $post instanceof WP_Post ) {
@@ -833,10 +841,12 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			if ( ! self::is_product_type( $type ) ) {
 				return;
 			}
+			// WordPress deletes the post's meta next, its image among it.
+			$this->deleting[ self::state_key( $product_id ) ] = true;
 
 			$parent_id = self::VARIATION_TYPE === $type ? max( 0, (int) $post->post_parent ) : 0;
 			if ( self::PRODUCT_TYPE === $type ) {
-				$this->cascading[ $key ] = true;
+				$this->note_cascade( $product_id );
 			}
 			$status = $parent_id > 0 ? self::post_status( $parent_id ) : (string) $post->post_status;
 			// Core's only caller of `wp_delete_auto_drafts()` is this cron action.
@@ -1025,7 +1035,7 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	 * @param int    $parent_id  Id of the variation's parent; 0 for a product.
 	 */
 	private function emit_created( int $product_id, string $name, string $type, int $parent_id = 0 ): void {
-		$this->created[ self::state_key( $product_id ) ] = true;
+		$this->created[ self::state_key( $product_id ) ] = ActionSchedulerContext::depth();
 		$this->emit( 9000, $this->product_fields( $product_id, $name, $parent_id, $type ) );
 	}
 
@@ -1233,7 +1243,8 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Note a post as being trashed, restored or deleted in this request.
+	 * Note a product or variation as being trashed or restored in this
+	 * request; other posts are not noted.
 	 *
 	 * @param mixed $post_id Post id.
 	 */
@@ -1241,12 +1252,32 @@ final class WooCommerceProductSensor extends AbstractSensor {
 		$product_id = 0;
 		try {
 			$product_id = self::id_of( $post_id );
-			if ( $product_id > 0 ) {
-				$this->cascading[ self::state_key( $product_id ) ] = true;
+			if ( $product_id > 0 && self::is_product_type( self::post_type( $product_id ) ) ) {
+				$this->note_cascade( $product_id );
 			}
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
 		}
+	}
+
+	/**
+	 * Note a product or variation as being trashed, restored or deleted in
+	 * this request, and let go at once of what is held for its variations:
+	 * the product's own event says it (see {@see self::flush()}).
+	 *
+	 * @param int $post_id Product or variation id.
+	 */
+	private function note_cascade( int $post_id ): void {
+		$key                     = self::state_key( $post_id );
+		$this->cascading[ $key ] = true;
+
+		$held = [];
+		foreach ( $this->held as $event ) {
+			if ( $event['blog'] . ':' . $event['parent'] !== $key ) {
+				$held[] = $event;
+			}
+		}
+		$this->held = $held;
 	}
 
 	/**

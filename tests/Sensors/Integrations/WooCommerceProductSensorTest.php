@@ -1338,6 +1338,134 @@ final class WooCommerceProductSensorTest extends TestCase {
 	}
 
 	/**
+	 * The events held for a product's variations are let go the moment the
+	 * product is deleted, trashed or restored, not kept until the request
+	 * ends: a long run (an import, emptying the trash from the command line)
+	 * holds no more than it has to. The variations of other products stay
+	 * held.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_events_held_for_variations_go_as_soon_as_their_product_takes_them_along(): void {
+		$this->stubs();
+		$parent             = self::variable_product();
+		WpState::$posts[50] = $parent;
+		WpState::$posts[60] = self::variable_product(
+			[
+				'ID'         => 60,
+				'post_title' => 'Scarf',
+			]
+		);
+		WpState::$posts[70] = self::variable_product(
+			[
+				'ID'         => 70,
+				'post_title' => 'Beanie',
+			]
+		);
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceProductSensor( $recorder );
+		$sensor->boot();
+		for ( $i = 1; $i <= 20; $i++ ) {
+			self::delete_post( self::variation( $i ) );
+		}
+		self::update_post(
+			self::variation( 21, [ 'post_parent' => 60 ] ),
+			self::variation(
+				21,
+				[
+					'post_parent' => 60,
+					'post_status' => 'private',
+				]
+			)
+		);
+		self::delete_post( self::variation( 22, [ 'post_parent' => 70 ] ) );
+		$this->assertCount( 22, self::held( $sensor ) );
+
+		self::delete_post( $parent );
+		$this->assertCount( 2, self::held( $sensor ), 'Gone with their product, before the request ends.' );
+		Hooks::fire( 'wp_trash_post', 60, 'publish' );
+		$this->assertSame( [ '70' ], array_map( static fn( array $event ): string => (string) $event['parent'], self::held( $sensor ) ) );
+
+		Hooks::fire( 'shutdown' );
+		$this->assertSame( [ 9002, 9002 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ '50', '122' ], array_map( static fn( array $call ): string => $call[1]['target']['id'], $recorder->calls ) );
+	}
+
+	/**
+	 * Only products and variations are noted as being trashed, restored or
+	 * deleted: the posts of a long run that are no product leave nothing
+	 * behind.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_only_products_and_variations_are_noted_as_trashed_restored_or_deleted(): void {
+		$this->stubs();
+		WpState::$posts[50] = self::variable_product();
+		WpState::$posts[7]  = self::post(
+			[
+				'ID'        => 7,
+				'post_type' => 'post',
+			]
+		);
+		WpState::$posts[8]  = self::post(
+			[
+				'ID'        => 8,
+				'post_type' => 'page',
+			]
+		);
+
+		$sensor = new WooCommerceProductSensor( $this->recorder() );
+		$sensor->boot();
+		Hooks::fire( 'wp_trash_post', 7, 'publish' );
+		Hooks::fire( 'untrash_post', 8, 'trash' );
+		self::delete_post( WpState::$posts[7], '23' );
+		self::delete_post( WpState::$posts[8] );
+		$this->assertSame( [], self::state( $sensor, 'cascading' ) );
+		$this->assertSame( [], self::state( $sensor, 'deleting' ) );
+
+		Hooks::fire( 'wp_trash_post', 50, 'publish' );
+		self::delete_post( self::variation( 1 ) );
+		$this->assertSame( [ '1:50' ], array_keys( self::state( $sensor, 'cascading' ) ) );
+		$this->assertSame( [ '1:101' ], array_keys( self::state( $sensor, 'deleting' ) ) );
+	}
+
+	/**
+	 * A product an Action Scheduler job created is made when the job ends: a
+	 * later job of the same run (the command line runs many in one process)
+	 * that edits it logs the edit. One the request created before a job ran
+	 * inside it is still being made after that job.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_product_created_by_a_job_is_edited_by_a_later_job_of_the_same_run(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceProductSensor( $recorder );
+		$sensor->on_created( 6, new FakeProduct( 6, self::stored( [ 'name' => 'Cup' ] ) ) );
+
+		ActionSchedulerContext::begin( 41 );
+		$sensor->on_created( 5, new FakeProduct( 5, self::stored() ) );
+		$sensor->on_before_save( new FakeProduct( 5, self::stored(), [ 'regular_price' => '1100' ] ) );
+		$sensor->flush_job_saves();
+		ActionSchedulerContext::end( 41 );
+
+		ActionSchedulerContext::begin( 42 );
+		$sensor->on_before_save( new FakeProduct( 5, self::stored(), [ 'regular_price' => '1200' ] ) );
+		$sensor->on_before_save( new FakeProduct( 6, self::stored( [ 'name' => 'Cup' ] ), [ 'regular_price' => '1200' ] ) );
+		$sensor->flush_job_saves();
+		ActionSchedulerContext::end( 42 );
+
+		$this->assertSame( [ 9000, 9000, 9001 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( '5', $recorder->calls[2][1]['target']['id'] );
+		$this->assertSame( [ self::change( 'regular_price', '1000', '1200' ) ], $recorder->calls[2][1]['changes'] );
+	}
+
+	/**
 	 * An order that reduces a product's stock writes the level straight to
 	 * the database, then says so: one stock event on the product, naming the
 	 * order, and no edit.
@@ -1987,6 +2115,30 @@ final class WooCommerceProductSensorTest extends TestCase {
 
 		WpState::$post_types['product_variation'] = false;
 		WpState::$taxonomies['product']           = [ 'product_cat', 'product_tag', 'product_type' ];
+	}
+
+	/**
+	 * The variation events the sensor holds right now.
+	 *
+	 * @param WooCommerceProductSensor $sensor The sensor.
+	 * @return array<int, array<string, mixed>>
+	 */
+	private static function held( WooCommerceProductSensor $sensor ): array {
+		return self::state( $sensor, 'held' );
+	}
+
+	/**
+	 * What the sensor keeps in one of its private properties, for the tests
+	 * that check how much it keeps.
+	 *
+	 * @param WooCommerceProductSensor $sensor   The sensor.
+	 * @param string                   $property Property name.
+	 * @return array<int|string, mixed>
+	 */
+	private static function state( WooCommerceProductSensor $sensor, string $property ): array {
+		$value = ( new \ReflectionProperty( $sensor, $property ) )->getValue( $sensor );
+
+		return is_array( $value ) ? $value : [];
 	}
 
 	/**
