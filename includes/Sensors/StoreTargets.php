@@ -15,8 +15,9 @@ defined( 'ABSPATH' ) || exit;
  * How an event names an order, a product or a coupon of the shop as its
  * target. The shop's own sensors and the post sensor (which tells the trash,
  * restore and revert of the shop's posts) name them here, so one object's
- * history stays on one target with one label. Pure: never calls into
- * WordPress or the shop.
+ * history stays on one target with one label. It never calls into
+ * WordPress, and into the shop only for the way it writes a coupon code in
+ * lower case.
  */
 final class StoreTargets {
 
@@ -65,18 +66,35 @@ final class StoreTargets {
 	}
 
 	/**
-	 * A coupon, labelled with its code. A coupon without a real code (none,
-	 * or WordPress's placeholder title) is labelled `#<id>`.
+	 * A coupon, labelled with its code as the shop stores it (see
+	 * {@see self::coupon_code()}): the post title keeps the code as it was
+	 * typed. A coupon without a real code (none, or WordPress's placeholder
+	 * title) is labelled `#<id>`.
 	 *
 	 * @param int    $id   Coupon id.
-	 * @param string $code Its code.
+	 * @param string $code Its code, or its post title.
 	 * @return array{type: string, id: string, label: string}
 	 */
 	public static function coupon( int $id, string $code ): array {
 		return [
 			'type'  => 'coupon',
 			'id'    => (string) $id,
-			'label' => '' === $code || self::COUPON_PLACEHOLDER === $code ? '#' . $id : $code,
+			'label' => '' === $code || self::COUPON_PLACEHOLDER === $code ? '#' . $id : self::coupon_code( $code ),
 		];
+	}
+
+	/**
+	 * A coupon code the way the shop stores and compares it: in lower case
+	 * (`SUMMER10` and `summer10` are one code to it), with the shop's own
+	 * function when it is loaded.
+	 *
+	 * @param string $code A code, or the post title of a coupon.
+	 */
+	public static function coupon_code( string $code ): string {
+		if ( function_exists( 'wc_strtolower' ) ) {
+			return (string) wc_strtolower( $code );
+		}
+
+		return function_exists( 'mb_strtolower' ) ? mb_strtolower( $code ) : strtolower( $code );
 	}
 }

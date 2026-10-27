@@ -306,6 +306,44 @@ final class WooCommerceCouponSensorTest extends TestCase {
 	}
 
 	/**
+	 * The same products and categories, in another order or with their ids
+	 * written as text, are no change, and they are compared by their ids
+	 * before anything is read to name them: a product or category that can
+	 * not be read does not stand in the way of the other changes.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_products_and_categories_are_named_only_when_they_changed(): void {
+		$this->stubs();
+		WpState::$posts[5]      = self::broken_post();
+		WpState::$posts[6]      = self::broken_post();
+		TermState::$reads_throw = true;
+
+		$recorder = $this->recorder();
+		( new WooCommerceCouponSensor( $recorder ) )->on_before_save(
+			new \WC_Coupon(
+				8,
+				self::stored(
+					[
+						'product_ids'        => [ 5, 6 ],
+						'product_categories' => [ 3, 4 ],
+					]
+				),
+				[
+					'product_ids'        => [ '6', 5 ],
+					'product_categories' => [ 4, 3 ],
+					'amount'             => '25',
+				]
+			)
+		);
+
+		$this->assertSame( [], WpCalls::$actions, 'nothing was read to name them' );
+		$this->assertCount( 1, $recorder->calls );
+		$this->assertSame( [ self::change( 'amount', '10', '25' ) ], $recorder->calls[0][1]['changes'] );
+	}
+
+	/**
 	 * The e-mail addresses a coupon is limited to are the customers'
 	 * personal data: a change of them is told, the addresses never.
 	 *
@@ -715,6 +753,121 @@ final class WooCommerceCouponSensorTest extends TestCase {
 			$survivors[0]['changes']
 		);
 		$this->assertSame( self::target( '8', 'summer25' ), $survivors[0]['target'] );
+	}
+
+	/**
+	 * The classic screen keeps the code as typed in the post title, while the
+	 * shop reads and stores every code in lower case: a coupon typed
+	 * `SUMMER10` is `summer10` in every event of the request, whichever write
+	 * tells it, and in the same request's creation.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_code_typed_in_capitals_is_named_the_way_the_shop_stores_it(): void {
+		$this->stubs();
+		$typed = static fn( array $over = [] ): \WP_Post => self::post( array_merge( [ 'post_title' => 'SUMMER10' ], $over ) );
+
+		$recorder = $this->boot_sensors();
+		// An edit of the amount, then one of the status.
+		self::update_post( $typed(), $typed(), [ new \WC_Coupon( 8, self::stored(), [ 'amount' => '25' ] ) ] );
+		self::update_post( $typed(), $typed( [ 'post_status' => 'draft' ] ), [ new \WC_Coupon( 8, self::stored( [ 'status' => 'draft' ] ), [] ) ] );
+		// A new coupon typed in capitals, then deleted.
+		self::update_post(
+			$typed(
+				[
+					'ID'          => 9,
+					'post_status' => 'auto-draft',
+					'post_title'  => 'Auto Draft',
+				]
+			),
+			$typed(
+				[
+					'ID'         => 9,
+					'post_title' => 'WINTER5',
+				]
+			)
+		);
+		Hooks::fire( 'before_delete_post', 8, $typed( [ 'post_status' => 'trash' ] ) );
+
+		$this->assertSame( [ 9201, 9201, 9200, 9202 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ 'summer10', 'summer10', 'winter5', 'summer10' ], array_map( static fn( array $call ): string => $call[1]['target']['label'], $recorder->calls ) );
+		$this->assertSame( [ self::change( 'amount', '10', '25' ) ], $recorder->calls[0][1]['changes'] );
+		$this->assertSame( [ self::change( 'status', 'publish', 'draft' ) ], $recorder->calls[1][1]['changes'] );
+		$this->assertSame( 'WC coupon "summer10" updated.', $this->build( $recorder )[0]['message'] );
+	}
+
+	/**
+	 * A save through the shop (its REST API, a CRUD save) of a coupon typed
+	 * in capitals writes the code back to the post in lower case: no change
+	 * of the code, only what the save changed.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_shop_writing_the_code_back_in_lower_case_is_no_change(): void {
+		$this->stubs();
+
+		$recorder = $this->boot_sensors();
+		Hooks::fire( 'woocommerce_before_data_object_save', new \WC_Coupon( 8, self::stored(), [ 'description' => 'Bigger summer sale.' ] ), null );
+		self::update_post(
+			self::post( [ 'post_title' => 'SUMMER10' ] ),
+			self::post( [ 'post_excerpt' => 'Bigger summer sale.' ] )
+		);
+
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 9201 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( [ self::change( 'description', null, null ) ], $survivors[0]['changes'] );
+		$this->assertSame( self::target( '8', 'summer10' ), $survivors[0]['target'] );
+	}
+
+	/**
+	 * A code typed again in other capitals is the same code to the shop: no
+	 * change.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_rename_in_other_capitals_is_no_change_of_the_code(): void {
+		$this->stubs();
+
+		$recorder = $this->boot_sensors();
+		self::update_post( self::post(), self::post( [ 'post_title' => 'Summer10' ] ), [ new \WC_Coupon( 8, self::stored(), [] ) ] );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * A coupon sent back to `auto-draft` is the post sensor's revert, on the
+	 * coupon's target and named by its code; an edit in the same save goes
+	 * into it, without the status.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_coupon_reverted_to_auto_draft_is_one_revert_with_its_edits(): void {
+		$this->stubs();
+
+		$recorder = $this->boot_sensors();
+		Hooks::fire(
+			'woocommerce_before_data_object_save',
+			new \WC_Coupon(
+				8,
+				self::stored(),
+				[
+					'status' => 'auto-draft',
+					'amount' => '25',
+				]
+			),
+			null
+		);
+		self::update_post( self::post(), self::post( [ 'post_status' => 'auto-draft' ] ) );
+
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 2013 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( self::target( '8', 'summer10' ), $survivors[0]['target'] );
+		$this->assertSame( 'Shop coupon "summer10" reverted to auto-draft.', $survivors[0]['message'] );
+		$this->assertSame( [ self::change( 'amount', '10', '25' ) ], $survivors[0]['changes'] );
 	}
 
 	/**

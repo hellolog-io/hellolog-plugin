@@ -58,6 +58,9 @@ final class StoreTargetsTest extends TestCase {
 		$this->assertSame( '#8', StoreTargets::coupon( 8, StoreTargets::COUPON_PLACEHOLDER )['label'] );
 		$this->assertSame( '#8', StoreTargets::coupon( 8, '' )['label'] );
 		$this->assertSame( 'auto draft', StoreTargets::coupon( 8, 'auto draft' )['label'] );
+		// The code as the shop stores it, whatever the post title says.
+		$this->assertSame( 'summer10', StoreTargets::coupon( 8, 'SUMMER10' )['label'] );
+		$this->assertSame( 'ünnep25', StoreTargets::coupon( 8, 'ÜNNEP25' )['label'] );
 	}
 
 	/**

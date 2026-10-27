@@ -533,7 +533,8 @@ final class ContentSensorTest extends TestCase {
 			[ 'product:7', 'coupon:8', 'order:9', 'order:10', 'product:7', 'coupon:8' ],
 			array_map( static fn( array $call ): string => $call[1]['target']['type'] . ':' . $call[1]['target']['id'], $calls )
 		);
-		$this->assertSame( [ 'Hello', 'Hello', '#9', '#10', 'Hello', 'Hello' ], array_map( static fn( array $call ): string => $call[1]['target']['label'], $calls ) );
+		// A coupon's code is named the way the shop stores it, in lower case.
+		$this->assertSame( [ 'Hello', 'hello', '#9', '#10', 'Hello', 'hello' ], array_map( static fn( array $call ): string => $call[1]['target']['label'], $calls ) );
 		$this->assertSame( 'product', $calls[0][1]['post']['type'] );
 		$this->assertSame( 'shop_coupon', $calls[5][1]['post']['type'] );
 	}
@@ -548,7 +549,7 @@ final class ContentSensorTest extends TestCase {
 			'order placeholder'           => [ 'shop_order_placehold', true, 'order', '#7' ],
 			'product'                     => [ 'product', true, 'product', 'Mug' ],
 			'product variation'           => [ 'product_variation', true, 'product', 'Mug' ],
-			'coupon'                      => [ 'shop_coupon', true, 'coupon', 'Mug' ],
+			'coupon'                      => [ 'shop_coupon', true, 'coupon', 'mug' ],
 			'refund'                      => [ 'shop_order_refund', true, 'post', 'Mug' ],
 			'file'                        => [ 'attachment', true, 'media', 'Mug' ],
 			'post'                        => [ 'post', true, 'post', 'Mug' ],
@@ -559,9 +560,10 @@ final class ContentSensorTest extends TestCase {
 
 	/**
 	 * A post of the shop's types is the shop's object: an order is named by
-	 * its number (the id, as the post has no other), a product or coupon by
-	 * its title. Without the shop, a type of that name belongs to some other
-	 * plugin and is a plain post.
+	 * its number (the id, as the post has no other), a product by its title,
+	 * a coupon by its title as the shop stores its code (in lower case).
+	 * Without the shop, a type of that name belongs to some other plugin and
+	 * is a plain post.
 	 *
 	 * @dataProvider object_targets
 	 *

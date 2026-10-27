@@ -568,7 +568,7 @@ final class WooCommerceCouponSensor extends AbstractSensor {
 	/**
 	 * The changes between the stored and the pending values, in the order of
 	 * {@see self::COUPON_FIELDS}. Products and categories are compared by
-	 * their ids and told by their names (see
+	 * their ids and, only when those differ, told by their names (see
 	 * {@see PostSnapshot::term_changes()}), limits as their number or none,
 	 * lists of texts by their texts alone; everything else by
 	 * {@see WcObjectDiff::changes()}.
@@ -580,10 +580,13 @@ final class WooCommerceCouponSensor extends AbstractSensor {
 	private static function field_changes( array $stored, array $pending ): array {
 		$items = [];
 		foreach ( array_merge( self::PRODUCT_FIELDS, self::CATEGORY_FIELDS ) as $field ) {
-			if ( array_key_exists( $field, $pending ) ) {
+			$old = self::ids( $stored[ $field ] ?? null );
+			$new = self::ids( $pending[ $field ] ?? null );
+			// Named only when they changed: reading them costs a lookup each.
+			if ( array_key_exists( $field, $pending ) && $old !== $new ) {
 				$item = PostSnapshot::term_changes(
-					[ $field => self::names( $field, $stored[ $field ] ?? null ) ],
-					[ $field => self::names( $field, $pending[ $field ] ) ]
+					[ $field => self::names( $field, $old ) ],
+					[ $field => self::names( $field, $new ) ]
 				)[0] ?? null;
 				if ( null !== $item ) {
 					$items[ $field ] = $item;
@@ -667,7 +670,9 @@ final class WooCommerceCouponSensor extends AbstractSensor {
 	}
 
 	/**
-	 * The coupon fields a post holds, as text.
+	 * The coupon fields a post holds, as text. The title keeps the code as it
+	 * was typed: it is read the way the shop stores the code, in lower case
+	 * (the shop writes it back that way when it saves the coupon).
 	 *
 	 * @param WP_Post $post The post.
 	 * @return array<string, string>
@@ -678,6 +683,7 @@ final class WooCommerceCouponSensor extends AbstractSensor {
 			$value            = $post->$post_field;
 			$values[ $field ] = is_scalar( $value ) ? (string) $value : '';
 		}
+		$values['code'] = StoreTargets::coupon_code( $values['code'] );
 
 		return $values;
 	}
