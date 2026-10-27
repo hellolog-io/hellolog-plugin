@@ -52,7 +52,9 @@ defined( 'ABSPATH' ) || exit;
  * typed into one of them is sent too. A status change carries the status
  * as a change, and a status change out of the trash is also a restore
  * (9110), as are WooCommerce's own restore and WordPress's restore of an
- * order stored as a post.
+ * order stored as a post. WordPress's trash of an order stored as a post
+ * that WooCommerce is not trashing itself (the classic orders screen) is the
+ * trash of the order (9109).
  *
  * Every handler runs inside WooCommerce's work on the order (an exception in
  * the hook before a save aborts the write of the order), so whatever fails
@@ -177,6 +179,15 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	private array $deleting = [];
 
 	/**
+	 * The orders WooCommerce is moving to the trash, from its announcement to
+	 * its own trash event: `site:order id` => true. Its trash of the order's
+	 * post in between is part of it.
+	 *
+	 * @var array<string, true>
+	 */
+	private array $trashing = [];
+
+	/**
 	 * The orders whose customer's personal data WooCommerce is erasing, from
 	 * the start of the erasure to its end: `site:order id` => true.
 	 *
@@ -227,7 +238,11 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		add_action( 'woocommerce_new_order', [ $this, 'on_created' ], 10, 2 );
 		add_action( 'woocommerce_before_order_object_save', [ $this, 'on_before_save' ], 10, 1 );
 		add_action( 'woocommerce_order_status_changed', [ $this, 'on_status_changed' ], 10, 4 );
+		add_action( 'woocommerce_before_trash_order', [ $this, 'on_trashing' ], 10, 1 );
 		add_action( 'woocommerce_trash_order', [ $this, 'on_trashed' ], 10, 1 );
+		// The classic orders screen trashes an order kept as a post with
+		// WordPress's trash alone.
+		add_action( 'trashed_post', [ $this, 'on_post_trashed' ], 10, 1 );
 		add_action( 'woocommerce_untrash_order', [ $this, 'on_untrashed' ], 10, 2 );
 		add_action( 'untrashed_post', [ $this, 'on_post_untrashed' ], 10, 2 );
 		add_action( 'woocommerce_before_delete_order', [ $this, 'on_before_delete' ], 10, 2 );
@@ -604,6 +619,24 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	}
 
 	/**
+	 * WooCommerce is about to move an order to the trash (since WooCommerce
+	 * 8.0 for orders kept as posts): the trash of the order's post that
+	 * follows is part of it, see {@see self::on_post_trashed()}.
+	 *
+	 * @param mixed $order_id Order id.
+	 */
+	public function on_trashing( $order_id ): void {
+		try {
+			$order_id = self::id_of( $order_id );
+			if ( $order_id > 0 ) {
+				$this->trashing[ self::state_key( $order_id ) ] = true;
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9109, [ 'order_id' => self::id_of( $order_id ) ] );
+		}
+	}
+
+	/**
 	 * WooCommerce moved an order to the trash.
 	 *
 	 * @param mixed $order_id Order id.
@@ -611,19 +644,51 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	public function on_trashed( $order_id ): void {
 		try {
 			$order_id = self::id_of( $order_id );
-			$this->emit(
-				9109,
-				array_merge(
-					[
-						'id'       => $order_id,
-						'metadata' => [ 'order_id' => $order_id ],
-					],
-					$this->order_fields( $order_id, null )
-				)
-			);
+			unset( $this->trashing[ self::state_key( $order_id ) ] );
+			$this->emit_trashed( $order_id );
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9109, [ 'order_id' => self::id_of( $order_id ) ] );
 		}
+	}
+
+	/**
+	 * WordPress moved a post to the trash: for an order kept as a post that
+	 * WooCommerce is not trashing itself (the classic orders screen trashes it
+	 * this way, firing no hook of WooCommerce) it is the trash of the order.
+	 *
+	 * @param mixed $post_id Post id.
+	 */
+	public function on_post_trashed( $post_id ): void {
+		try {
+			$post_id = self::id_of( $post_id );
+			if ( $post_id <= 0 || ! function_exists( 'get_post_type' ) || 'shop_order' !== get_post_type( $post_id ) ) {
+				return;
+			}
+			if ( isset( $this->trashing[ self::state_key( $post_id ) ] ) ) {
+				return;
+			}
+			$this->emit_trashed( $post_id );
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9109, [ 'order_id' => self::id_of( $post_id ) ] );
+		}
+	}
+
+	/**
+	 * Dispatch the trash of an order.
+	 *
+	 * @param int $order_id Order id.
+	 */
+	private function emit_trashed( int $order_id ): void {
+		$this->emit(
+			9109,
+			array_merge(
+				[
+					'id'       => $order_id,
+					'metadata' => [ 'order_id' => $order_id ],
+				],
+				$this->order_fields( $order_id, null )
+			)
+		);
 	}
 
 	/**

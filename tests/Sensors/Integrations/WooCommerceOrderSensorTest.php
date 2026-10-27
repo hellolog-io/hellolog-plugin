@@ -768,6 +768,7 @@ final class WooCommerceOrderSensorTest extends TestCase {
 			'trashed'        => [ 9109, 'on_trashed' ],
 			'restored'       => [ 9110, 'on_untrashed' ],
 			'post restored'  => [ 9110, 'on_post_untrashed' ],
+			'post trashed'   => [ 9109, 'on_post_trashed' ],
 			'before delete'  => [ 9102, 'on_before_delete' ],
 		];
 	}
@@ -1283,7 +1284,9 @@ final class WooCommerceOrderSensorTest extends TestCase {
 				'woocommerce_new_order'                => [ 'on_created', 2 ],
 				'woocommerce_before_order_object_save' => [ 'on_before_save', 1 ],
 				'woocommerce_order_status_changed'     => [ 'on_status_changed', 4 ],
+				'woocommerce_before_trash_order'       => [ 'on_trashing', 1 ],
 				'woocommerce_trash_order'              => [ 'on_trashed', 1 ],
+				'trashed_post'                         => [ 'on_post_trashed', 1 ],
 				'woocommerce_untrash_order'            => [ 'on_untrashed', 2 ],
 				'untrashed_post'                       => [ 'on_post_untrashed', 2 ],
 				'woocommerce_before_delete_order'      => [ 'on_before_delete', 2 ],
@@ -1365,6 +1368,70 @@ final class WooCommerceOrderSensorTest extends TestCase {
 	}
 
 	/**
+	 * The classic orders screen of a shop that keeps its orders as posts
+	 * moves an order to the trash with WordPress's trash, firing no hook of
+	 * WooCommerce: WordPress's trash of an order post is the trash of the
+	 * order, and the post event of it is not told again. Other posts are not
+	 * orders.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_order_post_trashed_by_wordpress_is_a_trashed_order(): void {
+		$this->stubs();
+		OrderNoteState::$orders[5]     = $this->order( 5 );
+		OrderNoteState::$post_types[5] = 'shop_order';
+		OrderNoteState::$post_types[6] = 'post';
+		OrderNoteState::$post_types[7] = 'shop_order_refund';
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_post_trashed( 5 );
+		$recorder->dispatch( 2003, self::order_post_event( 5 ) );
+		$sensor->on_post_trashed( 6 );
+		$sensor->on_post_trashed( 7 );
+		$sensor->on_post_trashed( 8 );
+
+		$this->assertSame( [ 9109, 2003 ], array_column( $recorder->calls, 0 ) );
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 9109 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( WooCommerceOrderSensor::order_target( 5, 'A-17' ), $survivors[0]['target'] );
+		$this->assertSame( [ 'edit' => 'https://shop.test/wp-admin/order/5' ], $survivors[0]['links'] );
+		$this->assertSame( [ 'order_id' => 5 ], $survivors[0]['metadata'] );
+	}
+
+	/**
+	 * WooCommerce's own trash (the REST API, code, the screens of the order
+	 * tables when they keep the posts in sync) says it is about to trash the
+	 * order, trashes the post with WordPress's trash, then says it trashed
+	 * the order: still exactly one trash, the shop's.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_trash_by_woocommerce_is_one_trash_event(): void {
+		$this->stubs();
+		OrderNoteState::$orders[5]     = $this->order( 5 );
+		OrderNoteState::$post_types[5] = 'shop_order';
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_trashing( 5 );
+		$sensor->on_post_trashed( 5 );
+		$recorder->dispatch( 2003, self::order_post_event( 5 ) );
+		$sensor->on_trashed( 5 );
+
+		$this->assertSame( [ 2003, 9109 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ 9109 ], array_column( $this->survive( $recorder ), 'code' ) );
+
+		// Restored and moved to the trash again on the classic screen in the
+		// same request: told again.
+		$sensor->on_post_untrashed( 5, 'wc-processing' );
+		$sensor->on_post_trashed( 5 );
+		$this->assertSame( [ 2003, 9109, 9110, 9109 ], array_column( $recorder->calls, 0 ) );
+	}
+
+	/**
 	 * Ids come as text from some callers (the REST API's note routes, other
 	 * plugins); a handler takes them, and never fails on an argument of
 	 * another type before it can report.
@@ -1407,6 +1474,8 @@ final class WooCommerceOrderSensorTest extends TestCase {
 			$sensor->on_trashed( $odd );
 			$sensor->on_untrashed( $odd, $odd );
 			$sensor->on_post_untrashed( $odd, $odd );
+			$sensor->on_trashing( $odd );
+			$sensor->on_post_trashed( $odd );
 			$sensor->on_before_delete( $odd, $odd );
 			$sensor->on_deleted( $odd );
 			$sensor->on_note_added( $odd, $odd );
@@ -1545,6 +1614,26 @@ final class WooCommerceOrderSensorTest extends TestCase {
 			],
 			$over
 		);
+	}
+
+	/**
+	 * What the post sensor dispatches for WordPress's trash of order post
+	 * `$id` (2003), on the order's target.
+	 *
+	 * @param int $id Order id.
+	 * @return array<string, mixed>
+	 */
+	private static function order_post_event( int $id ): array {
+		return [
+			'post'      => [
+				'id'     => $id,
+				'type'   => 'shop_order',
+				'status' => 'trash',
+			],
+			'target'    => ContentSensor::object_target( 'shop_order', $id, 'Order', true ),
+			'title'     => 'Order',
+			'post_type' => 'Shop order',
+		];
 	}
 
 	/**
