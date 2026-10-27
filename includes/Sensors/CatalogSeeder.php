@@ -173,6 +173,7 @@ final class CatalogSeeder {
 		$c->register( new EventDefinition( 9002, ObjectType::PRODUCT, EventType::DELETED, Severity::MEDIUM, 'WC product "{name}" deleted.' ) );
 		$c->register( new EventDefinition( 9003, ObjectType::PRODUCT, EventType::UPDATED, Severity::INFO, 'WC product "{name}" price changed from {old} to {new}.' ) );
 		$c->register( new EventDefinition( 9004, ObjectType::PRODUCT, EventType::UPDATED, Severity::INFO, 'WC product "{name}" stock changed from {old} to {new}.' ) );
+		$c->register( new EventDefinition( 9005, ObjectType::PRODUCT, EventType::UPDATED, Severity::INFO, 'WC product "{name}" stock reduced by an order: {old} → {new}.' ) );
 
 		// Orders
 		$c->register( new EventDefinition( 9100, ObjectType::ORDER, EventType::CREATED, Severity::LOW, 'WC order #{id} created.' ) );

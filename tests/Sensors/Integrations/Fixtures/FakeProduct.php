@@ -11,9 +11,9 @@ namespace HelloLog\Tests\Sensors\Integrations\Fixtures;
 
 /**
  * Answers what the product sensor asks a product or a variation: its id,
- * name and parent, its stored values (`get_data()`) and the values a save is
- * about to write (`get_changes()`). Like WooCommerce's, the name is the
- * pending one when the save renames the product. It is no `WC_Product`: the
+ * name, parent and stock level, its stored values (`get_data()`) and the
+ * values a save is about to write (`get_changes()`). Like WooCommerce's, the
+ * name and stock level are the pending ones when the save changes them. It is no `WC_Product`: the
  * sensor tells a product by what it can answer.
  */
 class FakeProduct {
@@ -59,5 +59,15 @@ class FakeProduct {
 	 */
 	public function get_changes(): array {
 		return $this->changes;
+	}
+
+	/**
+	 * The stock level, the pending one when a save changes it.
+	 *
+	 * @param string $context `view` or `edit`; both read the same here.
+	 * @return mixed
+	 */
+	public function get_stock_quantity( string $context = 'view' ) {
+		return $this->changes['stock_quantity'] ?? $this->data['stock_quantity'] ?? null;
 	}
 }

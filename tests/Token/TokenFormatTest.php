@@ -41,7 +41,7 @@ final class CatalogSeederIntegrityTest extends TestCase {
 			6400, 6401, 6402,                               // request
 			4400, 4401,                                     // 2fa
 			4500, 4501, 4502,                               // app passwords
-			9000, 9001, 9002, 9003, 9004,                   // WC products
+			9000, 9001, 9002, 9003, 9004, 9005,             // WC products
 			9100, 9101, 9102, 9103, 9104,                   // WC orders
 			9106, 9107, 9108, 9111,                         // WC order items, deleted notes
 			9200, 9201, 9202,                               // WC coupons

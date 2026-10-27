@@ -21,11 +21,11 @@ use WP_Post;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Products and variations: creation (9000), edits (9001) and permanent
- * delete (9002). Every event names the product as its target (see
- * {@see self::product_target()}); a variation is a target of its own,
- * labelled with its name (its parent's name and its attributes), and links
- * to its parent's edit screen.
+ * Products and variations: creation (9000), edits (9001), permanent delete
+ * (9002) and stock reduced by an order (9005). Every event names the product
+ * as its target (see {@see self::product_target()}); a variation is a target
+ * of its own, labelled with its name (its parent's name and its attributes),
+ * and links to its parent's edit screen.
  *
  * An edit tells which of {@see self::PRODUCT_FIELDS} changed, the
  * descriptions ({@see self::CONTENT_FIELDS}) without their values, terms,
@@ -60,6 +60,15 @@ defined( 'ABSPATH' ) || exit;
  * held until the request (or the job that made it) ends, and told then
  * unless its product was trashed, restored or deleted in the same request.
  * The removal of a deleted post's image along with it is no edit.
+ *
+ * WooCommerce also writes stock levels straight to the database, with no save
+ * that would show the change: when an order reduces the stock, when a
+ * cancelled order or a refund puts it back, when an item is edited on the
+ * order screen, and in a bulk edit. The level is read before such a write
+ * and after it. An order says it reduced the stock right after the write:
+ * that is a stock event of its own (9005), naming the order. Any other such
+ * write is an edit of `stock_quantity` (9001), told once the next stock write
+ * begins or the request (or the job) ends, so the order had its say.
  *
  * Every handler runs inside the work of WordPress or WooCommerce on the
  * product (the shop's save of a product has no guard around its hooks), so
@@ -270,6 +279,24 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	 */
 	private array $held = [];
 
+	/**
+	 * Stock levels read before WooCommerce writes them: `site:product id` =>
+	 * the level read, and whether the write went straight to the database
+	 * (only such a write fires `woocommerce_updated_product_stock`).
+	 *
+	 * @var array<string, array{stock: mixed, direct: bool}>
+	 */
+	private array $stock_before = [];
+
+	/**
+	 * Stock levels written straight to the database, held until it is known
+	 * whether an order reduced them: `site:product id` => the site, the jobs
+	 * running at the write, the change and the fields of the product's event.
+	 *
+	 * @var array<string, array{blog: int, depth: int, change: array{field: string, old: ?string, new: ?string}, fields: array<string, mixed>}>
+	 */
+	private array $stock_written = [];
+
 	public function key(): string {
 		return 'woocommerce-product';
 	}
@@ -297,6 +324,14 @@ final class WooCommerceProductSensor extends AbstractSensor {
 		add_action( 'wp_trash_post', [ $this, 'on_trashing' ], 0, 1 );
 		add_action( 'untrash_post', [ $this, 'on_untrashing' ], 0, 1 );
 		add_action( 'before_delete_post', [ $this, 'on_delete_post' ], 10, 2 );
+		// Stock levels written straight to the database; a save that changes
+		// the level fires the first and the last of these too.
+		add_action( 'woocommerce_product_before_set_stock', [ $this, 'on_before_set_stock' ], 10, 1 );
+		add_action( 'woocommerce_variation_before_set_stock', [ $this, 'on_before_set_stock' ], 10, 1 );
+		add_action( 'woocommerce_updated_product_stock', [ $this, 'on_stock_updated' ], 10, 1 );
+		add_action( 'woocommerce_product_set_stock', [ $this, 'on_set_stock' ], 10, 1 );
+		add_action( 'woocommerce_variation_set_stock', [ $this, 'on_set_stock' ], 10, 1 );
+		add_action( 'woocommerce_reduce_order_item_stock', [ $this, 'on_order_reduced_stock' ], 10, 3 );
 		// Before the request's events are written, at priority 1.
 		add_action( 'shutdown', [ $this, 'flush_open_saves' ], 0 );
 		// What a job made, before its context ends at PHP_INT_MAX.
@@ -712,8 +747,9 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	/**
 	 * Tell what is still held when the request ends, each on the site it
 	 * happened on: the variations' status changes and deletes their product
-	 * did not take along, and what WordPress wrote inside saves of products
-	 * that never got to writing the post. Runs at shutdown, once.
+	 * did not take along, what WordPress wrote inside saves of products that
+	 * never got to writing the post, and the stock levels written straight
+	 * to the database that no order reduced. Runs at shutdown, once.
 	 */
 	public function flush_open_saves(): void {
 		$this->flush( 0 );
@@ -780,6 +816,160 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			$this->emit( 9002, $fields );
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9002, [ 'product_id' => $product_id ] );
+		}
+	}
+
+	/**
+	 * WooCommerce is about to write a product's or variation's stock level:
+	 * read the level it has now. A write held before this one is told first:
+	 * no order said it reduced the stock, so it is an edit.
+	 *
+	 * @param mixed $product The product or variation whose stock is written.
+	 */
+	public function on_before_set_stock( $product ): void {
+		$product_id = 0;
+		try {
+			$this->tell_stock_written();
+			if ( ! is_object( $product ) || ! method_exists( $product, 'get_id' ) || ! method_exists( $product, 'get_stock_quantity' ) ) {
+				return;
+			}
+			$product_id = self::id_of( $product->get_id() );
+			if ( $product_id <= 0 ) {
+				return;
+			}
+
+			$this->stock_before[ self::state_key( $product_id ) ] = [
+				'stock'  => $product->get_stock_quantity( 'edit' ),
+				'direct' => false,
+			];
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+		}
+	}
+
+	/**
+	 * WooCommerce wrote a stock level straight to the database: the write of
+	 * the level read before is no save.
+	 *
+	 * @param mixed $product_id Id of the product whose stock was written.
+	 */
+	public function on_stock_updated( $product_id ): void {
+		$id = 0;
+		try {
+			$id = self::id_of( $product_id );
+			if ( $id <= 0 ) {
+				return;
+			}
+			$key = self::state_key( $id );
+			if ( isset( $this->stock_before[ $key ] ) ) {
+				$this->stock_before[ $key ]['direct'] = true;
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9001, [ 'product_id' => $id ] );
+		}
+	}
+
+	/**
+	 * WooCommerce wrote a product's or variation's stock level. A level
+	 * written by a save is that save's change (see
+	 * {@see self::on_before_save()}); one written straight to the database
+	 * is held until it is known whether an order reduced it (see
+	 * {@see self::on_order_reduced_stock()}). A product being made tells no
+	 * edit.
+	 *
+	 * @param mixed $product The product or variation, holding the new level.
+	 */
+	public function on_set_stock( $product ): void {
+		$product_id = 0;
+		try {
+			if ( ! is_object( $product ) || ! method_exists( $product, 'get_id' ) ) {
+				return;
+			}
+			$product_id = self::id_of( $product->get_id() );
+			if ( $product_id <= 0 ) {
+				return;
+			}
+			$key    = self::state_key( $product_id );
+			$before = $this->stock_before[ $key ] ?? null;
+			unset( $this->stock_before[ $key ] );
+			if ( null === $before || ! $before['direct'] || ! method_exists( $product, 'get_stock_quantity' ) ) {
+				return;
+			}
+
+			$change = self::stock_change( $before['stock'], $product->get_stock_quantity( 'edit' ) );
+			if ( null === $change ) {
+				return;
+			}
+			$parent_id = method_exists( $product, 'get_parent_id' ) ? max( 0, (int) $product->get_parent_id() ) : 0;
+			if ( $this->in_creation( $product_id, $parent_id ) ) {
+				return;
+			}
+
+			$this->stock_written[ $key ] = [
+				'blog'   => self::blog_id(),
+				'depth'  => ActionSchedulerContext::depth(),
+				'change' => $change,
+				'fields' => $this->product_fields( $product_id, self::name_of( $product ), $parent_id, $parent_id > 0 ? self::VARIATION_TYPE : self::PRODUCT_TYPE ),
+			];
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+		}
+	}
+
+	/**
+	 * An order reduced the stock of the product of one of its lines, right
+	 * after writing it: a stock event of its own, naming the order, on the
+	 * product whose level moved (a variation may take its parent's stock).
+	 * The write held for it is no edit. When the write went unseen, the
+	 * levels and the product are the order's word.
+	 *
+	 * @param mixed $item   The order line; not used.
+	 * @param mixed $change `product`, and the stock level `from` and `to`.
+	 * @param mixed $order  The order.
+	 */
+	public function on_order_reduced_stock( $item, $change, $order = null ): void {
+		$product_id = 0;
+		try {
+			$product = is_array( $change ) ? ( $change['product'] ?? null ) : null;
+			if ( ! is_object( $product ) || ! method_exists( $product, 'get_id' ) ) {
+				return;
+			}
+			$product_id = self::id_of( $product->get_id() );
+			$stock      = self::stock_change( $change['from'] ?? null, $change['to'] ?? null );
+			if ( $product_id <= 0 || null === $stock ) {
+				return;
+			}
+
+			$owner_id = method_exists( $product, 'get_stock_managed_by_id' ) ? self::id_of( $product->get_stock_managed_by_id() ) : 0;
+			$key      = self::state_key( $owner_id > 0 ? $owner_id : $product_id );
+			$fields   = $this->stock_written[ $key ]['fields'] ?? null;
+			unset( $this->stock_written[ $key ] );
+			if ( null === $fields ) {
+				$parent_id = method_exists( $product, 'get_parent_id' ) ? max( 0, (int) $product->get_parent_id() ) : 0;
+				$fields    = $this->product_fields( $product_id, self::name_of( $product ), $parent_id, $parent_id > 0 ? self::VARIATION_TYPE : self::PRODUCT_TYPE );
+			}
+
+			$order_id = is_object( $order ) && method_exists( $order, 'get_id' ) ? self::id_of( $order->get_id() ) : 0;
+			if ( $order_id > 0 ) {
+				$fields['metadata']['order_id'] = $order_id;
+			}
+
+			$this->emit(
+				9005,
+				array_merge(
+					$fields,
+					[
+						'changes' => [ $stock ],
+						'vars'    => [
+							'name' => $fields['name'],
+							'old'  => $stock['old'],
+							'new'  => $stock['new'],
+						],
+					]
+				)
+			);
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9005, [ 'product_id' => $product_id ] );
 		}
 	}
 
@@ -916,7 +1106,8 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	 * Tell what was held from at least `$depth` running jobs on, each on its
 	 * own site, and forget it; the rest stays held. A variation's held event
 	 * is dropped when its product was trashed, restored or deleted in the
-	 * meantime.
+	 * meantime. A held stock level is an edit, see
+	 * {@see self::tell_stock_written()}.
 	 *
 	 * @param int $depth Jobs running when it was held, at least.
 	 */
@@ -956,6 +1147,30 @@ final class WooCommerceProductSensor extends AbstractSensor {
 				$this->on_site( (int) $parts[0], fn() => $this->record_written( $product_id, $changes ) );
 			} catch ( Throwable $e ) {
 				$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+			}
+		}
+
+		$this->tell_stock_written( $depth );
+	}
+
+	/**
+	 * Tell the stock levels written straight to the database that no order
+	 * said it reduced, as edits of `stock_quantity`, each on its own site:
+	 * those written from at least `$depth` running jobs on, or all of them.
+	 *
+	 * @param int|null $depth Jobs running at the write, at least; null for every write.
+	 */
+	private function tell_stock_written( ?int $depth = null ): void {
+		foreach ( $this->stock_written as $key => $written ) {
+			if ( null !== $depth && $written['depth'] < $depth ) {
+				continue;
+			}
+			unset( $this->stock_written[ $key ] );
+
+			try {
+				$this->on_site( $written['blog'], fn() => $this->emit( 9001, array_merge( $written['fields'], [ 'changes' => [ $written['change'] ] ] ) ) );
+			} catch ( Throwable $e ) {
+				$this->report_failure( $e, 9001, [ 'product_id' => (int) ( $written['fields']['metadata']['product_id'] ?? 0 ) ] );
 			}
 		}
 	}
@@ -1402,6 +1617,37 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			'old'   => $old,
 			'new'   => $new,
 		];
+	}
+
+	/**
+	 * The change of a stock level, as `stock_quantity` (`8` for `8.000`);
+	 * null when the level stayed (or neither is a number).
+	 *
+	 * @param mixed $old Level before.
+	 * @param mixed $new Level after.
+	 * @return array{field: string, old: ?string, new: ?string}|null
+	 */
+	private static function stock_change( $old, $new ): ?array {
+		$old = self::stock_text( $old );
+		$new = self::stock_text( $new );
+		if ( $old === $new ) {
+			return null;
+		}
+
+		return [
+			'field' => 'stock_quantity',
+			'old'   => $old,
+			'new'   => $new,
+		];
+	}
+
+	/**
+	 * A stock level as text, without trailing zeros; null for none.
+	 *
+	 * @param mixed $value Stock level.
+	 */
+	private static function stock_text( $value ): ?string {
+		return is_numeric( $value ) ? (string) ( $value + 0 ) : null;
 	}
 
 	/**

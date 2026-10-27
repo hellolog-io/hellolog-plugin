@@ -25,6 +25,7 @@ use HelloLog\Tests\Sensors\Core\Fixtures\BuildingRecorder;
 use HelloLog\Tests\Sensors\Core\Fixtures\Hooks;
 use HelloLog\Tests\Sensors\Core\Fixtures\TermState;
 use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
+use HelloLog\Tests\Sensors\Integrations\Fixtures\FakeOrder;
 use HelloLog\Tests\Sensors\Integrations\Fixtures\FakeProduct;
 use PHPUnit\Framework\TestCase;
 
@@ -32,7 +33,9 @@ use PHPUnit\Framework\TestCase;
  * A save of an existing product or variation tells which of its fields
  * changed (9001), whether the shop or WordPress wrote them; a new product is
  * a creation (9000) and its first saves tell nothing more; a product deleted
- * for good is 9002. Every event names the product as its target.
+ * for good is 9002. An order that reduces a product's stock is 9005; any
+ * other write of a stock level without a save is an edit (9001). Every event
+ * names the product as its target.
  *
  * The sensor calls WordPress, so every test that runs it runs in its own
  * process with the stand-ins of the post sensor tests.
@@ -1266,6 +1269,251 @@ final class WooCommerceProductSensorTest extends TestCase {
 	}
 
 	/**
+	 * An order that reduces a product's stock writes the level straight to
+	 * the database, then says so: one stock event on the product, naming the
+	 * order, and no edit.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_stock_reduced_by_an_order_is_one_stock_event_on_the_product(): void {
+		$this->stubs();
+		WpState::$posts[5] = self::post();
+
+		$recorder = $this->recorder();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+		self::write_stock( self::stocked( 5, 10 ), self::stocked( 5, 8 ) );
+		self::reduce( self::stocked( 5, 8 ), 10, 8 );
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 9005 ], array_column( $recorder->calls, 0 ) );
+		$fields = $recorder->calls[0][1];
+		$this->assertSame( self::target( '5', 'Mug' ), $fields['target'] );
+		$this->assertSame( [ self::change( 'stock_quantity', '10', '8' ) ], $fields['changes'] );
+		$this->assertSame(
+			[
+				'name' => 'Mug',
+				'old'  => '10',
+				'new'  => '8',
+			],
+			$fields['vars']
+		);
+		$this->assertSame(
+			[
+				'product_id' => 5,
+				'order_id'   => 77,
+			],
+			$fields['metadata']
+		);
+		$this->assertSame( [ 'edit' => 'https://example.test/wp-admin/post.php?post=5&action=edit' ], $fields['links'] );
+
+		$this->assertSame( 'WC product "Mug" stock reduced by an order: 10 → 8.', $this->build( $recorder )[0]['message'] );
+	}
+
+	/**
+	 * A cancelled order's restock, a refund's restock, an item edited on the
+	 * order screen and a bulk edit write the level the same way, without a
+	 * save that would show it: an edit of the product's stock, told once it
+	 * is known that no order reduced it (here when the request ends).
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_stock_written_without_a_save_is_an_edit_of_the_stock(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+		self::write_stock( self::stocked( 5, 8 ), self::stocked( 5, 10 ) );
+		$this->assertSame( [], $recorder->calls, 'Held until it is known whether an order made it.' );
+
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 9001 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( self::target( '5', 'Mug' ), $recorder->calls[0][1]['target'] );
+		$this->assertSame( [ self::change( 'stock_quantity', '8', '10' ) ], $recorder->calls[0][1]['changes'] );
+	}
+
+	/**
+	 * The next write of a stock level tells the one before it: an order
+	 * says it reduced the stock right after the write.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_stock_write_is_told_when_the_next_one_begins(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+		self::write_stock( self::stocked( 5, 8 ), self::stocked( 5, 10 ) );
+		Hooks::fire( 'woocommerce_product_before_set_stock', self::stocked( 6, 4, 'Plate' ) );
+		$this->assertSame( [ 9001 ], array_column( $recorder->calls, 0 ) );
+
+		Hooks::fire( 'woocommerce_updated_product_stock', 6 );
+		Hooks::fire( 'woocommerce_product_set_stock', self::stocked( 6, 3, 'Plate' ) );
+		self::reduce( self::stocked( 6, 3, 'Plate' ), 4, 3 );
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 9001, 9005 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( self::target( '6', 'Plate' ), $recorder->calls[1][1]['target'] );
+	}
+
+	/**
+	 * A bulk edit writes the stock level, then saves the product with the
+	 * other fields it changed: one edit with all of them.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_bulk_stock_edit_is_one_edit_with_the_products_other_changes(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+		self::write_stock( self::stocked( 5, 8 ), self::stocked( 5, 6 ) );
+		Hooks::fire( 'woocommerce_before_product_object_save', new FakeProduct( 5, self::stored( [ 'stock_quantity' => 6 ] ), [ 'backorders' => 'notify' ] ) );
+		Hooks::fire( 'shutdown' );
+
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 9001 ], array_column( $survivors, 'code' ) );
+		$this->assertSame(
+			[
+				self::change( 'backorders', 'no', 'notify' ),
+				self::change( 'stock_quantity', '8', '6' ),
+			],
+			$survivors[0]['changes']
+		);
+	}
+
+	/**
+	 * A stock level the shop saves with the product (the product screen, the
+	 * REST API) is in the save's changes; WooCommerce's stock hooks inside
+	 * that save tell it no second time.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_stock_level_saved_by_the_shop_is_told_once(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+		$product = new FakeProduct( 5, self::stored(), [ 'stock_quantity' => 12 ] );
+		Hooks::fire( 'woocommerce_before_product_object_save', $product );
+		Hooks::fire( 'woocommerce_product_before_set_stock', $product );
+		Hooks::fire( 'woocommerce_product_set_stock', self::stocked( 5, 12 ) );
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 9001 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ self::change( 'stock_quantity', '10', '12' ) ], $recorder->calls[0][1]['changes'] );
+	}
+
+	/**
+	 * A variation whose stock its parent manages takes the parent's stock:
+	 * the reduction is told on the product whose level moved.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_order_reducing_a_variation_stocked_by_its_parent_is_told_on_the_parent(): void {
+		$this->stubs();
+		WpState::$posts[50] = self::variable_product();
+		$variation          = new class( 103, self::stored( [ 'name' => 'Hoodie - Size 3' ] ), [], 50 ) extends FakeProduct {
+			public function get_stock_managed_by_id(): int {
+				return 50;
+			}
+		};
+
+		$recorder = $this->recorder();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+		self::write_stock( self::stocked( 50, 10, 'Hoodie' ), self::stocked( 50, 8, 'Hoodie' ) );
+		self::reduce( $variation, 10, 8 );
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 9005 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( self::target( '50', 'Hoodie' ), $recorder->calls[0][1]['target'] );
+		$this->assertSame( 50, $recorder->calls[0][1]['metadata']['product_id'] );
+	}
+
+	/**
+	 * When the write itself went unseen, the order's own word tells the
+	 * reduction, on the product it names; a reduction by nothing is none.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_order_reduction_without_a_write_seen_is_told_from_the_order(): void {
+		$this->stubs();
+
+		$recorder = $this->recorder();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+		self::reduce( self::stocked( 5, 8 ), 10, 8 );
+		self::reduce( self::stocked( 6, 3, 'Plate' ), 3, 3 );
+
+		$this->assertSame( [ 9005 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( self::target( '5', 'Mug' ), $recorder->calls[0][1]['target'] );
+		$this->assertSame( [ self::change( 'stock_quantity', '10', '8' ) ], $recorder->calls[0][1]['changes'] );
+	}
+
+	/**
+	 * A stock level written by an Action Scheduler job is told when the job
+	 * ends, while the job is still the context, and not again at shutdown.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_stock_write_in_a_job_is_told_when_the_job_ends(): void {
+		$this->stubs();
+		$recorder = new BuildingRecorder();
+		ActionSchedulerContext::register();
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+
+		Hooks::fire( 'action_scheduler_begin_execute', 41, 'WP Cron' );
+		self::write_stock( self::stocked( 5, 8 ), self::stocked( 5, 10 ) );
+		Hooks::fire( 'action_scheduler_after_execute', 41, null, 'WP Cron' );
+
+		$this->assertSame( [ 9001 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertSame( 'action-scheduler', $recorder->payloads[0]['source'] );
+
+		Hooks::fire( 'shutdown' );
+		$this->assertCount( 1, $recorder->payloads, 'Not again at shutdown.' );
+	}
+
+	/**
+	 * Product 5 of one site is not product 5 of another: a write is matched
+	 * with its order, and told, on the site it happened on.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_stock_write_is_told_on_the_site_it_happened_on(): void {
+		$this->stubs();
+		$recorder = new class() implements EventDispatcher {
+
+			/** @var array<int, array{0: int, 1: array<string, mixed>, 2: int}> */
+			public array $calls = [];
+
+			public function dispatch( int $code, array $fields = [] ): void {
+				$this->calls[] = [ $code, $fields, get_current_blog_id() ];
+			}
+		};
+		( new WooCommerceProductSensor( $recorder ) )->boot();
+
+		self::write_stock( self::stocked( 5, 8 ), self::stocked( 5, 10 ) );
+		WpState::$blog_id = 2;
+		self::reduce( self::stocked( 5, 19 ), 20, 19 );
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 9005, 9001 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ self::change( 'stock_quantity', '20', '19' ) ], $recorder->calls[0][1]['changes'] );
+		$this->assertSame( 2, $recorder->calls[0][2] );
+		$this->assertSame( [ self::change( 'stock_quantity', '8', '10' ) ], $recorder->calls[1][1]['changes'] );
+		$this->assertSame( 1, $recorder->calls[1][2] );
+		$this->assertSame( 2, WpState::$blog_id );
+	}
+
+	/**
 	 * The shop's save of a product runs before it writes it: whatever fails
 	 * while reading the product is reported, never thrown.
 	 *
@@ -1307,9 +1555,13 @@ final class WooCommerceProductSensorTest extends TestCase {
 			'image added'  => [ 9001, 'on_meta_added' ],
 			'image set'    => [ 9001, 'on_meta_updated' ],
 			'image gone'   => [ 9001, 'on_meta_deleted' ],
-			'trashing'     => [ 9001, 'on_trashing' ],
-			'restoring'    => [ 9001, 'on_untrashing' ],
-			'post deleted' => [ 9002, 'on_delete_post' ],
+			'trashing'      => [ 9001, 'on_trashing' ],
+			'restoring'     => [ 9001, 'on_untrashing' ],
+			'post deleted'  => [ 9002, 'on_delete_post' ],
+			'stock read'    => [ 9001, 'on_before_set_stock' ],
+			'stock updated' => [ 9001, 'on_stock_updated' ],
+			'stock written' => [ 9001, 'on_set_stock' ],
+			'stock reduced' => [ 9005, 'on_order_reduced_stock' ],
 		];
 	}
 
@@ -1328,9 +1580,13 @@ final class WooCommerceProductSensorTest extends TestCase {
 		WpState::$term_reads_throw = true;
 		WpState::$post_meta_throws = true;
 		// The handlers that only note an id read nothing but the site.
-		WpState::$blog_id_throws = in_array( $handler, [ 'on_term_added', 'on_trashing', 'on_untrashing' ], true );
+		WpState::$blog_id_throws = in_array( $handler, [ 'on_term_added', 'on_trashing', 'on_untrashing', 'on_stock_updated', 'on_set_stock' ], true );
 		$product                 = new class( 5 ) extends FakeProduct {
 			public function get_name() {
+				throw new \RuntimeException( 'A filter broke.' );
+			}
+
+			public function get_stock_quantity( string $context = 'view' ) {
 				throw new \RuntimeException( 'A filter broke.' );
 			}
 		};
@@ -1364,7 +1620,23 @@ final class WooCommerceProductSensorTest extends TestCase {
 				break;
 			case 'on_trashing':
 			case 'on_untrashing':
+			case 'on_stock_updated':
 				$sensor->$handler( 5 );
+				break;
+			case 'on_before_set_stock':
+			case 'on_set_stock':
+				$sensor->$handler( $product );
+				break;
+			case 'on_order_reduced_stock':
+				$sensor->on_order_reduced_stock(
+					new \stdClass(),
+					[
+						'product' => $product,
+						'from'    => 10,
+						'to'      => 8,
+					],
+					null
+				);
 				break;
 			default:
 				$sensor->on_delete_post( 5, $broken );
@@ -1413,6 +1685,29 @@ final class WooCommerceProductSensorTest extends TestCase {
 		$sensor->on_trashing( [] );
 		$sensor->on_untrashing( null );
 		$sensor->on_delete_post( [], null );
+		$sensor->on_before_set_stock( null );
+		$sensor->on_before_set_stock( 'product' );
+		$sensor->on_stock_updated( [] );
+		$sensor->on_set_stock( new \stdClass() );
+		$sensor->on_order_reduced_stock( null, null, null );
+		$sensor->on_order_reduced_stock(
+			null,
+			[
+				'product' => 'product',
+				'from'    => 10,
+				'to'      => 8,
+			],
+			5
+		);
+		$sensor->on_order_reduced_stock(
+			null,
+			[
+				'product' => new FakeProduct( 5, self::stored() ),
+				'from'    => [],
+				'to'      => null,
+			],
+			5
+		);
 		$sensor->flush_open_saves();
 		$sensor->flush_job_saves();
 
@@ -1452,6 +1747,13 @@ final class WooCommerceProductSensorTest extends TestCase {
 			'wp_trash_post'                          => [ 'on_trashing', 1, 0 ],
 			'untrash_post'                           => [ 'on_untrashing', 1, 0 ],
 			'before_delete_post'                     => [ 'on_delete_post', 2, 10 ],
+			// Stock levels the shop writes without a save.
+			'woocommerce_product_before_set_stock'   => [ 'on_before_set_stock', 1, 10 ],
+			'woocommerce_variation_before_set_stock' => [ 'on_before_set_stock', 1, 10 ],
+			'woocommerce_updated_product_stock'      => [ 'on_stock_updated', 1, 10 ],
+			'woocommerce_product_set_stock'          => [ 'on_set_stock', 1, 10 ],
+			'woocommerce_variation_set_stock'        => [ 'on_set_stock', 1, 10 ],
+			'woocommerce_reduce_order_item_stock'    => [ 'on_order_reduced_stock', 3, 10 ],
 			'shutdown'                               => [ 'flush_open_saves', 1, 0 ],
 			// When a job ends, before its context closes at PHP_INT_MAX.
 			'action_scheduler_after_execute'         => [ 'flush_job_saves', 0, PHP_INT_MAX - 1 ],
@@ -1612,6 +1914,62 @@ final class WooCommerceProductSensorTest extends TestCase {
 			Hooks::fire( 'deleted_post_meta', [ 900 + $id ], $id, '_thumbnail_id', $image );
 		}
 		Hooks::fire( 'delete_post', $id, $post );
+	}
+
+	/**
+	 * The hooks `wc_update_product_stock()` fires when it writes a stock level
+	 * straight to the database (an order, a restock, a bulk edit): the
+	 * product as it was, the direct write, the product holding the new level.
+	 *
+	 * @param FakeProduct $before The product before the write.
+	 * @param FakeProduct $after  The product after it.
+	 */
+	private static function write_stock( FakeProduct $before, FakeProduct $after ): void {
+		$kind = $before->get_parent_id() > 0 ? 'variation' : 'product';
+		Hooks::fire( 'woocommerce_' . $kind . '_before_set_stock', $before );
+		Hooks::fire( 'woocommerce_updated_product_stock', $before->get_id() );
+		Hooks::fire( 'woocommerce_' . $kind . '_set_stock', $after );
+	}
+
+	/**
+	 * What `wc_reduce_stock_levels()` says after it reduced the stock of the
+	 * product of a line of order 77.
+	 *
+	 * @param FakeProduct $product The product of the line.
+	 * @param int         $from    Stock level before.
+	 * @param int         $to      Stock level after.
+	 */
+	private static function reduce( FakeProduct $product, int $from, int $to ): void {
+		Hooks::fire(
+			'woocommerce_reduce_order_item_stock',
+			new \stdClass(),
+			[
+				'product' => $product,
+				'from'    => $from,
+				'to'      => $to,
+			],
+			new FakeOrder( 77 )
+		);
+	}
+
+	/**
+	 * A product with a stock level.
+	 *
+	 * @param int    $id    Product id.
+	 * @param int    $stock Its stock level.
+	 * @param string $name  Its name.
+	 */
+	private static function stocked( int $id, int $stock, string $name = 'Mug' ): FakeProduct {
+		return new FakeProduct(
+			$id,
+			self::stored(
+				[
+					'id'             => $id,
+					'name'           => $name,
+					'stock_quantity' => $stock,
+				]
+			)
+		);
 	}
 
 	/**

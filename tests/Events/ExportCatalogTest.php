@@ -222,6 +222,17 @@ final class ExportCatalogTest extends TestCase {
 		$this->assertSame( $severity, $by_code[ $code ]['severity'] );
 	}
 
+	public function test_the_order_stock_code_is_seeded(): void {
+		$by_code = array_column( $this->seeded_export(), null, 'code' );
+
+		$this->assertArrayHasKey( 9005, $by_code );
+		$this->assertSame( 'WC product "{name}" stock reduced by an order: {old} → {new}.', $by_code[9005]['label'] );
+		$this->assertSame( [ 'name', 'old', 'new' ], $by_code[9005]['vars'] );
+		$this->assertSame( 'product', $by_code[9005]['object'] );
+		$this->assertSame( 'updated', $by_code[9005]['event_type'] );
+		$this->assertSame( 'info', $by_code[9005]['severity'] );
+	}
+
 	public function test_the_role_capabilities_code_is_seeded(): void {
 		$by_code = array_column( $this->seeded_export(), null, 'code' );
 
