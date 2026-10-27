@@ -673,6 +673,54 @@ final class PluginsSensorTest extends TestCase {
 	}
 
 	/**
+	 * helloLOG logs and sends its own deactivation from its deactivation
+	 * hook, before WordPress fires `deactivated_plugin`; a second event here
+	 * would be queued after the last send and go out stale on reactivation.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_helloLOGs_own_deactivation_is_left_to_its_deactivation_hook(): void {
+		$this->put_plugin( 'hellolog/hellolog.php', 'helloLOG', '0.5.0' );
+		$this->put_plugin( 'akismet/akismet.php', 'Akismet Anti-spam', '5.3' );
+		define( 'HELLOLOG_FILE', WP_PLUGIN_DIR . '/hellolog/hellolog.php' );
+		$recorder = $this->recorder();
+		$sensor   = new PluginsSensor( $recorder );
+
+		$sensor->on_deactivated( 'hellolog/hellolog.php', false );
+		$sensor->on_deactivated( 'akismet/akismet.php', false );
+
+		$this->assertSame( [ 5002 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'akismet', $recorder->calls[0][1]['target']['id'] );
+	}
+
+	/**
+	 * The deactivation helloLOG sends for itself reads like any plugin's.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_deactivation_fields_are_the_ones_every_plugin_gets(): void {
+		$this->put_plugin( 'akismet/akismet.php', 'Akismet Anti-spam', '5.3' );
+		$this->put_plugin( 'hellolog/hellolog.php', 'helloLOG', '0.5.0' );
+		$recorder = $this->recorder();
+		( new PluginsSensor( $recorder ) )->on_deactivated( 'akismet/akismet.php', true );
+
+		$this->assertSame( $recorder->calls[0][1], PluginsSensor::deactivation_fields( 'akismet/akismet.php', true ) );
+		$this->assertSame(
+			[
+				'target'   => PluginsSensor::plugin_target( 'hellolog/hellolog.php', 'helloLOG' ),
+				'name'     => 'helloLOG',
+				'metadata' => [
+					'plugin_file'  => 'hellolog/hellolog.php',
+					'network_wide' => false,
+				],
+			],
+			PluginsSensor::deactivation_fields( 'hellolog/hellolog.php', false )
+		);
+	}
+
+	/**
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */

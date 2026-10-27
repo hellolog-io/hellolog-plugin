@@ -132,6 +132,17 @@ namespace {
 		return ExtensionState::$multisite;
 	}
 
+	if ( ! function_exists( 'plugin_basename' ) ) {
+		/**
+		 * Like core: the file relative to the plugins directory.
+		 *
+		 * @param string $file Full path of a plugin file.
+		 */
+		function plugin_basename( string $file ): string {
+			return ltrim( str_replace( WP_PLUGIN_DIR, '', $file ), '/' );
+		}
+	}
+
 	function get_bloginfo( string $show = '' ): string {
 		return 'version' === $show ? ExtensionState::$wp_version : '';
 	}

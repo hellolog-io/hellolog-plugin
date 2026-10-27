@@ -55,6 +55,7 @@ use HelloLog\Sensors\Integrations\LwLoader;
 use HelloLog\Sensors\SensorManager;
 use HelloLog\Settings\Options;
 use HelloLog\Transport\ApiClient;
+use HelloLog\Transport\FinalDelivery;
 use HelloLog\Transport\PayloadBuilder;
 use HelloLog\Transport\QueueFlusher;
 use HelloLog\Transport\RetryPolicy;
@@ -208,6 +209,27 @@ final class Plugin {
 		return $this->sensors;
 	}
 
+	/**
+	 * Log and send helloLOG's own deactivation. Its deactivation hook calls
+	 * this first, before the background jobs are unscheduled. The
+	 * deactivation is logged for helloLOG like any plugin's (5002), whether or
+	 * not the plugin sensor is on, and sent right away with everything the
+	 * request has collected, then once more at the very end of the request,
+	 * see {@see FinalDelivery}: no job will send the queue once the plugin
+	 * stops. Nothing happens before boot or while the plugin is not active
+	 * (no verified API key: nothing queued would be accepted).
+	 *
+	 * @param bool $network_wide Whether helloLOG is deactivated on every site of the network.
+	 */
+	public function deliver_own_deactivation( bool $network_wide = false ): void {
+		if ( ! $this->booted || ! $this->options->is_active() ) {
+			return;
+		}
+
+		$delivery = new FinalDelivery( $this->dispatcher, [ $this->build_flusher(), 'run' ], new FlushLock() );
+		$delivery->deliver( 5002, PluginsSensor::deactivation_fields( plugin_basename( HELLOLOG_FILE ), $network_wide ) );
+	}
+
 	private function load_textdomain(): void {
 		load_plugin_textdomain(
 			'hellolog',
@@ -306,19 +328,25 @@ final class Plugin {
 	 * request, whether a recurring action should exist.
 	 */
 	private function register_flush_scheduler(): void {
-		$flusher = new QueueFlusher(
-			new QueueRepository(),
-			new PayloadBuilder(),
-			new ApiClient( $this->options->endpoint_url(), $this->options->token() ),
-			new RetryPolicy()
-		);
 		( new ActionSchedulerBridge(
-			$flusher,
+			$this->build_flusher(),
 			$this->options,
 			new FlushLock(),
 			new AsLogPruner(),
 			new QueueRetention( new QueueRepository() )
 		) )->register();
+	}
+
+	/**
+	 * What sends the queue to the backend, one batch per run.
+	 */
+	private function build_flusher(): QueueFlusher {
+		return new QueueFlusher(
+			new QueueRepository(),
+			new PayloadBuilder(),
+			new ApiClient( $this->options->endpoint_url(), $this->options->token() ),
+			new RetryPolicy()
+		);
 	}
 
 	/**

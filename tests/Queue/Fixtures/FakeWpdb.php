@@ -86,6 +86,14 @@ final class FakeWpdb {
 	 */
 	public array $errors = [];
 
+	/**
+	 * The rows a `SELECT * FROM` (picking a batch from the queue) answers
+	 * with, as the database returns them.
+	 *
+	 * @var array<int, object>
+	 */
+	public array $queue_rows = [];
+
 	public function get_blog_prefix( ?int $blog_id = null ): string {
 		if ( null === $blog_id ) {
 			return $this->prefix;
@@ -208,7 +216,7 @@ final class FakeWpdb {
 	public function get_results( string $query, $output = null ): array {
 		$this->run( $query );
 
-		return [];
+		return str_starts_with( $query, 'SELECT * FROM ' ) ? $this->queue_rows : [];
 	}
 
 	/**

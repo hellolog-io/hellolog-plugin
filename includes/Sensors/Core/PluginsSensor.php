@@ -33,6 +33,12 @@ defined( 'ABSPATH' ) || exit;
  * Uploading a plugin over an installed one runs the install, and is told as
  * the update it is. A deletion keeps the name and version read just before
  * the files go.
+ *
+ * helloLOG's own deactivation is not logged here: helloLOG logs and sends it
+ * from its own deactivation hook ({@see \HelloLog\Plugin::deliver_own_deactivation()},
+ * with {@see self::deactivation_fields()}), which runs before
+ * `deactivated_plugin`; a second event here would be queued after that last
+ * send and go out stale when the plugin is turned on again.
  */
 final class PluginsSensor extends AbstractSensor {
 
@@ -82,7 +88,7 @@ final class PluginsSensor extends AbstractSensor {
 	}
 
 	public function on_activated( string $plugin, bool $network_wide ): void {
-		$name = $this->name( $plugin );
+		$name = self::name( $plugin );
 		$this->emit(
 			5001,
 			[
@@ -97,18 +103,31 @@ final class PluginsSensor extends AbstractSensor {
 	}
 
 	public function on_deactivated( string $plugin, bool $network_wide ): void {
-		$name = $this->name( $plugin );
-		$this->emit(
-			5002,
-			[
-				'target'   => self::plugin_target( $plugin, $name ),
-				'name'     => $name,
-				'metadata' => [
-					'plugin_file'  => $plugin,
-					'network_wide' => $network_wide,
-				],
-			]
-		);
+		if ( self::is_own( $plugin ) ) {
+			return;
+		}
+		$this->emit( 5002, self::deactivation_fields( $plugin, $network_wide ) );
+	}
+
+	/**
+	 * The fields of a plugin's deactivation (5002), its name read from its
+	 * file. helloLOG builds its own deactivation with them too.
+	 *
+	 * @param string $plugin       Plugin file, relative to the plugins directory.
+	 * @param bool   $network_wide Whether it was deactivated on every site of the network.
+	 * @return array<string, mixed>
+	 */
+	public static function deactivation_fields( string $plugin, bool $network_wide ): array {
+		$name = self::name( $plugin );
+
+		return [
+			'target'   => self::plugin_target( $plugin, $name ),
+			'name'     => $name,
+			'metadata' => [
+				'plugin_file'  => $plugin,
+				'network_wide' => $network_wide,
+			],
+		];
 	}
 
 	/**
@@ -117,7 +136,7 @@ final class PluginsSensor extends AbstractSensor {
 	 */
 	public function on_delete( string $plugin ): void {
 		try {
-			$this->deleting[ self::blog_id() ][ $plugin ] = self::headers( $this->plugin_data( $plugin ) );
+			$this->deleting[ self::blog_id() ][ $plugin ] = self::headers( self::plugin_data( $plugin ) );
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 5004, [ 'plugin_file' => $plugin ] );
 		}
@@ -368,7 +387,7 @@ final class PluginsSensor extends AbstractSensor {
 	 * @param array{Name: string, Version: string}|null $before The plugin before the job, if it was installed.
 	 */
 	private function emit_upgrade( int $code, string $file, string $action, ?array $before ): void {
-		$after = self::headers( $this->plugin_data( $file ) );
+		$after = self::headers( self::plugin_data( $file ) );
 		$name  = '' !== $after['Name'] ? $after['Name'] : ( $before['Name'] ?? '' );
 		$name  = '' !== $name ? $name : $file;
 
@@ -517,9 +536,18 @@ final class PluginsSensor extends AbstractSensor {
 		return function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
 	}
 
-	private function name( string $plugin_file ): string {
-		$name = self::header( $this->plugin_data( $plugin_file ), 'Name' );
+	private static function name( string $plugin_file ): string {
+		$name = self::header( self::plugin_data( $plugin_file ), 'Name' );
 		return '' !== $name ? $name : $plugin_file;
+	}
+
+	/**
+	 * Whether a plugin file is helloLOG itself.
+	 *
+	 * @param string $plugin_file Plugin file, relative to the plugins directory.
+	 */
+	private static function is_own( string $plugin_file ): bool {
+		return defined( 'HELLOLOG_FILE' ) && function_exists( 'plugin_basename' ) && plugin_basename( HELLOLOG_FILE ) === $plugin_file;
 	}
 
 	/**
@@ -539,7 +567,7 @@ final class PluginsSensor extends AbstractSensor {
 	 *
 	 * @return array<string, string>
 	 */
-	private function plugin_data( string $plugin_file ): array {
+	private static function plugin_data( string $plugin_file ): array {
 		if ( ! function_exists( 'get_plugin_data' ) ) {
 			require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		}

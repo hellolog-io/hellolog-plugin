@@ -25,7 +25,8 @@ defined( 'ABSPATH' ) || exit;
  */
 final class QueueFlusher {
 
-	private const BATCH_SIZE = 500;
+	/** Most events one run sends. */
+	public const BATCH_SIZE = 500;
 
 	public function __construct(
 		private QueueRepository $repository,
@@ -35,20 +36,26 @@ final class QueueFlusher {
 	) {
 	}
 
-	public function run(): void {
+	/**
+	 * Send one batch: the oldest events due.
+	 *
+	 * @return int How many events the backend accepted. A full batch
+	 *             ({@see self::BATCH_SIZE}) means more may be waiting.
+	 */
+	public function run(): int {
 		if ( ! $this->client->is_configured() ) {
-			return;
+			return 0;
 		}
 
 		$rows = $this->repository->pick_batch( self::BATCH_SIZE );
 		if ( empty( $rows ) ) {
-			return;
+			return 0;
 		}
 
 		$bundle = $this->payload_builder->build( $rows );
 		if ( empty( $bundle['events'] ) ) {
 			$this->repository->delete_many( $bundle['ids'] );
-			return;
+			return 0;
 		}
 
 		$this->repository->mark_sending( $bundle['ids'] );
@@ -63,10 +70,12 @@ final class QueueFlusher {
 
 		if ( $result->ok ) {
 			$this->repository->delete_many( $bundle['ids'] );
-			return;
+			return count( $bundle['ids'] );
 		}
 
 		$this->handle_failure( $rows, $bundle['ids'], $result );
+
+		return 0;
 	}
 
 	/**
