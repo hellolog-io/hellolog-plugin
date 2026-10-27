@@ -1,5 +1,124 @@
 # Changelog
 
+## [0.6.0] - 2026-10-27
+
+### Added
+- Post, page and custom post type events also compare the status, the
+  categories, tags and other terms, the sticky flag, the featured image and
+  the page template, as the post ends up after the save, so a block editor
+  save includes what the editor writes after the post itself. Terms and the
+  sticky flag changed outside a save (by a plugin, for instance) are logged
+  as an update of the post. A change to the content links to the revision
+  WordPress saved for it.
+- New post events: scheduled (with the date it goes live), submitted for
+  review, and made private.
+- Templates, template parts and global styles from the site editor are
+  logged. Their events, and those of navigation menus and patterns, name
+  them the way the site editor does ("Template", "Pattern").
+- Files of the media library: an upload, an edit of the title, caption,
+  description or alternative text, and a permanent deletion are logged, with
+  the file as the target. The description is reported as changed, without
+  its text. An upload that sets the alternative text is one event. The zip
+  the plugin and theme installer keeps while it works is not logged.
+- Profile edits that change the first or last name, the nickname or the
+  biographical info are now logged as profile updates (the biographical info
+  as changed, without its text).
+- A completed password reset (a new password set from the reset link) is
+  logged, without the new password.
+- A role given to or taken from a user on its own (as plugins that manage
+  several roles per user do) is logged as a role change listing every role
+  the user had before and after. A registration records every role the new
+  user got, and deleting a user records who their content was given to.
+- Plugin and theme events name the plugin or theme as their target, so its
+  history can be followed; a Customizer save names the active theme.
+  Updates list the version change (old to new), and a WordPress core update
+  lists the version it came from.
+- Turning automatic updates on or off for a plugin or theme is logged.
+- More core settings are watched: the discussion settings (default comment
+  and ping status, closing comments on old posts and after how many days,
+  previously approved comment authors, links before moderation, threaded
+  comments, the comment moderation and disallowed word lists), the UTC
+  offset, the site icon, the privacy policy page, the default category and
+  organizing uploads into month- and year-based folders. The word lists are
+  reported as changed, without their words. A watched setting saved for the
+  first time is logged too.
+- Role capability edits are a new critical event: which roles were added or
+  removed and which capabilities each role gained or lost, one event per
+  site and request. The capabilities that run the site (settings, users,
+  plugins, themes, code, the network) are listed first. The roles WordPress
+  sets up for a new site are not logged.
+- Term edits (categories, tags, custom taxonomies) list what changed: the
+  name, the slug, the parent and the description (as changed, without its
+  text). A menu save reports a rename. Term and menu events name the term or
+  menu as their target.
+- Changes to helloLOG's own settings are a new critical event: the API key
+  (only that it was set, replaced or removed, never its value), IP
+  anonymization, and each sensor turned on or off. This logging can not be
+  turned off and has no switch in the settings. Like all logging it needs a
+  verified API key; clearing the key is still logged.
+- A replaced or cleared API key, and a key that is no longer verified (a new
+  key, a cleared one, a failed connection test), are reported and sent right
+  away, under the key the site was verified with, so the record reaches the
+  account the site belonged to.
+- Deactivating helloLOG is logged and sent right away, before the plugin
+  stops, together with what is still in the queue (for up to two seconds);
+  events queued later in the same request are sent at its end. Deactivated
+  for a whole network, every other active site that has a key sends its own
+  deactivation as well, as many sites as five seconds allow.
+
+### Changed
+- A status event (published, scheduled, made private and the others) lists
+  the other changes made in the same save, including a sticky flag that the
+  classic editor, quick edit or bulk edit sets right after the status
+  change.
+- A status change that has no event of its own (a post sent back to draft
+  from pending review, scheduled or private) is logged as an update listing
+  the status change; it was not logged before.
+- A new post saved straight as pending, scheduled or private is logged as
+  submitted for review, scheduled or made private instead of "created".
+- A changed e-mail address and a changed password are high-severity events
+  of their own ("E-mail address changed", with the old and the new address,
+  and "Password changed") instead of part of the profile update. The
+  password is never recorded, only that it changed.
+- A term save that changed nothing is no longer logged, and several edits of
+  one term in a request are one event.
+- The settings screen, `wp hellolog enable-sensor` and
+  `wp hellolog disable-sensor` accept only the plugin's own sensors.
+  `wp hellolog sensors` shows whether each sensor runs, including the ones
+  that are off by default.
+
+### Fixed
+- Installing a plugin or theme is logged; it never was. Uploading a zip over
+  an installed plugin or theme is logged as the update it is, with the
+  version change.
+- A deleted plugin or theme is named by its real name instead of its file or
+  folder name.
+- Menu events name the menu also when only its items were saved or when it
+  was deleted; the name used to be empty.
+- With the media trash turned on, moving a file to the trash is logged; it
+  never was. A file's trash and restore read "Media", like its other events.
+- bbPress forums, topics and replies, LearnDash courses, lessons, topics and
+  quizzes, Easy Digital Downloads downloads and ACF field groups are no
+  longer logged twice: the events their own sensors report are left to
+  them, and everything else about them (a download's deletion, a lesson's
+  edit) is still logged.
+- Creating or deleting a site of a network no longer logs a database event
+  for each of that site's tables; the site's creation and deletion are
+  logged as one event each. Dropping helloLOG's own queue table (on
+  uninstall, or with a deleted site) is no longer logged either, like
+  creating it.
+- Saving the API key that is already stored (in the settings or with
+  `wp hellolog set-token`) no longer switches logging off until the key is
+  verified again, and `wp hellolog set-token` then says whether that key is
+  verified.
+
+### Security
+- A CREATE TABLE or DROP TABLE statement can no longer slip past the
+  database sensor: comments, unusual whitespace and the plural DROP TABLES
+  no longer hide it, every table a DROP TABLE names is logged (not only the
+  first), and a statement the sensor can not read precisely is logged as it
+  is, marked as unparsed.
+
 ## [0.5.0] - 2026-10-26
 
 **Upgrade note:** This version requires the HelloLog service release from

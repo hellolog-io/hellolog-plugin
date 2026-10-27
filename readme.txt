@@ -4,7 +4,7 @@ Tags:              activity log, audit log, security, monitoring, woocommerce
 Requires at least: 6.4
 Tested up to:      6.7
 Requires PHP:      8.0
-Stable tag:        0.5.0
+Stable tag:        0.6.0
 License:           GPL-2.0-or-later
 License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -81,6 +81,66 @@ every site is issued its own key, bound to its domain. Paste it into
 This version requires the HelloLog service release from October 2026 or later.
 
 == Changelog ==
+
+= 0.6.0 =
+* New: Post events also compare the status, the terms, the sticky flag, the
+  featured image and the page template, as the post ends up after the save
+  (block editor saves included). Terms and the sticky flag changed outside a
+  save are logged as an update. A content change links to its revision.
+* New: Post events for scheduled (with the date), submitted for review and
+  made private.
+* New: Site editor templates, template parts and global styles are logged,
+  named the way the site editor names them.
+* New: Media uploads, edits of a file's title, caption, description or
+  alternative text, and permanent deletions are logged.
+* New: Edits of the first or last name, the nickname or the biographical
+  info are now logged as profile updates.
+* New: A completed password reset is logged.
+* New: A role given to or taken from a user on its own is logged as a role
+  change. Registrations list every role; deleting a user records who got
+  their content.
+* New: Plugin and theme events name the plugin or theme as their target.
+  Updates list the old and the new version; a core update lists the version
+  it came from.
+* New: Turning automatic updates on or off for a plugin or theme is logged.
+* New: More core settings are watched: the discussion settings, the UTC
+  offset, the site icon, the privacy policy page, the default category and
+  the upload folders. Comment word lists are reported as changed, without
+  their words.
+* New: Role capability edits are logged as a critical event: roles added or
+  removed, capabilities gained or lost.
+* New: Term edits list what changed (name, slug, parent, description); a
+  menu save reports a rename.
+* New: Changes to helloLOG's own settings (the API key, never its value; IP
+  anonymization; sensors turned on or off) are logged as a critical event
+  that can not be turned off. Key changes are sent at once, under the key
+  the site was verified with.
+* New: Deactivating helloLOG is logged and sent right away, before the
+  plugin stops; deactivated network-wide, from every site with a key, within
+  a time limit.
+* Change: A status event lists the other changes of the same save; a post
+  sent back to draft is logged as an update.
+* Change: A new post saved straight as pending, scheduled or private is
+  logged as such instead of "created".
+* Change: E-mail address and password changes are high-severity events of
+  their own; the password is never recorded.
+* Change: A term save that changed nothing is no longer logged.
+* Change: The settings screen and WP-CLI accept only the plugin's own
+  sensors; `wp hellolog sensors` shows which sensors run, defaults included.
+* Fix: Plugin and theme installs are logged; uploading over an installed one
+  is logged as an update.
+* Fix: Deleted plugins and themes are named by their real name.
+* Fix: Menu events name the menu also on item-only saves and deletions.
+* Fix: With the media trash turned on, moving a file to the trash is logged.
+* Fix: bbPress, LearnDash, Easy Digital Downloads and ACF content is no
+  longer logged twice.
+* Fix: Creating or deleting a network site no longer logs a database event
+  per table; dropping helloLOG's own queue table is not logged.
+* Fix: Saving the API key that is already stored no longer switches logging
+  off.
+* Security: Comments, unusual whitespace or the plural DROP TABLES no longer
+  hide a CREATE or DROP TABLE statement; every table a DROP TABLE names is
+  logged, and a statement that can not be read is logged as it is.
 
 = 0.5.0 =
 * Note: This version requires the HelloLog service release from October
