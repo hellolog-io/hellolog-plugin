@@ -18,9 +18,9 @@ use PHPUnit\Framework\TestCase;
  * The plugin creates its own queue table on activation, for a new site and
  * on a site's first event, and drops it on uninstall and with a deleted
  * site; that is housekeeping, not somebody changing the database. Neither
- * are the tables WordPress creates and drops while it sets a network site up
- * or deletes it. Each test runs in its own process: it replaces the global
- * `$wpdb`.
+ * are the tables WordPress creates and drops for a network site it sets up
+ * or deletes. Each test runs in its own process: it replaces the global
+ * `$wpdb`, of a database named `wordpress`.
  *
  * @runTestsInSeparateProcesses
  * @preserveGlobalState disabled
@@ -28,7 +28,10 @@ use PHPUnit\Framework\TestCase;
 final class DatabaseSensorTest extends TestCase {
 
 	protected function setUp(): void {
-		$GLOBALS['wpdb'] = (object) [ 'base_prefix' => 'wp_' ];
+		$GLOBALS['wpdb'] = (object) [
+			'base_prefix' => 'wp_',
+			'dbname'      => 'wordpress',
+		];
 	}
 
 	/**
@@ -131,6 +134,11 @@ final class DatabaseSensorTest extends TestCase {
 			'the plural keyword'                => [ 'DROP TABLES wp_a, wp_b', [ 'wp_a', 'wp_b' ] ],
 			'plural, if exists, queue table'    => [ 'drop tables if exists wp_hellolog_queue, wp_users', [ 'wp_users' ] ],
 			'line breaks between the keywords'  => [ "DROP\n\tTABLE\n  wp_users", [ 'wp_users' ] ],
+			'a comment in the list'             => [ 'DROP TABLE wp_hellolog_queue /* old */, wp_users', [ 'wp_users' ] ],
+			'a comment between the keywords'    => [ 'DROP /* comment */ TABLE wp_users', [ 'wp_users' ] ],
+			'comments for spaces'               => [ 'DROP/**/TABLE/**/wp_hellolog_queue,/**/wp_users', [ 'wp_users' ] ],
+			'a comment inside a quoted name'    => [ 'DROP TABLE `odd/*x*/name`', [ 'odd/*x*/name' ] ],
+			'another database\'s queue table'   => [ 'DROP TABLE otherdb.wp_hellolog_queue', [ 'otherdb.wp_hellolog_queue' ] ],
 		];
 	}
 
@@ -150,8 +158,70 @@ final class DatabaseSensorTest extends TestCase {
 		$this->assertSame( array_fill( 0, count( $tables ), 7101 ), array_column( $recorder->calls, 0 ) );
 		$this->assertSame( $tables, array_column( array_column( $recorder->calls, 1 ), 'name' ) );
 		foreach ( $recorder->calls as [ , $fields ] ) {
-			$this->assertSame( ltrim( $query ), $fields['metadata']['query'] );
+			$this->assertArrayNotHasKey( 'unparsed', $fields['metadata'] );
 		}
+	}
+
+	/**
+	 * The statement in the metadata is the one that ran, its comments and
+	 * runs of whitespace each read as one space.
+	 */
+	public function test_the_statement_is_kept_with_comments_and_whitespace_collapsed(): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( "DROP\n\tTABLE /* old */ `wp a`,\n  wp_users" );
+
+		$this->assertSame( 'DROP TABLE `wp a`, wp_users', $recorder->calls[0][1]['metadata']['query'] );
+	}
+
+	/**
+	 * Comments and whitespace before the keyword, of any kind, do not hide
+	 * the statement; neither does a comment MySQL runs (`/*!`).
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function hidden_beginnings(): array {
+		return [
+			'a block comment'      => [ '/* note */ DROP TABLE wp_users' ],
+			'a dash comment'       => [ "-- note\nDROP TABLE wp_users" ],
+			'a hash comment'       => [ "# note\r\nDROP TABLE wp_users" ],
+			'form feed, tabs'      => [ "\f\v\t DROP TABLE wp_users" ],
+			'comments in a row'    => [ "/*a*//*b*/\n-- c\n#d\n  DROP TABLE wp_users" ],
+			'a comment MySQL runs' => [ '/*!40101 DROP TABLE wp_users */' ],
+			'a MariaDB one'        => [ '/*M!100100 DROP TABLE wp_users */;' ],
+		];
+	}
+
+	/**
+	 * @dataProvider hidden_beginnings
+	 *
+	 * @param string $query The statement.
+	 */
+	public function test_comments_and_whitespace_before_the_keyword_do_not_hide_a_drop( string $query ): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( $query );
+
+		$this->assertSame( [ 7101 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'wp_users', $recorder->calls[0][1]['name'] );
+	}
+
+	/**
+	 * Padding can not push a table out of what is kept: every table has its
+	 * own event, named.
+	 */
+	public function test_padding_between_the_tables_hides_none_of_them(): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( 'DROP/**/TABLE wp_hellolog_queue,' . str_repeat( ' ', 300 ) . 'wp_users' );
+
+		$this->assertSame( [ 7101 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'wp_users', $recorder->calls[0][1]['name'] );
+		$this->assertSame( 'DROP TABLE wp_hellolog_queue, wp_users', $recorder->calls[0][1]['metadata']['query'] );
+	}
+
+	public function test_the_queue_table_of_this_database_named_with_it_is_not_logged(): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( 'DROP TABLE `wordpress`.`wp_hellolog_queue`, wordpress.wp_2_hellolog_queue' );
+
+		$this->assertSame( [], $recorder->calls );
 	}
 
 	public function test_dropping_only_queue_tables_is_not_logged(): void {
@@ -166,17 +236,17 @@ final class DatabaseSensorTest extends TestCase {
 	 */
 	public static function unreadable_statements(): array {
 		return [
-			'a comment in the list'         => [ 'DROP TABLE wp_hellolog_queue /* old */, wp_users', 7101, 'wp_hellolog_queue' ],
-			'a comment before the keyword'  => [ 'DROP /* comment */ TABLE wp_users', 7101, 'wp_users' ],
-			'a comment before a queue drop' => [ 'DROP /* x */ TABLE IF EXISTS wp_hellolog_queue', 7101, 'wp_hellolog_queue' ],
-			'create or replace'             => [ 'CREATE OR REPLACE TABLE wp_shop ( id BIGINT )', 7100, 'wp_shop' ],
+			'a missing comma'        => [ 'DROP TABLE wp_hellolog_queue wp_users', 7101, 'wp_hellolog_queue' ],
+			'an unknown last word'   => [ 'DROP TABLE wp_hellolog_queue, wp_users PURGE', 7101, 'wp_hellolog_queue' ],
+			'create or replace'      => [ 'CREATE OR REPLACE TABLE wp_shop ( id BIGINT )', 7100, 'wp_shop' ],
 		];
 	}
 
 	/**
 	 * A statement that starts like a table statement but can not be read to
-	 * its end is logged once, as it is, with no exemption: it is never taken
-	 * for the queue table alone.
+	 * its end is logged once, as it is (comments and whitespace collapsed,
+	 * marked as not read), with no exemption: it is never taken for the queue
+	 * table alone.
 	 *
 	 * @dataProvider unreadable_statements
 	 *
@@ -190,17 +260,29 @@ final class DatabaseSensorTest extends TestCase {
 
 		$this->assertSame( [ $code ], array_column( $recorder->calls, 0 ) );
 		$this->assertSame( $name, $recorder->calls[0][1]['name'] );
-		$this->assertSame( $query, $recorder->calls[0][1]['metadata']['query'] );
+		$this->assertSame( str_replace( '/**/', ' ', $query ), $recorder->calls[0][1]['metadata']['query'] );
+		$this->assertSame( 'yes', $recorder->calls[0][1]['metadata']['unparsed'] );
+	}
+
+	/**
+	 * Padding can not push the rest of an unreadable statement out of what is
+	 * kept of it.
+	 */
+	public function test_padding_in_an_unreadable_statement_is_collapsed(): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( 'DROP TABLE wp_hellolog_queue,' . str_repeat( ' ', 300 ) . 'wp_users PURGE' );
+
+		$this->assertSame( 'DROP TABLE wp_hellolog_queue, wp_users PURGE', $recorder->calls[0][1]['metadata']['query'] );
+		$this->assertSame( 'yes', $recorder->calls[0][1]['metadata']['unparsed'] );
 	}
 
 	/**
 	 * Not even while a network site is set up or deleted.
 	 */
 	public function test_a_statement_that_can_not_be_read_is_logged_in_a_site_action_too(): void {
-		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
-		WpState::$doing_action = 'wp_uninitialize_site';
-		$recorder              = $this->recorder();
-		( new DatabaseSensor( $recorder ) )->on_query( 'DROP /* x */ TABLE wp_users' );
+		$this->in_site_action( 'wp_uninitialize_site', 4 );
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( 'DROP TABLE wp_4_posts wp_users' );
 
 		$this->assertSame( [ 7101 ], array_column( $recorder->calls, 0 ) );
 	}
@@ -272,12 +354,36 @@ final class DatabaseSensorTest extends TestCase {
 	 * @param string $query  The statement.
 	 */
 	public function test_tables_of_a_site_being_set_up_or_deleted_are_not_logged( string $action, string $query ): void {
-		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
-		WpState::$doing_action = $action;
-		$recorder              = $this->recorder();
+		$this->in_site_action( $action, 4 );
+		$recorder = $this->recorder();
 
 		$this->assertSame( $query, ( new DatabaseSensor( $recorder ) )->on_query( $query ) );
 		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * Only that site's tables: anything else dropped or created while a site
+	 * is set up or deleted is logged, the tables of the main site above all.
+	 */
+	public function test_other_tables_in_a_site_action_are_logged(): void {
+		$this->in_site_action( 'wp_uninitialize_site', 4 );
+		$recorder = $this->recorder();
+		$sensor   = new DatabaseSensor( $recorder );
+
+		$sensor->on_query( 'DROP TABLE IF EXISTS wp_4_posts, wp_users, wp_40_posts, otherdb.wp_4_options' );
+
+		$this->assertSame( [ 'wp_users', 'wp_40_posts', 'otherdb.wp_4_options' ], array_column( array_column( $recorder->calls, 1 ), 'name' ) );
+	}
+
+	public function test_the_main_sites_tables_are_never_skipped(): void {
+		$this->in_site_action( 'wp_initialize_site', 1 );
+		$recorder = $this->recorder();
+		$sensor   = new DatabaseSensor( $recorder );
+
+		$sensor->on_query( 'CREATE TABLE wp_posts ( ID BIGINT )' );
+		$sensor->on_query( 'DROP TABLE wp_1_posts' );
+
+		$this->assertSame( [ 7100, 7101 ], array_column( $recorder->calls, 0 ) );
 	}
 
 	/**
@@ -293,6 +399,20 @@ final class DatabaseSensorTest extends TestCase {
 		$sensor->on_query( 'DROP TABLE wp_shop_orders' );
 
 		$this->assertSame( [ 7100, 7101 ], array_column( $recorder->calls, 0 ) );
+	}
+
+	/**
+	 * WordPress running a site action, on that site (core switches to the
+	 * site it sets up or deletes).
+	 *
+	 * @param string $action  The site action.
+	 * @param int    $blog_id The site.
+	 */
+	private function in_site_action( string $action, int $blog_id ): void {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
+		WpState::$doing_action = $action;
+		WpState::$blog_id      = $blog_id;
 	}
 
 	/**
