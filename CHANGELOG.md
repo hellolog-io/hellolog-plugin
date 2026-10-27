@@ -61,11 +61,11 @@
   are the allowed e-mail addresses (see Changed). How often a coupon was
   used, and by whom, is not logged. Renames, description edits and
   publishing or unpublishing on the classic coupon screen are included.
-- Coupon events name the coupon by its code, the way WooCommerce stores it
-  (in lower case), so one coupon keeps one name in every event, and link to
-  its edit screen. Moving a coupon to the trash, restoring it and reverting
-  it to auto-draft are recorded on the same history and list the edits saved
-  in the same request.
+- Coupon events have the coupon as their target, named by its code in lower
+  case, the way WooCommerce stores it, so one coupon keeps one history; its
+  creation and edits link to its edit screen. Moving a coupon to the trash,
+  restoring it and reverting it to auto-draft are recorded on the same
+  history and list the edits saved in the same request.
 - Changes to the bank accounts of the direct bank transfer (BACS) payment
   method are a new critical event, logged whatever made the change, a
   visitor's request or a background task included (with that source and no
@@ -84,10 +84,12 @@
   WooCommerce does not pass the earlier values.
 - Shipping methods added to a shipping zone, removed from it, and turned on
   or off are logged, named by the method's type and the zone.
-- Webhooks created, changed and deleted are logged as high-severity events,
-  with the name, status, topic, API version, user and the host of the
-  delivery URL. The rest of the URL and the secret never leave the site: a
-  new secret, and a new URL on the same host, are reported only as changed.
+- Webhooks created, changed and deleted are logged as high-severity events.
+  A created or deleted webhook is recorded with its name, topic, status and
+  the host of its delivery URL; a change lists which of the name, status,
+  topic, delivery URL host, API version and user changed. The rest of the
+  URL and the secret are never sent: a new secret, and a new URL on the same
+  host, are reported only as changed.
   What WooCommerce saves with each delivery is not logged; a webhook
   WooCommerce turns off after failed deliveries is logged as a status change
   with that reason.
@@ -100,9 +102,11 @@
 ### Changed
 - The customer's personal details on an order (the billing and shipping
   names, company, addresses, e-mail address and phone number, and the
-  customer's note) are logged as changed, without their values, so no
-  contact detail leaves the site; a new order records none of them. A
-  coupon's allowed e-mail addresses are logged the same way.
+  customer's note) are logged as changed; their values are never sent, and
+  a new order records none of them. A coupon's allowed e-mail addresses are
+  logged the same way. Order note texts, refund reasons and item names are
+  sent as written (long texts cut, secrets in notes masked), so a personal
+  detail typed into them is sent too.
 - The product "price changed" (9003) and "stock changed" (9004) events are
   no longer sent: price and stock changes appear in the product update's
   list of changes, and stock reduced by an order has its own event.

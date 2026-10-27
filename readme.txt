@@ -44,6 +44,10 @@ queue.
 * Multisite: sites, super admin grants, network settings
 * helloLOG itself: changes to its own settings (the API key, never its value;
   IP anonymization; sensors turned on or off) and its deactivation
+* WooCommerce: orders (edits, items, refunds, notes, trash, restore,
+  deletion), products and variations (field changes, stock), coupons,
+  payment gateway settings and bank accounts, tax rates, shipping methods,
+  webhooks, attributes
 * Integrations: WooCommerce, Gravity Forms, WPForms, Yoast SEO, RankMath, ACF,
   bbPress, LearnDash, MemberPress, Paid Memberships Pro, TablePress,
   Redirection, MainWP, and more
@@ -119,22 +123,25 @@ This version requires the HelloLog service release from October 2026 or later.
   expiry, usage limits, free shipping, individual use, sale items, minimum
   and maximum spend, products and categories). The description and the
   allowed e-mail addresses are reported as changed, without their values.
-* New: Coupon events name the coupon by its code as WooCommerce stores it;
-  trash, restore and revert land on the same history with the edits of the
-  same request.
+* New: Coupon events have the coupon as their target, named by its
+  lower-case code, so one coupon keeps one history; trash, restore and
+  revert land on it with the edits of the same request.
 * New: Bank account changes of the bank transfer (BACS) payment method are
   a critical event, logged from any source. Accounts are named by the last
   four digits of their number; the account number, sort code, IBAN and BIC
   are reported only as changed.
 * New: The first save of a payment gateway's settings and the first bank
   account are logged.
-* New: Tax rates, shipping methods of a zone, webhooks and product
-  attributes are logged when added, changed or deleted, by the new
-  `woocommerce-config` sensor (on by default). Webhook events show only the
-  host of the delivery URL and never the secret.
+* New: Tax rates, webhooks and product attributes are logged when added,
+  changed or deleted, and shipping methods when added to a zone, removed
+  from it, or turned on or off, by the new `woocommerce-config` sensor (on
+  by default). Webhook events show only the host of the delivery URL and
+  never the secret.
 * Change: Customer personal details on orders (billing and shipping names,
   company, addresses, e-mail address, phone, customer note) and a coupon's
-  allowed e-mail addresses are logged as changed, without their values.
+  allowed e-mail addresses are logged as changed; their values are never
+  sent. Order note texts, refund reasons and item names are sent as
+  written.
 * Change: The product "price changed" (9003) and "stock changed" (9004)
   events are no longer sent; price and stock appear in the product update's
   changes. The product update message no longer lists "Fields:". Product and
