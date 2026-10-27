@@ -1009,6 +1009,177 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
+	 * `edit_post()` (the classic editor, quick edit) saves the post with
+	 * `wp_update_post()` and only then sticks or unsticks it: publishing a
+	 * post and sticking it to the front page in one go is one publish event
+	 * that carries the sticky change.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_classic_editor_publish_that_sticks_the_post_is_one_published_event_with_the_sticky_change(): void {
+		$recorder = null;
+		$this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$recorder ): void {
+				$recorder = $dispatcher;
+				$sensor->boot();
+				self::update_post(
+					$post(
+						[
+							'post_status' => 'draft',
+							'post_title'  => 'Draft title',
+						]
+					),
+					$post( [ 'post_title' => 'Final title' ] )
+				);
+				self::stick( 7, true );
+			}
+		);
+
+		$this->assertSame( [ 2001, 2006 ], array_column( $recorder->calls, 0 ) );
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 2001 ], array_column( $survivors, 'code' ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_title',
+					'old'   => 'Draft title',
+					'new'   => 'Final title',
+				],
+				[
+					'field' => 'sticky',
+					'old'   => 'no',
+					'new'   => 'yes',
+				],
+			],
+			$survivors[0]['changes']
+		);
+	}
+
+	/**
+	 * Making a post private in the classic editor drops its sticky flag
+	 * after the save (`_wp_translate_postdata()` unsets it): the status event
+	 * carries the unstick. From a draft that is "made private" (2009), from a
+	 * published post it is "unpublished" (2002).
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_making_a_sticky_post_private_carries_the_unstick(): void {
+		$recorder = null;
+		$this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$recorder ): void {
+				$recorder        = $dispatcher;
+				WpState::$sticky = [ 7, 8 ];
+
+				$sensor->boot();
+				self::update_post( $post( [ 'post_status' => 'draft' ] ), $post( [ 'post_status' => 'private' ] ) );
+				self::stick( 7, false );
+				self::update_post( $post( [ 'ID' => 8 ] ), $post( [ 'ID' => 8, 'post_status' => 'private' ] ) );
+				self::stick( 8, false );
+			}
+		);
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 2009, 2002 ], array_column( $survivors, 'code' ) );
+		foreach ( $survivors as $survivor ) {
+			$this->assertSame(
+				[
+					[
+						'field' => 'sticky',
+						'old'   => 'yes',
+						'new'   => 'no',
+					],
+				],
+				$survivor['changes']
+			);
+		}
+	}
+
+	/**
+	 * `bulk_edit_posts()` saves each post, then sticks it: every post's
+	 * publish carries its own sticky change.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_bulk_publish_that_sticks_the_posts_carries_each_sticky_change(): void {
+		$recorder = null;
+		$this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$recorder ): void {
+				$recorder = $dispatcher;
+				$sensor->boot();
+				foreach ( [ 7, 8 ] as $id ) {
+					self::update_post(
+						$post(
+							[
+								'ID'          => $id,
+								'post_status' => 'pending',
+							]
+						),
+						$post( [ 'ID' => $id ] )
+					);
+					self::stick( $id, true );
+				}
+			}
+		);
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 2001, 2001 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( [ '7', '8' ], array_map( static fn( array $p ): string => $p['target']['id'], $survivors ) );
+		$this->assertSame( [ 'sticky' ], array_column( $survivors[0]['changes'], 'field' ) );
+		$this->assertSame( [ 'sticky' ], array_column( $survivors[1]['changes'], 'field' ) );
+	}
+
+	/**
+	 * A post created through the REST API is inserted (its default category
+	 * set inside the insert), its status change logged at once, and its terms
+	 * and sticky flag written after: those updates fold into the creation,
+	 * with the terms it ends up with.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_rest_creation_carries_the_terms_and_sticky_flag_it_ends_up_with(): void {
+		$recorder = null;
+		$this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$recorder ): void {
+				$recorder = $dispatcher;
+				self::term( 15, 5, 'Uncategorized', 'category' );
+				self::term( 16, 6, 'News', 'category' );
+
+				$sensor->boot();
+				$created           = $post();
+				WpState::$posts[7] = $created;
+				self::set_terms( 7, 'category', [ 15 ] );
+				self::fire( 'transition_post_status', 'publish', 'new', $created );
+				self::stick( 7, true );
+				self::set_terms( 7, 'category', [ 16 ] );
+				self::fire( 'wp_after_insert_post', 7, $created, false, null );
+			}
+		);
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 2001 ], array_column( $survivors, 'code' ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'category',
+					'old'   => '',
+					'new'   => 'News',
+				],
+				[
+					'field' => 'sticky',
+					'old'   => 'no',
+					'new'   => 'yes',
+				],
+			],
+			$survivors[0]['changes']
+		);
+	}
+
+	/**
 	 * A status change that is no event of its own (back to draft from
 	 * review, from scheduled or from private) is an update that names the
 	 * status among its changes.
