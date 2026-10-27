@@ -39,8 +39,9 @@ defined( 'ABSPATH' ) || exit;
  * Which post types are logged is decided by {@see self::is_tracked_type()}:
  * internal types without an admin screen are left out, and so are the
  * events another sensor reports itself (see {@see PostTypeOwnership}); the
- * site editor's types are always logged (see {@see self::SITE_EDITOR_TYPES}). Every event names the post it is
- * about as its target and links to its edit screen.
+ * site editor's types are always logged (see {@see self::SITE_EDITOR_TYPES}).
+ * Every event names the post it is about as its target and links to its
+ * edit screen.
  *
  * Of a file of the media library only its trash and restore are logged here
  * (the rest is {@see MediaSensor}'s), on the file's media target. Core moves
