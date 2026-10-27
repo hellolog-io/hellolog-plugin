@@ -205,6 +205,164 @@ final class DatabaseSensorTest extends TestCase {
 	}
 
 	/**
+	 * Whatever the sensor can not read is logged, never let through: inputs
+	 * sized to make a pattern give up (a long run of comments, a huge comment)
+	 * are read without one.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function oversized_beginnings(): array {
+		return [
+			'4000 hash comments'    => [ str_repeat( "#\n", 4000 ) . 'DROP TABLE wp_users' ],
+			'4000 empty comments'   => [ str_repeat( '/**/', 4000 ) . 'DROP TABLE wp_users' ],
+			'a 1 MB block comment'  => [ '/* ' . str_repeat( 'x', 1000000 ) . ' */ DROP TABLE wp_users' ],
+			'4000 dash comments'    => [ str_repeat( "-- x\n", 4000 ) . 'DROP TABLE wp_users' ],
+		];
+	}
+
+	/**
+	 * @dataProvider oversized_beginnings
+	 *
+	 * @param string $query The statement.
+	 */
+	public function test_oversized_comments_before_the_keyword_do_not_hide_a_drop( string $query ): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( $query );
+
+		$this->assertSame( [ 7101 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'wp_users', $recorder->calls[0][1]['name'] );
+	}
+
+	/**
+	 * MySQL reads `--` followed by any space or control character as a
+	 * comment, as the sensor does.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function dash_comments(): array {
+		return [
+			'tab'       => [ "--\tnote\nDROP TABLE wp_users" ],
+			'control'   => [ "--\x01note\nDROP TABLE wp_users" ],
+			'delete'    => [ "--\x7Fnote\nDROP TABLE wp_users" ],
+			'line feed' => [ "--\nDROP TABLE wp_users" ],
+		];
+	}
+
+	/**
+	 * @dataProvider dash_comments
+	 *
+	 * @param string $query The statement.
+	 */
+	public function test_dash_comments_ending_in_any_control_character_are_read( string $query ): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( $query );
+
+		$this->assertSame( [ 7101 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'wp_users', $recorder->calls[0][1]['name'] );
+		$this->assertArrayNotHasKey( 'unparsed', $recorder->calls[0][1]['metadata'] );
+	}
+
+	/**
+	 * What a comment MySQL runs does depends on the server's version, so it
+	 * is never read as certain: the statement is logged, marked unparsed,
+	 * and no exemption applies, not even a temporary table or the queue.
+	 *
+	 * @return array<string, array{0: string, 1: int, 2: string}>
+	 */
+	public static function version_comments(): array {
+		return [
+			'the whole statement'      => [ '/*!50000 DROP TABLE wp_users*/', 7101, 'wp_users' ],
+			'temporary only for some'  => [ 'CREATE /*!99999 TEMPORARY */ TABLE wp_shop ( id BIGINT )', 7100, 'wp_shop' ],
+			'after the queue table'    => [ 'DROP TABLE wp_hellolog_queue /*!99999 , wp_users */', 7101, 'wp_hellolog_queue' ],
+		];
+	}
+
+	/**
+	 * @dataProvider version_comments
+	 *
+	 * @param string $query The statement.
+	 * @param int    $code  The event it must leave.
+	 * @param string $name  The table it is logged under.
+	 */
+	public function test_a_comment_mysql_runs_is_logged_without_exemption( string $query, int $code, string $name ): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( $query );
+
+		$this->assertSame( [ $code ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( $name, $recorder->calls[0][1]['name'] );
+		$this->assertSame( 'yes', $recorder->calls[0][1]['metadata']['unparsed'] );
+	}
+
+	/**
+	 * Rows read or written are not tables: a search for the words, a post
+	 * or comment about them, and helloLOG writing one of its own events (an
+	 * event about a table holds its statement) leave no event.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function statements_about_tables(): array {
+		return [
+			'a plain select'          => [ 'SELECT * FROM wp_users' ],
+			'a huge select'           => [ 'SELECT ' . str_repeat( 'x', 1000000 ) . ' FROM wp_users' ],
+			'a search'                => [ "SELECT ID FROM wp_posts WHERE post_content LIKE '%drop table%'" ],
+			'a post about it'         => [ "INSERT INTO wp_posts (post_content) VALUES ('How to create a table')" ],
+			'an update about it'      => [ "/* note */ UPDATE wp_posts SET post_content = 'DROP TABLE x' WHERE ID = 1" ],
+			'helloLOG\'s own event'   => [ "INSERT INTO `wp_hellolog_queue` (`payload`) VALUES ('{\"metadata\":{\"query\":\"CREATE TABLE wp_shop (id INT)\"}}')" ],
+			'a replace'               => [ "REPLACE INTO wp_options VALUES ('x', 'drop tables')" ],
+			'a delete'                => [ "DELETE FROM wp_comments WHERE comment_content = 'create table'" ],
+			'how a table was created' => [ 'SHOW CREATE TABLE wp_posts' ],
+			'a description'           => [ "DESCRIBE wp_posts 'create table'" ],
+		];
+	}
+
+	/**
+	 * @dataProvider statements_about_tables
+	 *
+	 * @param string $query The statement.
+	 */
+	public function test_statements_that_only_mention_tables_are_not_logged( string $query ): void {
+		$recorder = $this->recorder();
+
+		$this->assertSame( $query, ( new DatabaseSensor( $recorder ) )->on_query( $query ) );
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * Anything else that holds the words (a statement prepared to run later,
+	 * a variable holding one) is logged, unparsed.
+	 *
+	 * @return array<string, array{0: string, 1: int}>
+	 */
+	public static function other_statements_with_the_words(): array {
+		return [
+			'a prepared statement' => [ "PREPARE s FROM 'DROP TABLE wp_users'", 7101 ],
+			'a variable'           => [ "SET @s = 'CREATE TABLE wp_x (id INT)'", 7100 ],
+			'a comment first'      => [ "/* x */ PREPARE s FROM 'DROP TABLE wp_users'", 7101 ],
+		];
+	}
+
+	/**
+	 * @dataProvider other_statements_with_the_words
+	 *
+	 * @param string $query The statement.
+	 * @param int    $code  The event it must leave.
+	 */
+	public function test_other_statements_holding_the_words_are_logged( string $query, int $code ): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( $query );
+
+		$this->assertSame( [ $code ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'yes', $recorder->calls[0][1]['metadata']['unparsed'] );
+	}
+
+	public function test_a_huge_quoted_table_name_is_still_logged(): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( 'DROP TABLE wp_hellolog_queue, `' . str_repeat( 'a', 1000000 ) . '`' );
+
+		$this->assertSame( [ 7101 ], array_column( $recorder->calls, 0 ) );
+	}
+
+	/**
 	 * Padding can not push a table out of what is kept: every table has its
 	 * own event, named.
 	 */

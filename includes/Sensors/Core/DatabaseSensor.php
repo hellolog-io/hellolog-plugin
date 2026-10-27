@@ -15,38 +15,48 @@ defined( 'ABSPATH' ) || exit;
 
 /**
  * Hooks `query` so we can spot `CREATE TABLE` / `DROP TABLE` issued
- * outside WordPress core. The filter is cheap — early-exit unless the
- * query starts with one of the keywords we care about, or with a comment.
+ * outside WordPress core.
  *
  * This is best-effort: a plugin issuing the DDL is the common path and
  * is covered here. Migration tools running outside the WP request are
- * not (run an ops-side migration audit instead).
+ * not (run an ops-side migration audit instead). So is dynamic SQL: a
+ * statement assembled in the database (`PREPARE … FROM @variable`) is never
+ * seen as text.
  *
- * A statement is read the way MySQL reads it: comments (block comments,
- * `-- `, `#`) and runs of whitespace of any kind (form feed included) count
- * as one space, before the keyword too, and a comment MySQL runs (one that
- * opens with `/*!` or `/*M!`) counts as its content. The statement kept in
- * the metadata is this form of it, so padding can not push anything out of
- * what is kept.
+ * The sensor fails closed. Spotting is coarse: any statement whose text has
+ * the word `CREATE` or `DROP` followed somewhere by the word `TABLE` or
+ * `TABLES` (a cheap search for "table" first, then a scan in one pass, with
+ * no pattern that could give up on a large input) is logged, unless the
+ * precise reading below grants it an exemption. Anything that reading can
+ * not settle is logged once, as it is, under the first name after `TABLE`,
+ * marked `unparsed`, with no exemption.
  *
- * A `DROP TABLE` (or `DROP TABLES`) can name several tables; each one is
- * logged as its own event. A temporary table never outlives its connection,
- * so creating or dropping one changes no stored table and is not logged.
- * The sensor fails closed: a statement that starts with `CREATE` or `DROP`
- * and has the word `TABLE` or `TABLES` in it, but can not be read to its end,
- * is logged once, as it is, under the first name after that word, marked
- * `unparsed`, and none of the exemptions below apply to it.
+ * The precise reading follows MySQL: comments (block comments, `#`, `--`
+ * followed by a space or control character) and runs of whitespace count as
+ * one space. A comment MySQL runs (one that opens with `/*!` or `/*M!`)
+ * depends on the server's version, so a statement with one is never read as
+ * certain. The statement kept in the metadata is the collapsed form, so
+ * padding can not push anything out of what is kept. Its exemptions:
  *
- * helloLOG creating or dropping its own queue table (on activation, for a
- * new site, on a site's first event; on uninstall, with a deleted site) is
- * housekeeping, not a change to the database, and is not logged: a queue
- * table named without a database or with the current one is skipped, and a
- * statement is skipped only when every table it names is skipped. Neither
- * are the tables of a network site WordPress sets up (`wp_initialize_site`)
- * or deletes (`wp_uninitialize_site`): its creation and deletion are logged
- * on their own (4100, 4101). Only that site's tables are skipped there (its
- * prefix, `{base prefix}{site id}_`; core is switched to the site), never the
- * main site's, and never a table of another database.
+ *   - a statement that only reads or writes rows (`SELECT`, `INSERT`,
+ *     `UPDATE`, `DELETE`, `REPLACE`) or describes a table (`SHOW`, `DESCRIBE`,
+ *     `DESC`, `EXPLAIN`), read from its first word after nothing but
+ *     whitespace and plain comments: a search for the words, a post about
+ *     them, helloLOG queueing one of these events. One statement per query,
+ *     as wpdb runs them;
+ *   - a temporary table (`CREATE` or `DROP TEMPORARY TABLE`): it never
+ *     outlives its connection;
+ *   - helloLOG's own queue table (on activation, for a new site, on a site's
+ *     first event; on uninstall, with a deleted site), named without a
+ *     database or with the current one;
+ *   - while WordPress sets a network site up (`wp_initialize_site`) or
+ *     deletes it (`wp_uninitialize_site`), that site's tables (its prefix,
+ *     `{base prefix}{site id}_`; core is switched to the site), never the main
+ *     site's and never another database's: the site's creation and deletion
+ *     are logged on their own (4100, 4101).
+ *
+ * A `DROP TABLE` (or `DROP TABLES`) can name several tables; each table not
+ * exempted is logged as its own event.
  */
 final class DatabaseSensor extends AbstractSensor {
 
@@ -59,19 +69,20 @@ final class DatabaseSensor extends AbstractSensor {
 	private const SITE_ACTIONS = [ 'wp_initialize_site', 'wp_uninitialize_site' ];
 
 	/**
-	 * One part of a table name: quoted in backticks or double quotes (a quote
-	 * doubled inside), or plain.
+	 * Statements that never create or drop a table, by their first word.
+	 *
+	 * @var array<int, string>
 	 */
-	private const NAME_PART = '(?:`(?:[^`]|``)+`|"(?:[^"]|"")+"|[0-9A-Za-z_$\x80-\xFF]+)';
+	private const ROW_STATEMENTS = [ 'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN' ];
+
+	/**
+	 * One part of a table name: quoted in backticks or double quotes (a quote
+	 * doubled inside), or plain. Possessive, so a long name is read once.
+	 */
+	private const NAME_PART = '(?:`(?:[^`]++|``)++`|"(?:[^"]++|"")++"|[0-9A-Za-z_$\x80-\xFF]++)';
 
 	/** Whitespace MySQL skips between words: PHP's trim set plus form feed. */
 	private const SPACE = " \t\n\r\0\x0B\f";
-
-	/**
-	 * What may come before the keyword: whitespace, comments, and the opening
-	 * of a comment MySQL runs.
-	 */
-	private const LEADING = '~^(?:\s+|/\*(?!M?!).*?\*/|/\*M?!\d*|(?:#|--(?=\s|$))[^\n]*)+~s';
 
 	public function key(): string {
 		return 'core-database';
@@ -82,41 +93,41 @@ final class DatabaseSensor extends AbstractSensor {
 	}
 
 	public function on_query( string $query ): string {
-		$trimmed = ltrim( $query, self::SPACE );
-		$first   = strtoupper( substr( $trimmed, 0, 1 ) );
-		if ( 'C' === $first || 'D' === $first ) {
-			$start = $trimmed;
-		} elseif ( '/' === $first || '-' === $first || '#' === $first ) {
-			$start = (string) preg_replace( self::LEADING, '', $trimmed );
-		} else {
+		if ( false === stripos( $query, 'table' ) ) {
 			return $query;
 		}
-		$head = strtoupper( substr( $start, 0, 4 ) );
-		if ( 'CREA' !== $head && 'DROP' !== $head ) {
+		$keyword = self::table_keyword( $query );
+		if ( null === $keyword ) {
 			return $query;
 		}
 
-		$statement = self::normalize( $trimmed );
-		$is_drop   = 'DROP' === strtoupper( substr( $statement, 0, 4 ) );
-		$pattern   = $is_drop
-			? '/^DROP\s+(TEMPORARY\s+)?TABLES?\b\s*(?:IF\s+EXISTS\b\s*)?/i'
-			: '/^CREATE\s+(TEMPORARY\s+)?TABLE\b\s*(?:IF\s+NOT\s+EXISTS\b\s*)?/i';
-		if ( 1 === preg_match( $pattern, $statement, $m ) ) {
-			if ( '' !== ( $m[1] ?? '' ) ) {
-				return $query; // A temporary table: never a stored table.
-			}
-			$tables = self::table_names( substr( $statement, strlen( $m[0] ) ), $is_drop );
-		} elseif ( 1 === preg_match( '/\bTABLES?\b/i', $statement ) ) {
-			$tables = null; // Reads like a table statement, but not one this sensor can read.
-		} else {
-			return $query; // An index, a view, a tablespace…
+		$this->report( $query, $keyword );
+
+		return $query;
+	}
+
+	/**
+	 * Log a statement the coarse search spotted, minus what the precise
+	 * reading exempts.
+	 *
+	 * @param string $query   The statement as run.
+	 * @param string $keyword `CREATE` or `DROP`: the first one the search found.
+	 */
+	private function report( string $query, string $keyword ): void {
+		$first = self::first_word( $query );
+		if ( null !== $first && in_array( $first, self::ROW_STATEMENTS, true ) ) {
+			return; // Rows read or written, never a table.
 		}
 
-		$code = $is_drop ? 7101 : 7100;
+		[ $statement, $certain ] = self::normalize( $query );
+		$head                    = strtoupper( (string) strstr( $statement . ' ', ' ', true ) );
+		$code                    = 'DROP' === ( 'CREATE' === $head || 'DROP' === $head ? $head : $keyword ) ? 7101 : 7100;
+
+		$tables = $certain ? self::read_tables( $statement, $head ) : null;
 		if ( null === $tables ) {
 			// Fail closed: logged as it is, with no exemption.
 			$this->emit_table( $code, self::name_after_keyword( $statement ), $statement, true );
-			return $query;
+			return;
 		}
 
 		$site_prefix = self::site_prefix();
@@ -125,8 +136,173 @@ final class DatabaseSensor extends AbstractSensor {
 				$this->emit_table( $code, $table['name'], $statement, false );
 			}
 		}
+	}
 
-		return $query;
+	/**
+	 * The tables a statement that reads as certain creates or drops; none
+	 * for a temporary table; null when it is not a table statement the
+	 * sensor can read to its end.
+	 *
+	 * @param string $statement The statement as read.
+	 * @param string $head      Its first word, upper-cased.
+	 * @return array<int, array{name: string, database: ?string, table: string}>|null
+	 */
+	private static function read_tables( string $statement, string $head ): ?array {
+		if ( 'DROP' === $head ) {
+			$pattern = '/^DROP\s+(TEMPORARY\s+)?TABLES?\b\s*(?:IF\s+EXISTS\b\s*)?/i';
+		} elseif ( 'CREATE' === $head ) {
+			$pattern = '/^CREATE\s+(TEMPORARY\s+)?TABLE\b\s*(?:IF\s+NOT\s+EXISTS\b\s*)?/i';
+		} else {
+			return null;
+		}
+		if ( 1 !== preg_match( $pattern, $statement, $m ) ) {
+			return null;
+		}
+
+		$tables = self::table_names( substr( $statement, strlen( $m[0] ) ), 'DROP' === $head );
+		if ( null !== $tables && '' !== ( $m[1] ?? '' ) ) {
+			return []; // A temporary table: never a stored table.
+		}
+
+		return $tables;
+	}
+
+	/**
+	 * `CREATE` or `DROP`, whichever comes first as a word, when the word
+	 * `TABLE` or `TABLES` follows it somewhere; null otherwise. One pass over
+	 * the text, without patterns.
+	 *
+	 * @param string $sql The statement as run.
+	 */
+	private static function table_keyword( string $sql ): ?string {
+		$keyword = null;
+		$at      = PHP_INT_MAX;
+		foreach ( [ 'CREATE', 'DROP' ] as $word ) {
+			$pos = self::find_word( $sql, $word, 0 );
+			if ( null !== $pos && $pos < $at ) {
+				$keyword = $word;
+				$at      = $pos;
+			}
+		}
+		if ( null === $keyword ) {
+			return null;
+		}
+
+		$pos = stripos( $sql, 'table', $at + strlen( $keyword ) );
+		while ( false !== $pos ) {
+			$end = $pos + 5;
+			if ( isset( $sql[ $end ] ) && 's' === strtolower( $sql[ $end ] ) && ! self::is_name_char( $sql[ $end + 1 ] ?? '' ) ) {
+				++$end;
+			}
+			if ( ! self::is_name_char( $sql[ $pos - 1 ] ?? '' ) && ! self::is_name_char( $sql[ $end ] ?? '' ) ) {
+				return $keyword;
+			}
+			$pos = stripos( $sql, 'table', $pos + 1 );
+		}
+
+		return null;
+	}
+
+	/**
+	 * Where a word first stands on its own (no name character on either
+	 * side), ignoring case; null when it does not.
+	 *
+	 * @param string $sql    The text.
+	 * @param string $word   The word.
+	 * @param int    $offset Where to start.
+	 */
+	private static function find_word( string $sql, string $word, int $offset ): ?int {
+		$pos = stripos( $sql, $word, $offset );
+		while ( false !== $pos ) {
+			$before = $pos > 0 ? $sql[ $pos - 1 ] : '';
+			$after  = $sql[ $pos + strlen( $word ) ] ?? '';
+			if ( ! self::is_name_char( $before ) && ! self::is_name_char( $after ) ) {
+				return $pos;
+			}
+			$pos = stripos( $sql, $word, $pos + 1 );
+		}
+
+		return null;
+	}
+
+	/**
+	 * Whether a character can be part of a word or name: a letter, a digit,
+	 * `_`, `$`, or any byte of a multibyte character.
+	 *
+	 * @param string $char One character; empty at either end of the text.
+	 */
+	private static function is_name_char( string $char ): bool {
+		return '' !== $char && ( ctype_alnum( $char ) || '_' === $char || '$' === $char || ord( $char ) >= 0x80 );
+	}
+
+	/**
+	 * The first word of a statement, upper-cased, after nothing but
+	 * whitespace and plain comments; null when what comes first is not
+	 * certain (a comment MySQL runs, one that is never closed).
+	 *
+	 * @param string $sql The statement as run.
+	 */
+	private static function first_word( string $sql ): ?string {
+		$len = strlen( $sql );
+		$i   = 0;
+		while ( $i < $len ) {
+			$c = $sql[ $i ];
+			if ( false !== strpos( self::SPACE, $c ) ) {
+				++$i;
+			} elseif ( '/' === $c && '*' === ( $sql[ $i + 1 ] ?? '' ) ) {
+				if ( self::is_version_comment( $sql, $i ) ) {
+					return null;
+				}
+				$close = strpos( $sql, '*/', $i + 2 );
+				if ( false === $close ) {
+					return null;
+				}
+				$i = $close + 2;
+			} elseif ( self::is_line_comment( $sql, $i ) ) {
+				$line = strpos( $sql, "\n", $i );
+				$i    = false === $line ? $len : $line + 1;
+			} else {
+				$word = strspn( $sql, 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', $i );
+				return strtoupper( substr( $sql, $i, $word ) );
+			}
+		}
+
+		return '';
+	}
+
+	/**
+	 * Whether a block comment at `$i` is one MySQL runs (`/*!`, or MariaDB's
+	 * `/*M!`).
+	 *
+	 * @param string $sql The statement.
+	 * @param int    $i   Position of its `/`.
+	 */
+	private static function is_version_comment( string $sql, int $i ): bool {
+		$third = $sql[ $i + 2 ] ?? '';
+
+		return '!' === $third || ( 'M' === $third && '!' === ( $sql[ $i + 3 ] ?? '' ) );
+	}
+
+	/**
+	 * Whether a comment that runs to the end of the line starts at `$i`: `#`,
+	 * or `--` followed by a space or control character (or nothing).
+	 *
+	 * @param string $sql The statement.
+	 * @param int    $i   Position.
+	 */
+	private static function is_line_comment( string $sql, int $i ): bool {
+		if ( '#' === $sql[ $i ] ) {
+			return true;
+		}
+		if ( '-' !== $sql[ $i ] || '-' !== ( $sql[ $i + 1 ] ?? '' ) ) {
+			return false;
+		}
+		if ( ! isset( $sql[ $i + 2 ] ) ) {
+			return true;
+		}
+		$next = ord( $sql[ $i + 2 ] );
+
+		return $next <= 0x20 || 0x7F === $next;
 	}
 
 	/**
@@ -153,18 +329,23 @@ final class DatabaseSensor extends AbstractSensor {
 	}
 
 	/**
-	 * The statement as MySQL reads it: outside quotes, every comment and run
-	 * of whitespace is one space (none at either end), and a comment MySQL
-	 * runs is its content. Quoted text is kept as it is.
+	 * The statement as MySQL reads it, and whether that reading is certain.
+	 * Outside quotes every comment and run of whitespace is one space (none
+	 * at either end), and a comment MySQL runs is read as its content.
+	 * Quoted text is kept as it is. Not certain: a comment MySQL runs (what it
+	 * does depends on the server's version), or a comment or quote that is
+	 * never closed. One pass, without patterns.
 	 *
 	 * @param string $sql The statement.
+	 * @return array{0: string, 1: bool}
 	 */
-	private static function normalize( string $sql ): string {
-		$out   = '';
-		$space = false;
-		$runs  = 0; // Comments MySQL runs that are open.
-		$len   = strlen( $sql );
-		$i     = 0;
+	private static function normalize( string $sql ): array {
+		$out     = '';
+		$space   = false;
+		$certain = true;
+		$runs    = 0; // Comments MySQL runs that are open.
+		$len     = strlen( $sql );
+		$i       = 0;
 		while ( $i < $len ) {
 			$plain = strcspn( $sql, "`\"'/*#-" . self::SPACE, $i );
 			if ( $plain > 0 ) {
@@ -177,24 +358,34 @@ final class DatabaseSensor extends AbstractSensor {
 			$c    = $sql[ $i ];
 			$next = $sql[ $i + 1 ] ?? '';
 			if ( '`' === $c || '"' === $c || "'" === $c ) {
-				$end   = self::quoted_end( $sql, $i );
+				$end = self::quoted_end( $sql, $i );
+				if ( null === $end ) {
+					$certain = false;
+					$end     = $len;
+				}
 				$out  .= ( $space && '' !== $out ? ' ' : '' ) . substr( $sql, $i, $end - $i );
 				$space = false;
 				$i     = $end;
 			} elseif ( '/' === $c && '*' === $next ) {
-				if ( 1 === preg_match( '~\G/\*M?!\d*~', $sql, $m, 0, $i ) ) {
+				if ( self::is_version_comment( $sql, $i ) ) {
+					$certain = false;
 					++$runs;
-					$i += strlen( $m[0] );
+					$i += 'M' === $sql[ $i + 2 ] ? 4 : 3;
+					$i += strspn( $sql, '0123456789', $i );
 				} else {
 					$close = strpos( $sql, '*/', $i + 2 );
-					$i     = false === $close ? $len : $close + 2;
+					if ( false === $close ) {
+						$certain = false;
+						$close   = $len;
+					}
+					$i = $close + 2;
 				}
 				$space = true;
 			} elseif ( '*' === $c && '/' === $next && $runs > 0 ) {
 				--$runs;
 				$i    += 2;
 				$space = true;
-			} elseif ( '#' === $c || ( '-' === $c && '-' === $next && ( $i + 2 >= $len || false !== strpos( self::SPACE, $sql[ $i + 2 ] ) ) ) ) {
+			} elseif ( self::is_line_comment( $sql, $i ) ) {
 				$line  = strpos( $sql, "\n", $i );
 				$i     = false === $line ? $len : $line + 1;
 				$space = true;
@@ -208,18 +399,18 @@ final class DatabaseSensor extends AbstractSensor {
 			}
 		}
 
-		return $out;
+		return [ $out, $certain && 0 === $runs ];
 	}
 
 	/**
 	 * Where a quoted run that starts at `$start` ends (just past its closing
-	 * quote; the end of the text when it is not closed). A doubled quote, and
-	 * outside backticks a backslash, escapes the next character.
+	 * quote); null when it is never closed. A doubled quote, and outside
+	 * backticks a backslash, escapes the next character.
 	 *
 	 * @param string $sql   The statement.
 	 * @param int    $start Position of the opening quote.
 	 */
-	private static function quoted_end( string $sql, int $start ): int {
+	private static function quoted_end( string $sql, int $start ): ?int {
 		$quote = $sql[ $start ];
 		$len   = strlen( $sql );
 		for ( $i = $start + 1; $i < $len; $i++ ) {
@@ -234,7 +425,7 @@ final class DatabaseSensor extends AbstractSensor {
 			}
 		}
 
-		return $len;
+		return null;
 	}
 
 	/**
@@ -253,7 +444,14 @@ final class DatabaseSensor extends AbstractSensor {
 		$pattern = '/\G\s*(' . self::NAME_PART . ')(?:\s*\.\s*(' . self::NAME_PART . '))?\s*/';
 		$tables  = [];
 		$offset  = 0;
-		while ( 1 === preg_match( $pattern, $rest, $m, 0, $offset ) ) {
+		while ( true ) {
+			$found = preg_match( $pattern, $rest, $m, 0, $offset );
+			if ( false === $found ) {
+				return null; // The pattern gave up: not read.
+			}
+			if ( 1 !== $found ) {
+				break;
+			}
 			$first = self::unquote( $m[1] );
 			if ( isset( $m[2] ) && '' !== $m[2] ) {
 				$table    = self::unquote( $m[2] );
@@ -309,8 +507,10 @@ final class DatabaseSensor extends AbstractSensor {
 	 * @param string $statement The statement as read.
 	 */
 	private static function name_after_keyword( string $statement ): string {
-		preg_match( '/\bTABLES?\b\s*(?:IF\s+(?:NOT\s+)?EXISTS\b\s*)?[`"\']?([\w\.]+)/i', $statement, $matches );
-		return $matches[1] ?? '';
+		if ( 1 !== preg_match( '/\bTABLES?\b\s*+(?:IF\s++(?:NOT\s++)?EXISTS\b\s*+)?[`"\']?([\w.]++)/i', $statement, $matches ) ) {
+			return '';
+		}
+		return $matches[1];
 	}
 
 	/**
