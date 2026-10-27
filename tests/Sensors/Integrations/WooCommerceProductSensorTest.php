@@ -386,6 +386,7 @@ final class WooCommerceProductSensorTest extends TestCase {
 	public function test_the_first_save_of_a_new_product_is_its_creation(): void {
 		$this->stubs();
 		self::tt_term( 11, 'Mugs', 'product_cat' );
+		self::image( 21, 'Mug front' );
 
 		$recorder = $this->boot_sensors();
 		self::update_post(
@@ -397,20 +398,23 @@ final class WooCommerceProductSensorTest extends TestCase {
 				]
 			),
 			self::post(),
-			static fn() => self::set_terms( 5, 'product_cat', [ 11 ] ),
+			static function (): void {
+				self::set_terms( 5, 'product_cat', [ 11 ] );
+				self::set_thumbnail( 5, 21 );
+			},
 			[
 				new FakeProduct( 5, self::stored(), [ 'regular_price' => '1200' ] ),
 				new FakeProduct( 5, self::stored(), [ 'gallery_image_ids' => [ 22 ] ] ),
 			]
 		);
 
+		$this->assertSame( [ 9000 ], array_column( $recorder->calls, 0 ) );
 		$survivors = $this->survive_calls( $recorder->calls );
 		$this->assertSame( [ 9000 ], array_column( $survivors, 'code' ) );
 		$this->assertSame( self::target( '5', 'Mug' ), $survivors[0]['target'] );
 		$this->assertSame( [ 'edit' => 'https://example.test/wp-admin/post.php?post=5&action=edit' ], $survivors[0]['links'] );
 		$this->assertSame( 'WC product "Mug" created.', $survivors[0]['message'] );
 		$this->assertArrayNotHasKey( 'changes', $survivors[0] );
-		$this->assertSame( 1, count( array_keys( array_column( $recorder->calls, 0 ), 9000, true ) ) );
 	}
 
 	/**
@@ -586,9 +590,9 @@ final class WooCommerceProductSensorTest extends TestCase {
 		$this->assertSame( [ 9001 ], array_column( $survivors, 'code' ) );
 		$this->assertSame(
 			[
-				self::change( 'category_ids', 'Mugs', 'Mugs, Sale' ),
 				self::change( 'name', 'Mug', 'Big mug' ),
 				self::change( 'slug', 'mug', 'big-mug' ),
+				self::change( 'category_ids', 'Mugs', 'Mugs, Sale' ),
 				self::change( 'short_description', null, null ),
 				self::change( 'description', null, null ),
 				self::change( 'regular_price', '1000', '1200' ),
@@ -596,6 +600,287 @@ final class WooCommerceProductSensorTest extends TestCase {
 			$survivors[0]['changes']
 		);
 		$this->assertSame( self::target( '5', 'Big mug' ), $survivors[0]['target'] );
+		$this->assertSame( 'WC product "Big mug" updated.', $survivors[0]['message'] );
+		// WordPress still holds the post as it was while it writes the terms:
+		// no event of the save is named by the old name.
+		foreach ( $recorder->calls as [ $code, $fields ] ) {
+			$this->assertSame( 'Big mug', $fields['target']['label'], "code $code" );
+		}
+	}
+
+	/**
+	 * The classic product screen sets the product image through WordPress
+	 * (the shop's save never sees it): a new image is one edit naming the
+	 * images, and so is a removed one.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_classic_screen_image_change_is_one_edit_of_the_image(): void {
+		$this->stubs();
+		self::image( 21, 'Mug front' );
+		self::image( 23, 'Mug top' );
+		WpState::$post_meta[5]['_thumbnail_id'] = '21';
+
+		$recorder = $this->boot_sensors();
+		self::update_post(
+			self::post(),
+			self::post(),
+			static fn() => self::set_thumbnail( 5, 23 ),
+			[
+				new FakeProduct( 5, self::stored( [ 'image_id' => '23' ] ), [] ),
+				new FakeProduct( 5, self::stored( [ 'image_id' => '23' ] ), [] ),
+			]
+		);
+		self::update_post( self::post( [ 'ID' => 5 ] ), self::post( [ 'ID' => 5 ] ), static fn() => self::set_thumbnail( 5, 0 ) );
+
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 9001 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( [ self::change( 'image_id', 'Mug front', '' ) ], $survivors[0]['changes'] );
+
+		$first = $this->survive_calls( array_slice( $recorder->calls, 0, 1 ) );
+		$this->assertSame( [ self::change( 'image_id', 'Mug front', 'Mug top' ) ], $first[0]['changes'] );
+		$this->assertSame( self::target( '5', 'Mug' ), $first[0]['target'] );
+	}
+
+	/**
+	 * An image set or removed outside a save of the post is an edit of its
+	 * own; other meta, and the image of a post that is no product, are not.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_image_set_or_removed_outside_a_save_is_an_edit(): void {
+		$this->stubs();
+		self::image( 21, 'Mug front' );
+		WpState::$posts[5] = self::post();
+		WpState::$posts[7] = self::post(
+			[
+				'ID'        => 7,
+				'post_type' => 'post',
+			]
+		);
+
+		$recorder = $this->boot_sensors();
+		self::set_thumbnail( 5, 21 );
+		self::set_thumbnail( 5, 0 );
+		self::set_thumbnail( 5, 99 );
+		self::set_thumbnail( 7, 21 );
+		Hooks::fire( 'updated_post_meta', 1, 5, '_price', '12' );
+
+		$this->assertSame( [ 9001, 9001, 9001 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ self::change( 'image_id', '', 'Mug front' ) ], $recorder->calls[0][1]['changes'] );
+		$this->assertSame( [ self::change( 'image_id', 'Mug front', '' ) ], $recorder->calls[1][1]['changes'] );
+		$this->assertSame( [ self::change( 'image_id', '', '#99' ) ], $recorder->calls[2][1]['changes'] );
+		$this->assertSame( self::target( '5', 'Mug' ), $recorder->calls[0][1]['target'] );
+	}
+
+	/**
+	 * A rename and unpublish through the shop (REST API, code): the shop's
+	 * save, WordPress's status change and its write of the post are one edit,
+	 * named by the new name.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_rename_through_the_shop_is_one_edit_under_the_new_name(): void {
+		$this->stubs();
+
+		$recorder = $this->boot_sensors();
+		Hooks::fire(
+			'woocommerce_before_product_object_save',
+			new FakeProduct(
+				5,
+				self::stored(),
+				[
+					'name'   => 'Big mug',
+					'status' => 'draft',
+				]
+			)
+		);
+		self::update_post(
+			self::post(),
+			self::post(
+				[
+					'post_title'  => 'Big mug',
+					'post_status' => 'draft',
+				]
+			)
+		);
+
+		$this->assertSame( [ 9001, 9001, 9001 ], array_column( $recorder->calls, 0 ) );
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 9001 ], array_column( $survivors, 'code' ) );
+		$this->assertSame(
+			[
+				self::change( 'name', 'Mug', 'Big mug' ),
+				self::change( 'status', 'publish', 'draft' ),
+			],
+			$survivors[0]['changes']
+		);
+		$this->assertSame( self::target( '5', 'Big mug' ), $survivors[0]['target'] );
+	}
+
+	/**
+	 * What WordPress wrote while a save of the post was open is told when the
+	 * save ends; a save that never got there is told when the request ends.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_save_that_never_ends_is_told_when_the_request_ends(): void {
+		$this->stubs();
+		self::tt_term( 11, 'Mugs', 'product_cat' );
+		WpState::$posts[5] = self::post();
+
+		$recorder = $this->boot_sensors();
+		Hooks::fire( 'pre_post_update', 5, [ 'post_type' => 'product' ] );
+		self::set_terms( 5, 'product_cat', [ 11 ] );
+		$this->assertSame( [], $recorder->calls );
+
+		Hooks::fire( 'shutdown' );
+
+		$this->assertSame( [ 9001 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ self::change( 'category_ids', '', 'Mugs' ) ], $recorder->calls[0][1]['changes'] );
+		$this->assertSame( self::target( '5', 'Mug' ), $recorder->calls[0][1]['target'] );
+	}
+
+	/**
+	 * Reading the product to tell a save that never ended can fail too: it is
+	 * reported, never thrown.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_save_told_when_the_request_ends_never_fails_the_request(): void {
+		$this->stubs();
+		self::tt_term( 11, 'Mugs', 'product_cat' );
+		WpState::$posts[5] = self::post();
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceProductSensor( $recorder );
+		$sensor->on_before_post_update( 5, [ 'post_type' => 'product' ] );
+		$sensor->on_terms_set( 5, [ 11 ], [ 11 ], 'product_cat', false, [] );
+		WpState::$posts[5] = self::broken_post();
+		$sensor->flush_open_saves();
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertSame( 'hellolog_dispatch_failed', WpCalls::$actions[0][0] ?? null );
+		$this->assertSame( 9001, WpCalls::$actions[0][1][1] ?? null );
+		$this->assertSame( [ 'product_id' => 5 ], WpCalls::$actions[0][1][2] ?? null );
+	}
+
+	/**
+	 * Moving a variable product to the trash moves every variation with it:
+	 * the product's trash says it all.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_trashing_a_variable_product_is_one_trash_for_all_its_variations(): void {
+		$this->stubs();
+		$parent             = self::variable_product();
+		WpState::$posts[50] = $parent;
+
+		$recorder = $this->boot_sensors();
+		Hooks::fire( 'wp_trash_post', 50, 'publish' );
+		self::update_post(
+			$parent,
+			self::variable_product(
+				[
+					'post_status' => 'trash',
+					'post_name'   => 'hoodie__trashed',
+				]
+			)
+		);
+		for ( $i = 1; $i <= 20; $i++ ) {
+			self::update_post(
+				self::variation( $i ),
+				self::variation(
+					$i,
+					[
+						'post_status' => 'trash',
+						'post_name'   => 'hoodie-size-' . $i . '__trashed',
+					]
+				)
+			);
+		}
+
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 2003 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( self::target( '50', 'Hoodie' ), $survivors[0]['target'] );
+		$this->assertArrayNotHasKey( 'changes', $survivors[0] );
+	}
+
+	/**
+	 * Restoring a variable product restores every variation with it: the
+	 * product's restore says it all.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_restoring_a_variable_product_is_one_restore_for_all_its_variations(): void {
+		$this->stubs();
+		$trashed            = self::variable_product(
+			[
+				'post_status' => 'trash',
+				'post_name'   => 'hoodie__trashed',
+			]
+		);
+		WpState::$posts[50] = $trashed;
+
+		$recorder = $this->boot_sensors();
+		Hooks::fire( 'untrash_post', 50, 'publish' );
+		self::update_post( $trashed, self::variable_product( [ 'post_status' => 'draft' ] ) );
+		for ( $i = 1; $i <= 20; $i++ ) {
+			self::update_post(
+				self::variation(
+					$i,
+					[
+						'post_status' => 'trash',
+						'post_name'   => 'hoodie-size-' . $i . '__trashed',
+					]
+				),
+				self::variation( $i )
+			);
+		}
+
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 2004 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( self::target( '50', 'Hoodie' ), $survivors[0]['target'] );
+		$this->assertArrayNotHasKey( 'changes', $survivors[0] );
+	}
+
+	/**
+	 * Deleting a variable product for good deletes every variation with it:
+	 * the product's delete says it all. A variation deleted on its own is
+	 * still told.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_deleting_a_variable_product_is_one_delete_for_all_its_variations(): void {
+		$this->stubs();
+		$parent             = self::variable_product( [ 'post_status' => 'trash' ] );
+		WpState::$posts[50] = $parent;
+		WpState::$posts[60] = self::variable_product(
+			[
+				'ID'         => 60,
+				'post_title' => 'Scarf',
+			]
+		);
+
+		$recorder = $this->boot_sensors();
+		Hooks::fire( 'before_delete_post', 50, $parent );
+		for ( $i = 1; $i <= 20; $i++ ) {
+			Hooks::fire( 'before_delete_post', 100 + $i, self::variation( $i ) );
+		}
+		Hooks::fire( 'before_delete_post', 201, self::variation( 1, [ 'ID' => 201, 'post_parent' => 60, 'post_title' => 'Scarf - Red' ] ) );
+
+		$survivors = $this->survive_calls( $recorder->calls );
+		$this->assertSame( [ 9002, 9002 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( self::target( '50', 'Hoodie' ), $survivors[0]['target'] );
+		$this->assertSame( self::target( '201', 'Scarf - Red' ), $survivors[1]['target'] );
 	}
 
 	/**
@@ -874,6 +1159,14 @@ final class WooCommerceProductSensorTest extends TestCase {
 			'status'       => [ 9001, 'on_post_status' ],
 			'post updated' => [ 9001, 'on_post_updated' ],
 			'terms set'    => [ 9001, 'on_terms_set' ],
+			'term added'   => [ 9001, 'on_term_added' ],
+			'save opened'  => [ 9001, 'on_before_post_update' ],
+			'image read'   => [ 9001, 'on_meta_changing' ],
+			'image added'  => [ 9001, 'on_meta_added' ],
+			'image set'    => [ 9001, 'on_meta_updated' ],
+			'image gone'   => [ 9001, 'on_meta_deleted' ],
+			'trashing'     => [ 9001, 'on_trashing' ],
+			'restoring'    => [ 9001, 'on_untrashing' ],
 			'post deleted' => [ 9002, 'on_delete_post' ],
 		];
 	}
@@ -887,19 +1180,14 @@ final class WooCommerceProductSensorTest extends TestCase {
 	 */
 	public function test_every_product_hook_reports_instead_of_throwing( int $code, string $handler ): void {
 		$this->stubs();
-		// Product 5: its id can be read, nothing else.
-		$broken                    = new class( [] ) extends \WP_Post {
-			public function __get( string $name ) {
-				if ( 'ID' === $name ) {
-					return 5;
-				}
-				throw new \RuntimeException( 'A filter broke.' );
-			}
-		};
+		$broken                    = self::broken_post();
 		WpState::$posts[5]         = $broken;
 		TermState::$reads_throw    = true;
 		WpState::$term_reads_throw = true;
-		$product                   = new class( 5 ) extends FakeProduct {
+		WpState::$post_meta_throws = true;
+		// The handlers that only note an id read nothing but the site.
+		WpState::$blog_id_throws = in_array( $handler, [ 'on_term_added', 'on_trashing', 'on_untrashing' ], true );
+		$product                 = new class( 5 ) extends FakeProduct {
 			public function get_name() {
 				throw new \RuntimeException( 'A filter broke.' );
 			}
@@ -919,6 +1207,22 @@ final class WooCommerceProductSensorTest extends TestCase {
 				break;
 			case 'on_terms_set':
 				$sensor->on_terms_set( 5, [ 11 ], [ 11 ], 'product_cat', false, [ 12 ] );
+				break;
+			case 'on_term_added':
+				$sensor->on_term_added( 5, 11, 'product_cat' );
+				break;
+			case 'on_before_post_update':
+				$sensor->on_before_post_update( 5, [] );
+				break;
+			case 'on_meta_changing':
+			case 'on_meta_added':
+			case 'on_meta_updated':
+			case 'on_meta_deleted':
+				$sensor->$handler( 1, 5, '_thumbnail_id', '23' );
+				break;
+			case 'on_trashing':
+			case 'on_untrashing':
+				$sensor->$handler( 5 );
 				break;
 			default:
 				$sensor->on_delete_post( 5, $broken );
@@ -959,7 +1263,15 @@ final class WooCommerceProductSensorTest extends TestCase {
 		$sensor->on_post_updated( 'x', null, null );
 		$sensor->on_term_added( null, [], null );
 		$sensor->on_terms_set( null, null, null, null, null, null );
+		$sensor->on_before_post_update( [], null );
+		$sensor->on_meta_changing( null, [], null, null );
+		$sensor->on_meta_added( null, 'x', '_thumbnail_id', [] );
+		$sensor->on_meta_updated( null, null, null, null );
+		$sensor->on_meta_deleted( [], 0, '_thumbnail_id', null );
+		$sensor->on_trashing( [] );
+		$sensor->on_untrashing( null );
 		$sensor->on_delete_post( [], null );
+		$sensor->flush_open_saves();
 
 		$this->assertSame( [ 9000, 9002 ], array_column( $recorder->calls, 0 ) );
 		$this->assertSame( '5', $recorder->calls[0][1]['target']['id'] );
@@ -977,22 +1289,35 @@ final class WooCommerceProductSensorTest extends TestCase {
 		$sensor = new WooCommerceProductSensor( $this->recorder() );
 		$sensor->boot();
 
+		// Hook => method, arguments, priority. The trash and restore of a
+		// product are noted before the shop's own callbacks trash or restore
+		// its variations; open saves are told before the request's events
+		// are written (priority 1).
 		$expected = [
-			'woocommerce_new_product'                => [ 'on_created', 2 ],
-			'woocommerce_before_product_object_save' => [ 'on_before_save', 1 ],
-			'transition_post_status'                 => [ 'on_post_status', 3 ],
-			'post_updated'                           => [ 'on_post_updated', 3 ],
-			'added_term_relationship'                => [ 'on_term_added', 3 ],
-			'set_object_terms'                       => [ 'on_terms_set', 6 ],
-			'before_delete_post'                     => [ 'on_delete_post', 2 ],
+			'woocommerce_new_product'                => [ 'on_created', 2, 10 ],
+			'woocommerce_before_product_object_save' => [ 'on_before_save', 1, 10 ],
+			'pre_post_update'                        => [ 'on_before_post_update', 2, 10 ],
+			'transition_post_status'                 => [ 'on_post_status', 3, 10 ],
+			'post_updated'                           => [ 'on_post_updated', 3, 10 ],
+			'added_term_relationship'                => [ 'on_term_added', 3, 10 ],
+			'set_object_terms'                       => [ 'on_terms_set', 6, 10 ],
+			'update_post_meta'                       => [ 'on_meta_changing', 4, 10 ],
+			'delete_post_meta'                       => [ 'on_meta_changing', 4, 10 ],
+			'added_post_meta'                        => [ 'on_meta_added', 4, 10 ],
+			'updated_post_meta'                      => [ 'on_meta_updated', 4, 10 ],
+			'deleted_post_meta'                      => [ 'on_meta_deleted', 4, 10 ],
+			'wp_trash_post'                          => [ 'on_trashing', 1, 0 ],
+			'untrash_post'                           => [ 'on_untrashing', 1, 0 ],
+			'before_delete_post'                     => [ 'on_delete_post', 2, 10 ],
+			'shutdown'                               => [ 'flush_open_saves', 1, 0 ],
 		];
 		$this->assertSame( array_keys( $expected ), array_keys( WpState::$callbacks ) );
-		foreach ( $expected as $hook => [ $method, $args ] ) {
+		foreach ( $expected as $hook => [ $method, $args, $priority ] ) {
 			$this->assertCount( 1, WpState::$callbacks[ $hook ], $hook );
 			$registered = WpState::$callbacks[ $hook ][0];
 			$this->assertSame( [ $sensor, $method ], $registered['callback'], $hook );
 			$this->assertSame( $args, $registered['accepted_args'], $hook );
-			$this->assertSame( 10, $registered['priority'], $hook );
+			$this->assertSame( $priority, $registered['priority'], $hook );
 		}
 	}
 
@@ -1025,11 +1350,12 @@ final class WooCommerceProductSensorTest extends TestCase {
 
 	/**
 	 * The hooks `wp_update_post()` fires when a product that was `$before` is
-	 * saved as `$after`, in core's order (`wp_insert_post()`): the post is
-	 * still the old one on `pre_post_update`; the terms given with the save
-	 * are written (`$in_save`) before the status change; `post_updated`
-	 * follows, then `save_post`, where the classic screen's boxes save the
-	 * product through the shop (`$saves`), and `wp_after_insert_post`.
+	 * saved as `$after`, in core's order (`wp_insert_post()`): `pre_post_update`;
+	 * the terms and the product image given with the save are written
+	 * (`$in_save`) while WordPress still holds the old post in its cache (it
+	 * clears it only after them); then the status change and `post_updated`
+	 * with the new post, then `save_post`, where the classic screen's boxes
+	 * save the product through the shop (`$saves`), and `wp_after_insert_post`.
 	 *
 	 * @param \WP_Post                 $before  The post before the save.
 	 * @param \WP_Post                 $after   The post as saved.
@@ -1040,12 +1366,20 @@ final class WooCommerceProductSensorTest extends TestCase {
 		$id = (int) $after->ID;
 
 		WpState::$posts[ $id ] = $before;
-		Hooks::fire( 'pre_post_update', $id, [] );
-
-		WpState::$posts[ $id ] = $after;
+		Hooks::fire(
+			'pre_post_update',
+			$id,
+			[
+				'post_type'   => (string) $after->post_type,
+				'post_title'  => (string) $after->post_title,
+				'post_status' => (string) $after->post_status,
+			]
+		);
 		if ( null !== $in_save ) {
 			$in_save();
 		}
+
+		WpState::$posts[ $id ] = $after;
 		Hooks::fire( 'transition_post_status', (string) $after->post_status, (string) $before->post_status, $after );
 		Hooks::fire( 'post_updated', $id, $after, $before );
 		foreach ( $saves as $product ) {
@@ -1075,6 +1409,91 @@ final class WooCommerceProductSensorTest extends TestCase {
 			Hooks::fire( 'added_term_relationship', $post_id, $tt_id, $taxonomy );
 		}
 		Hooks::fire( 'set_object_terms', $post_id, $tt_ids, $tt_ids, $taxonomy, $append, $append ? [] : $old );
+	}
+
+	/**
+	 * Set or remove the product image of a post the way `set_post_thumbnail()`
+	 * and `delete_post_thumbnail()` do through the meta functions: an image
+	 * where there was none is added, another one updated (with the hook
+	 * before the write), none deletes it (likewise); the same image writes
+	 * nothing.
+	 *
+	 * @param int $post_id       Post id.
+	 * @param int $attachment_id Image id; 0 to remove the image.
+	 */
+	private static function set_thumbnail( int $post_id, int $attachment_id ): void {
+		$old = (string) ( WpState::$post_meta[ $post_id ]['_thumbnail_id'] ?? '' );
+		if ( $attachment_id <= 0 ) {
+			if ( '' !== $old ) {
+				Hooks::fire( 'delete_post_meta', [ 1 ], $post_id, '_thumbnail_id', '' );
+				unset( WpState::$post_meta[ $post_id ]['_thumbnail_id'] );
+				Hooks::fire( 'deleted_post_meta', [ 1 ], $post_id, '_thumbnail_id', '' );
+			}
+			return;
+		}
+		if ( '' === $old ) {
+			WpState::$post_meta[ $post_id ]['_thumbnail_id'] = (string) $attachment_id;
+			Hooks::fire( 'added_post_meta', 1, $post_id, '_thumbnail_id', $attachment_id );
+			return;
+		}
+		if ( (string) $attachment_id !== $old ) {
+			Hooks::fire( 'update_post_meta', 1, $post_id, '_thumbnail_id', $attachment_id );
+			WpState::$post_meta[ $post_id ]['_thumbnail_id'] = (string) $attachment_id;
+			Hooks::fire( 'updated_post_meta', 1, $post_id, '_thumbnail_id', $attachment_id );
+		}
+	}
+
+	/**
+	 * Variable product 50, "Hoodie", published, as a post.
+	 *
+	 * @param array<string, mixed> $over Fields to replace.
+	 */
+	private static function variable_product( array $over = [] ): \WP_Post {
+		return self::post(
+			array_merge(
+				[
+					'ID'         => 50,
+					'post_title' => 'Hoodie',
+					'post_name'  => 'hoodie',
+				],
+				$over
+			)
+		);
+	}
+
+	/**
+	 * Variation `100 + $n` of product 50, "Hoodie - Size <n>", published.
+	 *
+	 * @param int                  $n    Number of the variation.
+	 * @param array<string, mixed> $over Fields to replace.
+	 */
+	private static function variation( int $n, array $over = [] ): \WP_Post {
+		return self::post(
+			array_merge(
+				[
+					'ID'          => 100 + $n,
+					'post_type'   => 'product_variation',
+					'post_title'  => 'Hoodie - Size ' . $n,
+					'post_name'   => 'hoodie-size-' . $n,
+					'post_parent' => 50,
+				],
+				$over
+			)
+		);
+	}
+
+	/**
+	 * Post 5, whose id can be read and nothing else (a filter on it throws).
+	 */
+	private static function broken_post(): \WP_Post {
+		return new class( [] ) extends \WP_Post {
+			public function __get( string $name ) {
+				if ( 'ID' === $name ) {
+					return 5;
+				}
+				throw new \RuntimeException( 'A filter broke.' );
+			}
+		};
 	}
 
 	/**

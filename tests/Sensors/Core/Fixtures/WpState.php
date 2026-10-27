@@ -69,6 +69,9 @@ final class WpState {
 	/** The site `get_current_blog_id()` reports as current. */
 	public static int $blog_id = 1;
 
+	/** Whether `get_current_blog_id()` fails the way a broken filter around it would. */
+	public static bool $blog_id_throws = false;
+
 	/**
 	 * Sites `switch_to_blog()` left, the last one on top.
 	 *

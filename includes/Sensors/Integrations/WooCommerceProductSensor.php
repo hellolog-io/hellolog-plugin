@@ -13,6 +13,7 @@ use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
 use HelloLog\Sensors\Core\ContentSensor;
 use HelloLog\Sensors\Core\PostSnapshot;
+use HelloLog\Sensors\StoreTargets;
 use Throwable;
 use WP_Post;
 
@@ -33,11 +34,15 @@ defined( 'ABSPATH' ) || exit;
  * - the shop's save of a product or variation, from the values stored and
  *   those the save is about to write;
  * - WordPress's write of the post: the classic product screen writes the
- *   name, slug and descriptions through WordPress before the shop saves the
- *   product, so the shop's save never sees them. The status is read from
- *   WordPress's status change, which also tells a scheduled product going
- *   live (no write of the post comes with that);
- * - the categories and tags WordPress sets on the product.
+ *   name, slug, descriptions, categories, tags and the product image through
+ *   WordPress before the shop saves the product, so the shop's save never
+ *   sees them. WordPress writes the terms and the image while it still holds
+ *   the post as it was, so what it writes inside a save of the post is told
+ *   with the post's own changes once the post is written, under its new
+ *   name. The status is read from WordPress's status change, which also
+ *   tells a scheduled product going live (no write of the post comes with
+ *   that);
+ * - the categories, tags and product image set outside such a save.
  *
  * WooCommerce announces a product it inserts itself, but not one made on the
  * classic screen: there "Add new" makes a WordPress placeholder
@@ -46,6 +51,10 @@ defined( 'ABSPATH' ) || exit;
  * is told. The creation tells nothing more: no save of that product in the
  * same request is an edit, nor any save of a product WordPress still keeps as
  * a placeholder, or of a variation of one.
+ *
+ * Trashing, restoring or deleting a variable product does the same to every
+ * variation: the product's own event says it, so the status changes and
+ * deletes of its variations in that request are not told.
  *
  * Every handler runs inside the work of WordPress or WooCommerce on the
  * product (the shop's save of a product has no guard around its hooks), so
@@ -101,8 +110,8 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	 */
 	public const CONTENT_FIELDS = [ 'short_description', 'description' ];
 
-	/** The title WooCommerce gives a product WordPress keeps as an editor placeholder. */
-	public const PLACEHOLDER_TITLE = 'AUTO-DRAFT';
+	/** Meta key of the product image of a post. */
+	private const IMAGE_META_KEY = '_thumbnail_id';
 
 	/** Post type of a product. */
 	private const PRODUCT_TYPE = 'product';
@@ -206,6 +215,31 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	 */
 	private array $added = [];
 
+	/**
+	 * The saves of a product's post WordPress has open, from `pre_post_update`
+	 * to `post_updated`: `site:product id` => what it wrote of the product so
+	 * far besides the post (categories, tags, image).
+	 *
+	 * @var array<string, array<int, array{field: string, old: ?string, new: ?string}>>
+	 */
+	private array $open = [];
+
+	/**
+	 * Product images about to be replaced or removed, read before the write:
+	 * `site:post id` => the image id stored.
+	 *
+	 * @var array<string, mixed>
+	 */
+	private array $images_before = [];
+
+	/**
+	 * Posts being trashed, restored or deleted in this request:
+	 * `site:post id` => true. The variations of such a product go with it.
+	 *
+	 * @var array<string, true>
+	 */
+	private array $cascading = [];
+
 	public function key(): string {
 		return 'woocommerce-product';
 	}
@@ -218,11 +252,23 @@ final class WooCommerceProductSensor extends AbstractSensor {
 		add_action( 'woocommerce_new_product', [ $this, 'on_created' ], 10, 2 );
 		// Variations fire this hook too.
 		add_action( 'woocommerce_before_product_object_save', [ $this, 'on_before_save' ], 10, 1 );
+		add_action( 'pre_post_update', [ $this, 'on_before_post_update' ], 10, 2 );
 		add_action( 'transition_post_status', [ $this, 'on_post_status' ], 10, 3 );
 		add_action( 'post_updated', [ $this, 'on_post_updated' ], 10, 3 );
 		add_action( 'added_term_relationship', [ $this, 'on_term_added' ], 10, 3 );
 		add_action( 'set_object_terms', [ $this, 'on_terms_set' ], 10, 6 );
+		// The product image: the value before the write is read first.
+		add_action( 'update_post_meta', [ $this, 'on_meta_changing' ], 10, 4 );
+		add_action( 'delete_post_meta', [ $this, 'on_meta_changing' ], 10, 4 );
+		add_action( 'added_post_meta', [ $this, 'on_meta_added' ], 10, 4 );
+		add_action( 'updated_post_meta', [ $this, 'on_meta_updated' ], 10, 4 );
+		add_action( 'deleted_post_meta', [ $this, 'on_meta_deleted' ], 10, 4 );
+		// Before the shop's own callbacks trash or restore the variations.
+		add_action( 'wp_trash_post', [ $this, 'on_trashing' ], 0, 1 );
+		add_action( 'untrash_post', [ $this, 'on_untrashing' ], 0, 1 );
 		add_action( 'before_delete_post', [ $this, 'on_delete_post' ], 10, 2 );
+		// Before the request's events are written, at priority 1.
+		add_action( 'shutdown', [ $this, 'flush_open_saves' ], 0 );
 	}
 
 	/**
@@ -235,11 +281,7 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	 * @return array{type: string, id: string, label: string}
 	 */
 	public static function product_target( int $id, string $name ): array {
-		return [
-			'type'  => 'product',
-			'id'    => (string) $id,
-			'label' => '' === $name || self::PLACEHOLDER_TITLE === $name ? '#' . $id : $name,
-		];
+		return StoreTargets::product( $id, $name );
 	}
 
 	/**
@@ -293,6 +335,13 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			$parent_id = method_exists( $product, 'get_parent_id' ) ? max( 0, (int) $product->get_parent_id() ) : 0;
 			if ( $this->in_creation( $product_id, $parent_id ) ) {
 				return;
+			}
+			if ( $this->is_cascading( $parent_id ) ) {
+				// The parent's trash, restore or delete says the variation's status.
+				unset( $pending['status'] );
+				if ( [] === $pending ) {
+					return;
+				}
 			}
 
 			$data = $product->get_data();
@@ -351,7 +400,7 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			}
 
 			$parent_id = max( 0, (int) $post->post_parent );
-			if ( $this->in_creation( $product_id, $parent_id ) ) {
+			if ( $this->in_creation( $product_id, $parent_id ) || ( self::VARIATION_TYPE === $type && $this->is_cascading( $parent_id ) ) ) {
 				return;
 			}
 
@@ -368,11 +417,40 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	}
 
 	/**
+	 * WordPress is about to write a product's or variation's post: what it
+	 * writes besides the post until the post is written (categories, tags,
+	 * the product image) is kept for the post's event, see
+	 * {@see self::on_post_updated()}.
+	 *
+	 * @param mixed $post_id Post id.
+	 * @param mixed $data    The post fields about to be written.
+	 */
+	public function on_before_post_update( $post_id, $data = null ): void {
+		$product_id = 0;
+		try {
+			$product_id = self::id_of( $post_id );
+			if ( $product_id <= 0 ) {
+				return;
+			}
+			$type = is_array( $data ) && is_string( $data['post_type'] ?? null ) ? $data['post_type'] : self::post_type( $product_id );
+			if ( ! self::is_product_type( $type ) ) {
+				return;
+			}
+
+			$key                = self::state_key( $product_id );
+			$this->open[ $key ] = $this->open[ $key ] ?? [];
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+		}
+	}
+
+	/**
 	 * WordPress wrote a product's or variation's post: the name, slug and
 	 * descriptions it changed are an edit (the status is told by its status
-	 * change). The first write of a placeholder is its creation, and the
-	 * placeholder title WooCommerce gives a product sent back to
-	 * `auto-draft` is no rename.
+	 * change), together with what it wrote besides the post in the same
+	 * save, all under the name the post has now. The first write of a
+	 * placeholder is its creation, and the placeholder title WooCommerce
+	 * gives a product sent back to `auto-draft` is no rename.
 	 *
 	 * @param mixed $post_id     Post id.
 	 * @param mixed $post_after  The post as written.
@@ -382,7 +460,13 @@ final class WooCommerceProductSensor extends AbstractSensor {
 		$product_id = 0;
 		try {
 			$product_id = self::id_of( $post_id );
-			if ( $product_id <= 0 || ! $post_after instanceof WP_Post || ! $post_before instanceof WP_Post ) {
+			if ( $product_id <= 0 ) {
+				return;
+			}
+			$key     = self::state_key( $product_id );
+			$written = $this->open[ $key ] ?? [];
+			unset( $this->open[ $key ] );
+			if ( ! $post_after instanceof WP_Post || ! $post_before instanceof WP_Post ) {
 				return;
 			}
 			$type = (string) $post_after->post_type;
@@ -396,7 +480,7 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			}
 
 			$placeholder = self::is_placeholder( $post_after );
-			$changes     = self::post_changes( $post_before, $post_after, $type, $placeholder );
+			$changes     = self::in_field_order( ChangeSet::merge( $written, self::post_changes( $post_before, $post_after, $type, $placeholder ) ) );
 			if ( [] === $changes ) {
 				return;
 			}
@@ -498,19 +582,113 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			}
 
 			$changes = PostSnapshot::term_changes( [ $field => $before ], [ $field => $after ] );
-			if ( [] === $changes ) {
-				return;
+			if ( [] !== $changes ) {
+				$this->record( $product_id, $changes, $post );
 			}
-
-			$this->emit(
-				9001,
-				array_merge(
-					[ 'changes' => $changes ],
-					$this->product_fields( $product_id, (string) $post->post_title, 0, self::PRODUCT_TYPE )
-				)
-			);
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+		}
+	}
+
+	/**
+	 * Some meta of a post is about to be updated or deleted: for the product
+	 * image, read the image stored now, for the change told once it is
+	 * written.
+	 *
+	 * @param mixed $meta_id    Id(s) of the meta rows; not used.
+	 * @param mixed $object_id  Post id.
+	 * @param mixed $meta_key   Meta key.
+	 * @param mixed $meta_value The value about to be written; not used.
+	 */
+	public function on_meta_changing( $meta_id, $object_id, $meta_key, $meta_value = null ): void {
+		$product_id = 0;
+		try {
+			if ( self::IMAGE_META_KEY !== $meta_key ) {
+				return;
+			}
+			$product_id = self::id_of( $object_id );
+			if ( $product_id > 0 && function_exists( 'get_post_meta' ) ) {
+				$this->images_before[ self::state_key( $product_id ) ] = get_post_meta( $product_id, self::IMAGE_META_KEY, true );
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+		}
+	}
+
+	/**
+	 * Some meta of a post was added: a product image where there was none.
+	 *
+	 * @param mixed $meta_id    Id of the meta row; not used.
+	 * @param mixed $object_id  Post id.
+	 * @param mixed $meta_key   Meta key.
+	 * @param mixed $meta_value The value written.
+	 */
+	public function on_meta_added( $meta_id, $object_id, $meta_key, $meta_value = null ): void {
+		$this->image_written( $object_id, $meta_key, false, $meta_value );
+	}
+
+	/**
+	 * Some meta of a post was updated: another product image.
+	 *
+	 * @param mixed $meta_id    Id of the meta row; not used.
+	 * @param mixed $object_id  Post id.
+	 * @param mixed $meta_key   Meta key.
+	 * @param mixed $meta_value The value written.
+	 */
+	public function on_meta_updated( $meta_id, $object_id, $meta_key, $meta_value = null ): void {
+		$this->image_written( $object_id, $meta_key, true, $meta_value );
+	}
+
+	/**
+	 * Some meta of a post was deleted: the product image removed.
+	 *
+	 * @param mixed $meta_ids   Ids of the meta rows; not used.
+	 * @param mixed $object_id  Post id.
+	 * @param mixed $meta_key   Meta key.
+	 * @param mixed $meta_value The value the delete was limited to; not used.
+	 */
+	public function on_meta_deleted( $meta_ids, $object_id, $meta_key, $meta_value = null ): void {
+		$this->image_written( $object_id, $meta_key, true, null );
+	}
+
+	/**
+	 * WordPress is about to move a post to the trash.
+	 *
+	 * @param mixed $post_id Post id.
+	 */
+	public function on_trashing( $post_id ): void {
+		$this->note_cascading( $post_id );
+	}
+
+	/**
+	 * WordPress is about to restore a post from the trash.
+	 *
+	 * @param mixed $post_id Post id.
+	 */
+	public function on_untrashing( $post_id ): void {
+		$this->note_cascading( $post_id );
+	}
+
+	/**
+	 * Tell what WordPress wrote inside saves of products that never got to
+	 * writing the post, each on the site it happened on. Runs at shutdown,
+	 * once.
+	 */
+	public function flush_open_saves(): void {
+		$open       = $this->open;
+		$this->open = [];
+		foreach ( $open as $key => $changes ) {
+			if ( [] === $changes ) {
+				continue;
+			}
+
+			$parts      = explode( ':', (string) $key, 2 );
+			$product_id = (int) ( $parts[1] ?? 0 );
+			try {
+				$this->on_site( (int) $parts[0], fn() => $this->record_written( $product_id, $changes ) );
+			} catch ( Throwable $e ) {
+				$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+			}
 		}
 	}
 
@@ -543,7 +721,13 @@ final class WooCommerceProductSensor extends AbstractSensor {
 			}
 
 			$parent_id = self::VARIATION_TYPE === $type ? max( 0, (int) $post->post_parent ) : 0;
-			$status    = $parent_id > 0 ? self::post_status( $parent_id ) : (string) $post->post_status;
+			if ( self::PRODUCT_TYPE === $type ) {
+				// WooCommerce deletes its variations after it.
+				$this->cascading[ self::state_key( $product_id ) ] = true;
+			} elseif ( $this->is_cascading( $parent_id ) ) {
+				return;
+			}
+			$status = $parent_id > 0 ? self::post_status( $parent_id ) : (string) $post->post_status;
 			// Core's only caller of `wp_delete_auto_drafts()` is this cron action.
 			$cleanup = function_exists( 'doing_action' ) && doing_action( 'wp_scheduled_auto_draft_delete' );
 			if ( ! ContentSensor::is_loggable_delete( $status, $cleanup ) ) {
@@ -566,6 +750,146 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	private function emit_created( int $product_id, string $name, string $type ): void {
 		$this->created[ self::state_key( $product_id ) ] = true;
 		$this->emit( 9000, $this->product_fields( $product_id, $name, 0, $type ) );
+	}
+
+	/**
+	 * Dispatch an edit WordPress wrote besides the post, or keep it for the
+	 * post's event while a save of the post is open (see
+	 * {@see self::on_before_post_update()}).
+	 *
+	 * @param int                                                          $product_id Product or variation id.
+	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes    What changed.
+	 * @param WP_Post                                                      $post       Its post.
+	 */
+	private function record( int $product_id, array $changes, WP_Post $post ): void {
+		$key = self::state_key( $product_id );
+		if ( isset( $this->open[ $key ] ) ) {
+			$this->open[ $key ] = ChangeSet::merge( $this->open[ $key ], $changes );
+			return;
+		}
+
+		$type      = (string) $post->post_type;
+		$parent_id = self::VARIATION_TYPE === $type ? max( 0, (int) $post->post_parent ) : 0;
+		$this->emit(
+			9001,
+			array_merge(
+				[ 'changes' => self::in_field_order( $changes ) ],
+				$this->product_fields( $product_id, (string) $post->post_title, $parent_id, $type )
+			)
+		);
+	}
+
+	/**
+	 * Dispatch what WordPress wrote inside a save of a product that never got
+	 * to writing the post.
+	 *
+	 * @param int                                                          $product_id Product or variation id.
+	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes    What changed.
+	 */
+	private function record_written( int $product_id, array $changes ): void {
+		$post = function_exists( 'get_post' ) ? get_post( $product_id ) : null;
+		if ( $post instanceof WP_Post && self::is_product_type( (string) $post->post_type ) ) {
+			$this->record( $product_id, $changes, $post );
+		}
+	}
+
+	/**
+	 * The product image of a post was written: a change of it is an edit of
+	 * the product, the images named by their titles. The image before is the
+	 * one read before the write; an image added had none.
+	 *
+	 * @param mixed $object_id  Post id.
+	 * @param mixed $meta_key   Meta key.
+	 * @param bool  $replaced   Whether the write replaced or removed a stored value.
+	 * @param mixed $new_value  The image written; null when removed.
+	 */
+	private function image_written( $object_id, $meta_key, bool $replaced, $new_value ): void {
+		$product_id = 0;
+		try {
+			if ( self::IMAGE_META_KEY !== $meta_key ) {
+				return;
+			}
+			$product_id = self::id_of( $object_id );
+			if ( $product_id <= 0 ) {
+				return;
+			}
+
+			$key   = self::state_key( $product_id );
+			$known = ! $replaced || array_key_exists( $key, $this->images_before );
+			$old   = $replaced ? ( $this->images_before[ $key ] ?? null ) : null;
+			unset( $this->images_before[ $key ] );
+
+			$post = function_exists( 'get_post' ) ? get_post( $product_id ) : null;
+			if ( ! $post instanceof WP_Post ) {
+				return;
+			}
+			$type = (string) $post->post_type;
+			if ( ! $known || ! self::is_product_type( $type ) || self::PLACEHOLDER_STATUS === (string) $post->post_status ) {
+				return;
+			}
+			if ( $this->in_creation( $product_id, self::VARIATION_TYPE === $type ? max( 0, (int) $post->post_parent ) : 0 ) ) {
+				return;
+			}
+
+			$changes = PostSnapshot::term_changes(
+				[ 'image_id' => self::names( 'image_id', $old ) ],
+				[ 'image_id' => self::names( 'image_id', $new_value ) ]
+			);
+			if ( [] !== $changes ) {
+				$this->record( $product_id, $changes, $post );
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+		}
+	}
+
+	/**
+	 * Note a post as being trashed, restored or deleted in this request.
+	 *
+	 * @param mixed $post_id Post id.
+	 */
+	private function note_cascading( $post_id ): void {
+		$product_id = 0;
+		try {
+			$product_id = self::id_of( $post_id );
+			if ( $product_id > 0 ) {
+				$this->cascading[ self::state_key( $product_id ) ] = true;
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9001, [ 'product_id' => $product_id ] );
+		}
+	}
+
+	/**
+	 * Whether the parent of a variation is being trashed, restored or deleted
+	 * in this request.
+	 *
+	 * @param int $parent_id Id of the variation's parent; 0 for none.
+	 */
+	private function is_cascading( int $parent_id ): bool {
+		return $parent_id > 0 && isset( $this->cascading[ self::state_key( $parent_id ) ] );
+	}
+
+	/**
+	 * Run something on a site of the network, and come back.
+	 *
+	 * @param int      $blog_id Site id; 0 for the current one.
+	 * @param callable $work    What to run.
+	 */
+	private function on_site( int $blog_id, callable $work ): void {
+		$current = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
+		$switch  = $blog_id > 0 && $current !== $blog_id && function_exists( 'switch_to_blog' );
+		if ( $switch ) {
+			switch_to_blog( $blog_id );
+		}
+
+		try {
+			$work();
+		} finally {
+			if ( $switch ) {
+				restore_current_blog();
+			}
+		}
 	}
 
 	/**
@@ -858,7 +1182,23 @@ final class WooCommerceProductSensor extends AbstractSensor {
 	 * @param WP_Post $post The post as written.
 	 */
 	private static function is_placeholder( WP_Post $post ): bool {
-		return self::PLACEHOLDER_STATUS === (string) $post->post_status && self::PLACEHOLDER_TITLE === (string) $post->post_title;
+		return self::PLACEHOLDER_STATUS === (string) $post->post_status && StoreTargets::PRODUCT_PLACEHOLDER === (string) $post->post_title;
+	}
+
+	/**
+	 * A change list in the order of {@see self::PRODUCT_FIELDS}.
+	 *
+	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes Changes.
+	 * @return array<int, array{field: string, old: ?string, new: ?string}>
+	 */
+	private static function in_field_order( array $changes ): array {
+		$order = array_flip( self::PRODUCT_FIELDS );
+		usort(
+			$changes,
+			static fn( array $a, array $b ): int => ( $order[ $a['field'] ] ?? PHP_INT_MAX ) <=> ( $order[ $b['field'] ] ?? PHP_INT_MAX )
+		);
+
+		return $changes;
 	}
 
 	/**
@@ -904,6 +1244,17 @@ final class WooCommerceProductSensor extends AbstractSensor {
 		}
 
 		return $names;
+	}
+
+	/**
+	 * The type of a post; '' when there is no such post.
+	 *
+	 * @param int $post_id Post id.
+	 */
+	private static function post_type( int $post_id ): string {
+		$post = function_exists( 'get_post' ) ? get_post( $post_id ) : null;
+
+		return $post instanceof WP_Post ? (string) $post->post_type : '';
 	}
 
 	/**

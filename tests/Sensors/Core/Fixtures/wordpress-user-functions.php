@@ -84,6 +84,10 @@ namespace {
 	}
 
 	function get_current_blog_id(): int {
+		if ( WpState::$blog_id_throws ) {
+			throw new \RuntimeException( 'unreadable' );
+		}
+
 		return WpState::$blog_id;
 	}
 
