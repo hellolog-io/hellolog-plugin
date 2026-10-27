@@ -22,11 +22,23 @@ defined( 'ABSPATH' ) || exit;
  * is covered here. Migration tools running outside the WP request are
  * not (run an ops-side migration audit instead).
  *
- * helloLOG creating its own queue table (on activation, for a new site, on
- * a site's first event) is set-up, not a change to the database, and is
- * not logged; dropping it is.
+ * helloLOG creating or dropping its own queue table (on activation, for a
+ * new site, on a site's first event; on uninstall, with a deleted site) is
+ * housekeeping, not a change to the database, and is not logged. Neither are
+ * the tables created and dropped while WordPress sets a network site up
+ * (`wp_initialize_site`) or deletes it (`wp_uninitialize_site`): the site's
+ * creation and deletion are logged on their own (4100, 4101). That includes
+ * the tables other plugins create or drop for the site in those actions.
  */
 final class DatabaseSensor extends AbstractSensor {
+
+	/**
+	 * The actions in which WordPress creates or drops the tables of a site
+	 * of the network.
+	 *
+	 * @var array<int, string>
+	 */
+	private const SITE_ACTIONS = [ 'wp_initialize_site', 'wp_uninitialize_site' ];
 
 	public function key(): string {
 		return 'core-database';
@@ -41,28 +53,48 @@ final class DatabaseSensor extends AbstractSensor {
 		$head    = strtoupper( substr( $trimmed, 0, 12 ) );
 
 		if ( str_starts_with( $head, 'CREATE TABLE' ) ) {
-			$name = $this->extract_table( $trimmed, 'CREATE TABLE' );
-			if ( self::is_own_queue_table( $name ) ) {
-				return $query;
-			}
-			$this->emit(
-				7100,
-				[
-					'name'     => $name,
-					'metadata' => [ 'query' => substr( $trimmed, 0, 256 ) ],
-				]
-			);
+			$code    = 7100;
+			$keyword = 'CREATE TABLE';
 		} elseif ( str_starts_with( $head, 'DROP TABLE' ) ) {
-			$this->emit(
-				7101,
-				[
-					'name'     => $this->extract_table( $trimmed, 'DROP TABLE' ),
-					'metadata' => [ 'query' => substr( $trimmed, 0, 256 ) ],
-				]
-			);
+			$code    = 7101;
+			$keyword = 'DROP TABLE';
+		} else {
+			return $query;
 		}
 
+		if ( self::in_site_action() ) {
+			return $query;
+		}
+		$name = $this->extract_table( $trimmed, $keyword );
+		if ( self::is_own_queue_table( $name ) ) {
+			return $query;
+		}
+
+		$this->emit(
+			$code,
+			[
+				'name'     => $name,
+				'metadata' => [ 'query' => substr( $trimmed, 0, 256 ) ],
+			]
+		);
+
 		return $query;
+	}
+
+	/**
+	 * Whether WordPress is setting a site of the network up or deleting it.
+	 */
+	private static function in_site_action(): bool {
+		if ( ! function_exists( 'doing_action' ) ) {
+			return false;
+		}
+		foreach ( self::SITE_ACTIONS as $action ) {
+			if ( doing_action( $action ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
