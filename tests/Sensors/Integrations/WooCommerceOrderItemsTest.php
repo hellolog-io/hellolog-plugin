@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Sensors\Integrations;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
@@ -513,6 +514,50 @@ final class WooCommerceOrderItemsTest extends TestCase {
 		$this->assertSame( [ 9106, 9108, 9108 ], array_column( $recorder->calls, 0 ) );
 		$this->assertSame( 32, $recorder->calls[1][1]['metadata']['item_id'] );
 		$this->assertSame( 31, $recorder->calls[2][1]['metadata']['item_id'] );
+	}
+
+	/**
+	 * What an Action Scheduler job noted about items (the items it added, the
+	 * orders whose items it rebuilt) ends with the job: a later job of the
+	 * same run (the command line runs many in one process) that changes such
+	 * an item, or removes an item of such an order, logs it. What the request
+	 * noted before running a job holds for the rest of the request.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_items_a_job_added_or_rebuilt_are_told_by_a_later_job_of_the_same_run(): void {
+		$this->stubs();
+		OrderNoteState::$orders[5] = $this->order( 5 );
+		OrderNoteState::$orders[6] = $this->order( 6 );
+		OrderNoteState::$orders[8] = $this->order( 8 );
+		OrderNoteState::$items[32] = $this->line_item( 32, 6 );
+		OrderNoteState::$items[35] = $this->line_item( 35, 8 );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_item_added( 34, $this->line_item( 34, 5 ), 5 );
+		$sensor->on_order_resumed( 8 );
+
+		ActionSchedulerContext::begin( 41 );
+		$sensor->on_item_added( 31, $this->line_item( 31, 5 ), 5 );
+		$sensor->on_order_resumed( 6 );
+		$sensor->flush_job_orders();
+		ActionSchedulerContext::end( 41 );
+		$this->assertSame( [ 9106, 9106 ], array_column( $recorder->calls, 0 ) );
+
+		$recorder->calls = [];
+		ActionSchedulerContext::begin( 42 );
+		$sensor->on_item_saving( $this->line_item( 31, 5, [], [ 'quantity' => 3 ] ) );
+		$sensor->on_item_deleting( 32 );
+		$sensor->on_item_saving( $this->line_item( 34, 5, [], [ 'quantity' => 3 ] ) );
+		$sensor->on_item_deleting( 35 );
+		$sensor->flush_job_orders();
+		ActionSchedulerContext::end( 42 );
+
+		$this->assertSame( [ 9108, 9107 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 31, $recorder->calls[0][1]['metadata']['item_id'] );
+		$this->assertSame( 32, $recorder->calls[1][1]['metadata']['item_id'] );
 	}
 
 	/**

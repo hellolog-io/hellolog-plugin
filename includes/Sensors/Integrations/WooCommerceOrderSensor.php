@@ -172,17 +172,20 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	/**
 	 * The orders whose items are rebuilt from the cart in this request (a
 	 * checkout retried after a failed payment removes them all and adds them
-	 * again): `site:order id` => true. Their items are not told.
+	 * again): `site:order id` => how many Action Scheduler jobs were running
+	 * (see {@see ActionSchedulerContext::depth()}). Their items are not told.
+	 * What a job noted ends with the job, see {@see self::flush_job_orders()}.
 	 *
-	 * @var array<string, true>
+	 * @var array<string, int>
 	 */
 	private array $rebuilt = [];
 
 	/**
-	 * The items added in this request: `site:item id` => true. Saving one
-	 * again in the request is part of adding it, no change.
+	 * The items added in this request: `site:item id` => how many Action
+	 * Scheduler jobs were running. Saving one again in the request (or the
+	 * job that added it) is part of adding it, no change.
 	 *
-	 * @var array<string, true>
+	 * @var array<string, int>
 	 */
 	private array $added_items = [];
 
@@ -448,12 +451,18 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 
 	/**
 	 * Tell the new orders the Action Scheduler job that is ending created,
-	 * while the job is still the context. Nothing outside a job.
+	 * while the job is still the context, and forget the items it added and
+	 * the orders whose items it rebuilt: a later job of the same run that
+	 * changes or removes one logs it. Nothing outside a job.
 	 */
 	public function flush_job_orders(): void {
 		$depth = ActionSchedulerContext::depth();
 		if ( $depth > 0 ) {
 			$this->tell_created( $depth );
+
+			$earlier           = static fn( int $at ): bool => $at < $depth;
+			$this->rebuilt     = array_filter( $this->rebuilt, $earlier );
+			$this->added_items = array_filter( $this->added_items, $earlier );
 		}
 	}
 
@@ -783,7 +792,7 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 			if ( $ids['item_id'] <= 0 ) {
 				return;
 			}
-			$this->added_items[ self::state_key( $ids['item_id'] ) ] = true;
+			$this->added_items[ self::state_key( $ids['item_id'] ) ] = ActionSchedulerContext::depth();
 
 			$item = is_object( $item ) ? $item : self::stored_item( $ids['item_id'] );
 			if ( null === $item ) {
@@ -1051,7 +1060,7 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 */
 	private function note_rebuilt( int $order_id ): void {
 		if ( $order_id > 0 ) {
-			$this->rebuilt[ self::state_key( $order_id ) ] = true;
+			$this->rebuilt[ self::state_key( $order_id ) ] = ActionSchedulerContext::depth();
 		}
 	}
 
