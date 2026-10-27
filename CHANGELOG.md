@@ -41,7 +41,8 @@
   offset, the site icon, the privacy policy page, the default category and
   organizing uploads into month- and year-based folders. The word lists are
   reported as changed, without their words. A watched setting saved for the
-  first time is logged too.
+  first time is logged too; what WordPress writes while it sets up a new
+  site of a network is not.
 - Role capability edits are a new critical event: which roles were added or
   removed and which capabilities each role gained or lost; edits made
   together are reported as one event. The capabilities that run the site

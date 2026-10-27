@@ -172,6 +172,30 @@ final class SettingsSensorTest extends TestCase {
 		$this->assertSame( [ 6001, 6002 ], array_column( $recorder->calls, 0 ) );
 	}
 
+	/**
+	 * While WordPress sets up a new site of a network it writes some of the
+	 * watched settings (the privacy policy page it drafts, for one): that is
+	 * the site's creation, logged on its own, not a settings change.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_settings_written_while_a_network_site_is_set_up_log_nothing(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		WpState::$doing_action = 'wp_initialize_site';
+		$sensor->on_update( 'wp_page_for_privacy_policy', '', '3' );
+		$sensor->on_add( 'blogdescription', 'Just another site' );
+		$this->assertSame( [], $recorder->calls );
+
+		WpState::$doing_action = null;
+		$sensor->on_update( 'wp_page_for_privacy_policy', '3', '7' );
+		$this->assertSame( [ 6000 ], array_column( $recorder->calls, 0 ) );
+	}
+
 	// ---- the core settings allow-list ---------------------------------------
 
 	/**
@@ -720,32 +744,75 @@ final class SettingsSensorTest extends TestCase {
 	}
 
 	/**
-	 * WordPress sets up a site (a new site of a network, an install) with
-	 * `wp_installing()` on: the roles option it creates and fills there holds
-	 * the roles the site starts with, not an edit. Whether it was installing
-	 * is taken at the first write, so it is still known at shutdown, when it
-	 * no longer is.
+	 * WordPress sets up a new site of a network in `wp_initialize_site`: the
+	 * roles option it creates and fills there holds the roles the site
+	 * starts with, not an edit. Whether it was setting the site up is taken
+	 * at the first write, so it is still known at shutdown, when it no
+	 * longer is.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
 	public function test_the_roles_a_site_is_set_up_with_log_nothing(): void {
 		$this->on_site_with_prefix( 'wp_' );
+		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
 		$recorder = $this->recorder();
 		$sensor   = new SettingsSensor( $recorder );
 
-		$first               = [ 'administrator' => self::ROLES['administrator'] ];
-		WpState::$installing = true;
+		$first                 = [ 'administrator' => self::ROLES['administrator'] ];
+		WpState::$doing_action = 'wp_initialize_site';
 		switch_to_blog( 5 );
 		$GLOBALS['wpdb']->prefix = 'wp_5_';
 		$sensor->on_add( 'wp_5_user_roles', $first );
 		$sensor->on_update( 'wp_5_user_roles', $first, self::ROLES );
 		restore_current_blog();
 		$GLOBALS['wpdb']->prefix = 'wp_';
-		WpState::$installing     = false;
+		WpState::$doing_action   = null;
 		$sensor->emit_role_changes();
 
 		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * An install (`WP_INSTALLING`) sets the site's roles up too.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_roles_an_install_sets_up_log_nothing(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
+		define( 'WP_INSTALLING', true );
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		$sensor->on_add( 'wp_user_roles', self::ROLES );
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * `wpmu_create_blog()` turns `wp_installing()` on and never off: a role
+	 * edit later in the same request, once the new site is set up, is an
+	 * edit like any other.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_edit_after_a_site_was_created_in_the_request_is_logged(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		$granted = self::ROLES;
+		$granted['editor']['capabilities']['manage_options'] = true;
+		WpState::$installing = true;
+		$sensor->on_update( 'wp_user_roles', self::ROLES, $granted );
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [ 6005 ], array_column( $recorder->calls, 0 ) );
 	}
 
 	/**

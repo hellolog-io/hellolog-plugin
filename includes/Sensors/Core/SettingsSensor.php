@@ -24,7 +24,9 @@ defined( 'ABSPATH' ) || exit;
  * they get their own severity-MEDIUM/HIGH codes; everything else in the
  * watchlist rolls up to code 6000. `update_option()` adds an option that does
  * not exist yet, and only `added_option` tells that write: it is logged from
- * nothing (old value null).
+ * nothing (old value null). What WordPress writes while it sets up a new site
+ * of a network (`wp_initialize_site`) is that site's creation, logged on its
+ * own, and is not logged here.
  *
  * Each event has the setting as its target and the old-to-new change, built
  * the way the plugin settings sensors build theirs (see
@@ -53,8 +55,10 @@ defined( 'ABSPATH' ) || exit;
  * is reported), and one that is deleted with no roles left (every role it held
  * is reported removed); a delete followed by a write in the same request is
  * one edit, from the roles before the delete. Only the roles WordPress sets a
- * site up with, while `wp_installing()` is on (a new site of a network, an
- * install), are not an edit and are not logged.
+ * site up with (a new site of a network, in `wp_initialize_site`; an install,
+ * under `WP_INSTALLING`) are not an edit and are not logged. Not while
+ * `wp_installing()` is on: `wpmu_create_blog()` turns it on and never off, so
+ * a role edit later in the same request would be hidden.
  */
 final class SettingsSensor extends AbstractSensor {
 
@@ -378,6 +382,9 @@ final class SettingsSensor extends AbstractSensor {
 			if ( $old_value === $value ) {
 				return;
 			}
+			if ( function_exists( 'doing_action' ) && doing_action( 'wp_initialize_site' ) ) {
+				return; // A new site of the network being set up.
+			}
 
 			$content = in_array( $option, self::CONTENT, true );
 			$changes = $content
@@ -436,7 +443,8 @@ final class SettingsSensor extends AbstractSensor {
 
 	/**
 	 * Start the note of a site's roles at the first write of the request:
-	 * the roles before it, and whether WordPress is setting the site up.
+	 * the roles before it, and whether WordPress is setting the site up
+	 * ({@see self::setting_up_site()}).
 	 *
 	 * @param int    $blog_id Site id.
 	 * @param string $option  Option name.
@@ -447,11 +455,21 @@ final class SettingsSensor extends AbstractSensor {
 
 		$this->roles[ $blog_id ] = [
 			'option'     => $option,
-			'installing' => function_exists( 'wp_installing' ) && wp_installing(),
+			'installing' => self::setting_up_site(),
 			'job'        => ActionSchedulerContext::depth(),
 			'old'        => $roles,
 			'new'        => $roles,
 		];
+	}
+
+	/**
+	 * Whether WordPress is setting a site up right now: a new site of a
+	 * network (`wp_initialize_site`) or an install (`WP_INSTALLING`). Not
+	 * `wp_installing()`, which `wpmu_create_blog()` turns on and never off.
+	 */
+	private static function setting_up_site(): bool {
+		return ( function_exists( 'doing_action' ) && doing_action( 'wp_initialize_site' ) )
+			|| ( defined( 'WP_INSTALLING' ) && WP_INSTALLING );
 	}
 
 	/**
