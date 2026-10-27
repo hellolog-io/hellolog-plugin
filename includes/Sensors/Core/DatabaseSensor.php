@@ -25,9 +25,11 @@ defined( 'ABSPATH' ) || exit;
  *
  * The sensor fails closed. Spotting is coarse: any statement whose text has
  * the word `CREATE` or `DROP` followed somewhere by the word `TABLE` or
- * `TABLES` (a cheap search for "table" first, then a scan in one pass, with
- * no pattern that could give up on a large input) is logged, unless the
- * precise reading below grants it an exemption. Anything that reading can
+ * `TABLES` is logged, unless the precise reading below grants it an
+ * exemption. The checks run cheapest first, each linear in the length of the
+ * statement and without a pattern that could give up on a large input: a
+ * search for "table", the first word (rows read or written are never a
+ * table), then one scan of the lower-cased text. Anything that reading can
  * not settle is logged once, as it is, under the first name after `TABLE`,
  * marked `unparsed`, with no exemption.
  *
@@ -96,6 +98,10 @@ final class DatabaseSensor extends AbstractSensor {
 		if ( false === stripos( $query, 'table' ) ) {
 			return $query;
 		}
+		$first = self::first_word( $query );
+		if ( null !== $first && in_array( $first, self::ROW_STATEMENTS, true ) ) {
+			return $query; // Rows read or written, never a table.
+		}
 		$keyword = self::table_keyword( $query );
 		if ( null === $keyword ) {
 			return $query;
@@ -114,11 +120,6 @@ final class DatabaseSensor extends AbstractSensor {
 	 * @param string $keyword `CREATE` or `DROP`: the first one the search found.
 	 */
 	private function report( string $query, string $keyword ): void {
-		$first = self::first_word( $query );
-		if ( null !== $first && in_array( $first, self::ROW_STATEMENTS, true ) ) {
-			return; // Rows read or written, never a table.
-		}
-
 		[ $statement, $certain ] = self::normalize( $query );
 		$head                    = strtoupper( (string) strstr( $statement . ' ', ' ', true ) );
 		$code                    = 'DROP' === ( 'CREATE' === $head || 'DROP' === $head ? $head : $keyword ) ? 7101 : 7100;
@@ -169,16 +170,18 @@ final class DatabaseSensor extends AbstractSensor {
 
 	/**
 	 * `CREATE` or `DROP`, whichever comes first as a word, when the word
-	 * `TABLE` or `TABLES` follows it somewhere; null otherwise. One pass over
-	 * the text, without patterns.
+	 * `TABLE` or `TABLES` follows it somewhere; null otherwise. The text is
+	 * lower-cased once and searched with plain byte searches: one pass over
+	 * it, without patterns, however many words only contain the keywords.
 	 *
 	 * @param string $sql The statement as run.
 	 */
 	private static function table_keyword( string $sql ): ?string {
+		$text    = strtr( $sql, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz' );
 		$keyword = null;
 		$at      = PHP_INT_MAX;
-		foreach ( [ 'CREATE', 'DROP' ] as $word ) {
-			$pos = self::find_word( $sql, $word, 0 );
+		foreach ( [ 'create', 'drop' ] as $word ) {
+			$pos = self::find_word( $text, $word, 0 );
 			if ( null !== $pos && $pos < $at ) {
 				$keyword = $word;
 				$at      = $pos;
@@ -188,16 +191,16 @@ final class DatabaseSensor extends AbstractSensor {
 			return null;
 		}
 
-		$pos = stripos( $sql, 'table', $at + strlen( $keyword ) );
+		$pos = strpos( $text, 'table', $at + strlen( $keyword ) );
 		while ( false !== $pos ) {
 			$end = $pos + 5;
-			if ( isset( $sql[ $end ] ) && 's' === strtolower( $sql[ $end ] ) && ! self::is_name_char( $sql[ $end + 1 ] ?? '' ) ) {
+			if ( 's' === ( $text[ $end ] ?? '' ) && ! self::is_name_char( $text[ $end + 1 ] ?? '' ) ) {
 				++$end;
 			}
-			if ( ! self::is_name_char( $sql[ $pos - 1 ] ?? '' ) && ! self::is_name_char( $sql[ $end ] ?? '' ) ) {
-				return $keyword;
+			if ( ! self::is_name_char( $text[ $pos - 1 ] ) && ! self::is_name_char( $text[ $end ] ?? '' ) ) {
+				return strtoupper( $keyword );
 			}
-			$pos = stripos( $sql, 'table', $pos + 1 );
+			$pos = strpos( $text, 'table', $pos + 1 );
 		}
 
 		return null;
@@ -205,21 +208,21 @@ final class DatabaseSensor extends AbstractSensor {
 
 	/**
 	 * Where a word first stands on its own (no name character on either
-	 * side), ignoring case; null when it does not.
+	 * side); null when it does not.
 	 *
-	 * @param string $sql    The text.
-	 * @param string $word   The word.
+	 * @param string $text   The text, lower-cased.
+	 * @param string $word   The word, lower-cased.
 	 * @param int    $offset Where to start.
 	 */
-	private static function find_word( string $sql, string $word, int $offset ): ?int {
-		$pos = stripos( $sql, $word, $offset );
+	private static function find_word( string $text, string $word, int $offset ): ?int {
+		$pos = strpos( $text, $word, $offset );
 		while ( false !== $pos ) {
-			$before = $pos > 0 ? $sql[ $pos - 1 ] : '';
-			$after  = $sql[ $pos + strlen( $word ) ] ?? '';
+			$before = $pos > 0 ? $text[ $pos - 1 ] : '';
+			$after  = $text[ $pos + strlen( $word ) ] ?? '';
 			if ( ! self::is_name_char( $before ) && ! self::is_name_char( $after ) ) {
 				return $pos;
 			}
-			$pos = stripos( $sql, $word, $pos + 1 );
+			$pos = strpos( $text, $word, $pos + 1 );
 		}
 
 		return null;

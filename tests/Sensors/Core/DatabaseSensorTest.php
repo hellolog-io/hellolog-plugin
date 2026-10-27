@@ -355,6 +355,44 @@ final class DatabaseSensorTest extends TestCase {
 		$this->assertSame( 'yes', $recorder->calls[0][1]['metadata']['unparsed'] );
 	}
 
+	/**
+	 * Large values (page builder layouts, block content, cached JSON) are
+	 * written all the time, full of words that only contain the keywords
+	 * (`_tablet`, `created_at`, `dropdown`). Every statement runs through the
+	 * sensor, so the check stays linear in its length on every supported PHP
+	 * version.
+	 *
+	 * @return array<string, array{0: string}>
+	 */
+	public static function large_statements(): array {
+		$mb      = 1024 * 1024;
+		$layout  = substr( str_repeat( '{"padding_tablet":"10px","margin_tablet":"0"},', intdiv( $mb, 44 ) ), 0, $mb );
+		$records = substr( str_repeat( '{"created_at":"2026-01-01","widget":"dropdown"},', intdiv( $mb, 46 ) ), 0, $mb );
+
+		return [
+			'a row written'            => [ "UPDATE wp_postmeta SET meta_value = 'create " . $layout . "' WHERE meta_id = 1" ],
+			'a variable set'           => [ "SET @layout = 'create " . $layout . "'" ],
+			'words inside other words' => [ "SET @records = '" . $records . " table'" ],
+		];
+	}
+
+	/**
+	 * @dataProvider large_statements
+	 *
+	 * @param string $query A statement of about 1 MB that creates or drops nothing.
+	 */
+	public function test_a_large_statement_is_checked_quickly( string $query ): void {
+		$recorder = $this->recorder();
+		$sensor   = new DatabaseSensor( $recorder );
+
+		$start = hrtime( true );
+		$sensor->on_query( $query );
+		$elapsed = ( hrtime( true ) - $start ) / 1e6;
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertLessThan( 50, $elapsed, 'milliseconds for one statement' );
+	}
+
 	public function test_a_huge_quoted_table_name_is_still_logged(): void {
 		$recorder = $this->recorder();
 		( new DatabaseSensor( $recorder ) )->on_query( 'DROP TABLE wp_hellolog_queue, `' . str_repeat( 'a', 1000000 ) . '`' );
