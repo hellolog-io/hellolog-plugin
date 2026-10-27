@@ -130,14 +130,15 @@ final class ContentSensorTest extends TestCase {
 			'page'            => [ 'page', 'Page' ],
 			'underscored'     => [ 'wc_booking', 'Wc booking' ],
 			'hyphenated'      => [ 'sfwd-courses', 'Sfwd courses' ],
-			'attachment'      => [ 'attachment', 'Attachment' ],
+			'attachment'      => [ 'attachment', 'Media' ],
 			'wrong case'      => [ 'WP_Template', 'WP Template' ],
 			'site editor-ish' => [ 'wp_template_parts', 'Wp template parts' ],
 		];
 	}
 
 	/**
-	 * Every other type is named by its own name, made readable.
+	 * Every other type is named by its own name, made readable; a file of
+	 * the media library is "Media", as the media sensor names it.
 	 *
 	 * @dataProvider type_labels
 	 */
@@ -2316,6 +2317,10 @@ final class ContentSensorTest extends TestCase {
 			$this->assertSame( [ 'edit' => 'https://example.test/wp-admin/post.php?post=7&action=edit' ], $call[1]['links'] );
 		}
 		$this->assertSame( 'inherit', $calls[1][1]['metadata']['previous_status'] );
+		$this->assertSame(
+			[ 'Media "Logo" moved to trash.', 'Media "Logo" restored from trash.' ],
+			array_column( $this->survive_calls( $calls ), 'message' )
+		);
 	}
 
 	/**

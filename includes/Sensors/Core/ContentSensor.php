@@ -65,6 +65,9 @@ final class ContentSensor extends AbstractSensor {
 		'wp_block'         => 'Pattern',
 	];
 
+	/** How messages name a file of the media library. */
+	private const MEDIA_LABEL = 'Media';
+
 	/**
 	 * Old statuses of a save that brings a post into being: an insert (`new`)
 	 * and the first save of an editor placeholder (`auto-draft`). Every field
@@ -468,12 +471,17 @@ final class ContentSensor extends AbstractSensor {
 
 	/**
 	 * How a message names a post type: the site editor's types by the
-	 * editor's labels, any other by its name made readable (`wc_booking` is
-	 * `Wc booking`).
+	 * editor's labels, a file of the media library as "Media" (the way the
+	 * media sensor's messages name it), any other by its name made readable
+	 * (`wc_booking` is `Wc booking`).
 	 *
 	 * @param string $post_type Post type name.
 	 */
 	public static function type_label( string $post_type ): string {
+		if ( 'attachment' === $post_type ) {
+			return self::MEDIA_LABEL;
+		}
+
 		return self::SITE_EDITOR_TYPES[ $post_type ] ?? ucfirst( str_replace( [ '_', '-' ], ' ', $post_type ) );
 	}
 
