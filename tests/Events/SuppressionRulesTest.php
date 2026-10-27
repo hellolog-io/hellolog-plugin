@@ -1036,6 +1036,253 @@ final class SuppressionRulesTest extends TestCase {
 		$this->assertSame( [ 2001, 2006 ], self::codes( $result ) );
 	}
 
+	// ---- fold on suppress -----------------------------------------------
+
+	/**
+	 * @return array<string, array{0: int}>
+	 */
+	public static function fold_codes(): array {
+		$cases = [];
+		foreach ( [ 2001, 2002, 2004, 2007, 2008, 2009, 2013 ] as $code ) {
+			$cases[ (string) $code ] = [ $code ];
+		}
+
+		return $cases;
+	}
+
+	/**
+	 * The classic editor sets the sticky flag after the save that changed the
+	 * status: the update it makes is not dropped under the status event, its
+	 * changes go into it.
+	 *
+	 * @dataProvider fold_codes
+	 */
+	public function test_an_update_folds_its_changes_into_the_status_event_that_suppresses_it( int $code ): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( $code, self::post( 1 ), [ self::change( 'post_title', 'A', 'B' ) ] ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'sticky', 'no', 'yes' ) ], [ 'metadata' => [ 'changed' => [ 'sticky' ] ] ] ),
+			]
+		);
+
+		$this->assertSame( [ $code ], self::codes( $result ) );
+		$this->assertSame(
+			[
+				self::change( 'post_title', 'A', 'B' ),
+				self::change( 'sticky', 'no', 'yes' ),
+			],
+			$result[0]['changes']
+		);
+		$this->assertArrayNotHasKey( 'metadata', $result[0] );
+	}
+
+	/**
+	 * @return array<string, array{0: int}>
+	 */
+	public static function drop_codes(): array {
+		return [
+			'created' => [ 2000 ],
+			'trashed' => [ 2003 ],
+			'deleted' => [ 2005 ],
+		];
+	}
+
+	/**
+	 * A creation tells no changes, and a trashed or deleted post's last update
+	 * says nothing that matters: those still drop the update.
+	 *
+	 * @dataProvider drop_codes
+	 */
+	public function test_an_update_under_a_creation_trash_or_delete_is_dropped( int $code ): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 2006, self::post( 1 ), [ self::change( 'sticky', 'yes', 'no' ) ] ),
+				self::event( $code, self::post( 1 ) ),
+			]
+		);
+
+		$this->assertSame( [ $code ], self::codes( $result ) );
+		$this->assertArrayNotHasKey( 'changes', $result[0] );
+	}
+
+	public function test_an_update_folds_when_a_status_event_is_there_beside_a_drop_code(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 2001, self::post( 1 ) ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'sticky', 'no', 'yes' ) ] ),
+				self::event( 2003, self::post( 1 ) ),
+			]
+		);
+
+		$this->assertSame( [ 2001, 2003 ], self::codes( $result ) );
+		$this->assertSame( [ self::change( 'sticky', 'no', 'yes' ) ], $result[0]['changes'] );
+	}
+
+	public function test_a_folded_change_keeps_the_earliest_old_and_the_latest_new(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 2006, self::post( 1 ), [ self::change( 'post_excerpt', 'x', 'y' ) ] ),
+				self::event( 2001, self::post( 1 ), [ self::change( 'post_title', 'A', 'B' ) ] ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'post_title', 'B', 'C' ), self::change( 'sticky', 'no', 'yes' ) ] ),
+			]
+		);
+
+		$this->assertSame( [ 2001 ], self::codes( $result ) );
+		$this->assertSame(
+			[
+				self::change( 'post_excerpt', 'x', 'y' ),
+				self::change( 'post_title', 'A', 'C' ),
+				self::change( 'sticky', 'no', 'yes' ),
+			],
+			$result[0]['changes']
+		);
+	}
+
+	public function test_a_fold_that_goes_back_leaves_no_changes(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 2001, self::post( 1 ) ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'sticky', 'no', 'yes' ) ] ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'sticky', 'yes', 'no' ) ] ),
+			]
+		);
+
+		$this->assertSame( [ 2001 ], self::codes( $result ) );
+		$this->assertArrayNotHasKey( 'changes', $result[0] );
+	}
+
+	public function test_a_fold_updates_a_changed_list_only_where_there_is_one(): void {
+		$with    = self::event(
+			2001,
+			self::post( 1 ),
+			[ self::change( 'post_title', 'A', 'B' ) ],
+			[
+				'metadata' => [
+					'slug'    => 'hello',
+					'changed' => [ 'post_title' ],
+				],
+			]
+		);
+		$without = self::event( 2001, self::post( 2 ), null, [ 'metadata' => [ 'slug' => 'world' ] ] );
+
+		$result = SuppressionRules::defaults()->apply(
+			[
+				$with,
+				$without,
+				self::event( 2006, self::post( 1 ), [ self::change( 'sticky', 'no', 'yes' ) ] ),
+				self::event( 2006, self::post( 2 ), [ self::change( 'sticky', 'no', 'yes' ) ] ),
+			]
+		);
+
+		$this->assertSame( [ 2001, 2001 ], self::codes( $result ) );
+		$this->assertSame( [ 'post_title', 'sticky' ], $result[0]['metadata']['changed'] );
+		$this->assertSame( [ 'slug' => 'world' ], $result[1]['metadata'] );
+		$this->assertSame( [ self::change( 'sticky', 'no', 'yes' ) ], $result[1]['changes'] );
+	}
+
+	/**
+	 * An update before any status event goes into the first one after it;
+	 * any other into the last status event before it.
+	 */
+	public function test_an_update_folds_into_the_last_status_event_before_it_else_the_first_after(): void {
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 2006, self::post( 1 ), [ self::change( 'a', '1', '2' ) ] ),
+				self::event( 2008, self::post( 1 ) ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'b', '1', '2' ) ] ),
+				self::event( 2001, self::post( 1 ) ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'c', '1', '2' ) ] ),
+			]
+		);
+
+		$this->assertSame( [ 2008, 2001 ], self::codes( $result ) );
+		$this->assertSame( [ 'a', 'b' ], array_column( $result[0]['changes'], 'field' ) );
+		$this->assertSame( [ 'c' ], array_column( $result[1]['changes'], 'field' ) );
+	}
+
+	public function test_a_fold_stays_on_its_site_and_its_target(): void {
+		$on     = static fn( int $site, array $payload ): array => $payload + [ SuppressionRules::BLOG_KEY => $site ];
+		$sticky = [ self::change( 'sticky', 'no', 'yes' ) ];
+
+		$result = SuppressionRules::defaults()->apply(
+			[
+				$on( 1, self::event( 2001, self::post( 42 ) ) ),
+				$on( 2, self::event( 2006, self::post( 42 ), $sticky ) ),
+				$on( 1, self::event( 2006, self::post( 43 ), $sticky ) ),
+				$on( 1, self::event( 2006, self::post( 42 ), $sticky ) ),
+			]
+		);
+
+		$this->assertSame( [ 2001, 2006, 2006 ], self::codes( $result ) );
+		$this->assertSame( $sticky, $result[0]['changes'] );
+		$this->assertSame( [ 1, 2, 1 ], array_column( $result, SuppressionRules::BLOG_KEY ) );
+		$this->assertSame( [ '42', '42', '43' ], array_map( static fn( array $p ): string => $p['target']['id'], $result ) );
+	}
+
+	public function test_a_fold_needs_a_status_event_that_survives(): void {
+		$rules = new SuppressionRules(
+			[
+				2006 => [ 2001 ],
+				2001 => [ 5000 ],
+			],
+			[],
+			[],
+			[],
+			[ 2006 => [ 2001 ] ]
+		);
+
+		$result = $rules->apply(
+			[
+				self::event( 2001, self::post( 1 ) ),
+				self::event( 5000, self::post( 1 ) ),
+				self::event( 2006, self::post( 1 ), [ self::change( 'sticky', 'no', 'yes' ) ] ),
+			]
+		);
+
+		$this->assertSame( [ 5000 ], self::codes( $result ) );
+		$this->assertArrayNotHasKey( 'changes', $result[0] );
+	}
+
+	public function test_a_fold_clamps_changes_to_fifty(): void {
+		$own    = [];
+		$folded = [];
+		for ( $i = 0; $i < 30; $i++ ) {
+			$own[]    = self::change( 'own_' . $i, 'a', 'b' );
+			$folded[] = self::change( 'folded_' . $i, 'a', 'b' );
+		}
+
+		$result = SuppressionRules::defaults()->apply(
+			[
+				self::event( 2001, self::post( 1 ), $own ),
+				self::event( 2006, self::post( 1 ), $folded ),
+			]
+		);
+
+		$this->assertCount( 50, $result[0]['changes'] );
+		$this->assertSame( 'folded_19', $result[0]['changes'][49]['field'] );
+	}
+
+	public function test_with_unions_the_fold_lists(): void {
+		$base  = new SuppressionRules( [ 2006 => [ 2001, 2002 ] ], [], [], [], [ 2006 => [ 2001 ] ] );
+		$other = new SuppressionRules( [], [], [], [], [ 2006 => [ 2002 ] ] );
+		$rules = $base->with( $other );
+
+		foreach ( [ 2001, 2002 ] as $code ) {
+			$result = $rules->apply(
+				[
+					self::event( $code, self::post( 1 ) ),
+					self::event( 2006, self::post( 1 ), [ self::change( 'sticky', 'no', 'yes' ) ] ),
+				]
+			);
+			$this->assertSame( [ $code ], self::codes( $result ) );
+			$this->assertSame( [ self::change( 'sticky', 'no', 'yes' ) ], $result[0]['changes'] ?? null, (string) $code );
+		}
+
+		// Neither operand changes.
+		$plain = $base->apply( [ self::event( 2002, self::post( 1 ) ), self::event( 2006, self::post( 1 ), [ self::change( 'sticky', 'no', 'yes' ) ] ) ] );
+		$this->assertArrayNotHasKey( 'changes', $plain[0] );
+	}
+
 	// ---- sites of a network --------------------------------------------
 
 	public function test_events_of_one_site_never_thin_out_those_of_another(): void {

@@ -27,6 +27,10 @@ defined( 'ABSPATH' ) || exit;
  *    different. Which codes exist is decided on the input, before anything is
  *    dropped, so a chain (A beats B beats C) removes both B and C. A
  *    condition that throws counts as "not different": that payload stays.
+ *    A dropped payload of a fold code hands its changes to a surviving
+ *    payload on the same target of one of the codes listed for it (the last
+ *    one before it, else the first one after it), folded in time order;
+ *    without such a payload it is just dropped.
  * 2. Merge. Payloads of a merge code on the same target become one, at the
  *    position of the first, with their changes folded together.
  * 3. Drop empty. A payload of a drop-empty code that has no changes left is
@@ -100,14 +104,24 @@ final class SuppressionRules {
 	private array $conditions = [];
 
 	/**
+	 * Code => codes a suppressed payload of that code folds its changes into.
+	 *
+	 * @var array<int, array<int, int>>
+	 */
+	private array $fold = [];
+
+	/**
 	 * @param array<int, array<int, int>>         $suppress   Code => codes; the key code is dropped when any listed
 	 *                                                        code exists for the same target.
 	 * @param array<int, int>                     $merge      Codes whose payloads on one target are folded into one.
 	 * @param array<int, int>                     $drop_empty Codes dropped when they carry no changes.
 	 * @param array<int, callable(array): bool>   $conditions Code => test; when present, that code's suppression
 	 *                                                        applies only to payloads for which it returns true.
+	 * @param array<int, array<int, int>>         $fold       Code => codes; a suppressed payload of the key code
+	 *                                                        folds its changes into a surviving payload of a listed
+	 *                                                        code on the same target instead of losing them.
 	 */
-	public function __construct( array $suppress = [], array $merge = [], array $drop_empty = [], array $conditions = [] ) {
+	public function __construct( array $suppress = [], array $merge = [], array $drop_empty = [], array $conditions = [], array $fold = [] ) {
 		foreach ( $suppress as $code => $others ) {
 			$this->suppress[ (int) $code ] = self::codes( (array) $others );
 		}
@@ -115,6 +129,9 @@ final class SuppressionRules {
 		$this->drop_empty = self::codes( $drop_empty );
 		foreach ( $conditions as $code => $condition ) {
 			$this->conditions[ (int) $code ] = $condition;
+		}
+		foreach ( $fold as $code => $into ) {
+			$this->fold[ (int) $code ] = self::codes( (array) $into );
 		}
 	}
 
@@ -156,6 +173,15 @@ final class SuppressionRules {
 				// default one, an editor, a shop manager) and any later change,
 				// from a role the user already had, is an event of its own.
 				4002 => static fn( array $p ): bool => self::is_first_default_role( $p ),
+			],
+			[
+				// A post update the status event of its post makes redundant still
+				// says what else changed (the classic editor sets the sticky flag
+				// only after the save that changed the status): its changes go into
+				// the status event. A creation tells no changes, and the last update
+				// of a post that is trashed or deleted says nothing that matters,
+				// so under those it is just dropped.
+				2006 => [ 2001, 2002, 2004, 2007, 2008, 2009, 2013 ],
 			]
 		);
 	}
@@ -185,11 +211,17 @@ final class SuppressionRules {
 			$conditions[ $code ] = $added;
 		}
 
+		$fold = $this->fold;
+		foreach ( $other->fold as $code => $codes ) {
+			$fold[ $code ] = array_merge( $fold[ $code ] ?? [], $codes );
+		}
+
 		return new self(
 			$suppress,
 			array_merge( $this->merge, $other->merge ),
 			array_merge( $this->drop_empty, $other->drop_empty ),
-			$conditions
+			$conditions,
+			$fold
 		);
 	}
 
@@ -204,14 +236,96 @@ final class SuppressionRules {
 		$payloads = array_values( $payloads );
 		$present  = self::presence( $payloads );
 
+		$suppressed = [];
+		foreach ( $payloads as $index => $payload ) {
+			$suppressed[ $index ] = $this->is_suppressed( $payload, $present );
+		}
+
 		$kept = [];
-		foreach ( $payloads as $payload ) {
-			if ( ! $this->is_suppressed( $payload, $present ) ) {
+		foreach ( $this->fold_suppressed( $payloads, $suppressed ) as $index => $payload ) {
+			if ( ! $suppressed[ $index ] ) {
 				$kept[] = $payload;
 			}
 		}
 
 		return self::without_duplicates( $this->prune_empty( $this->fold_merges( $kept ) ) );
+	}
+
+	/**
+	 * Hand the changes of every suppressed payload of a fold code to the
+	 * surviving payload it folds into, see {@see self::fold_target()}. The
+	 * changes of that payload and of everything folded into it are folded
+	 * in dispatch order (earliest `old`, latest `new`, a field back where it
+	 * started is dropped) and clamped to the wire limits; its
+	 * `metadata.changed`, when it has one, follows them.
+	 *
+	 * @param array<int, array<string, mixed>> $payloads   Payloads, as a list.
+	 * @param array<int, bool>                 $suppressed Index => whether the payload is suppressed.
+	 *
+	 * @return array<int, array<string, mixed>> The payloads, same indexes, the fold targets updated.
+	 */
+	private function fold_suppressed( array $payloads, array $suppressed ): array {
+		$into = [];
+		foreach ( $payloads as $index => $payload ) {
+			$codes = $this->fold[ self::code_of( $payload ) ] ?? [];
+			$key   = self::target_key( $payload );
+			if ( ! $suppressed[ $index ] || [] === $codes || null === $key ) {
+				continue;
+			}
+
+			$target = self::fold_target( $payloads, $suppressed, $index, $key, $codes );
+			if ( null !== $target ) {
+				$into[ $target ][] = $index;
+			}
+		}
+
+		foreach ( $into as $target => $folded ) {
+			$order = array_merge( $folded, [ $target ] );
+			sort( $order );
+
+			$changes = [];
+			foreach ( $order as $index ) {
+				$changes = ChangeSet::merge( $changes, self::changes_of( $payloads[ $index ] ) );
+			}
+			$changes = self::clamp_changes( $changes );
+
+			$payload = self::with_changed_fields( $payloads[ $target ], $changes );
+			unset( $payload['changes'] );
+			if ( [] !== $changes ) {
+				$payload['changes'] = $changes;
+			}
+			$payloads[ $target ] = $payload;
+		}
+
+		return $payloads;
+	}
+
+	/**
+	 * The surviving payload of one of `$codes` on the target `$key` that the
+	 * suppressed payload at `$index` folds into: the last one before it in
+	 * dispatch order, else the first one after it; null when there is none.
+	 *
+	 * @param array<int, array<string, mixed>> $payloads   Payloads, as a list.
+	 * @param array<int, bool>                 $suppressed Index => whether the payload is suppressed.
+	 * @param int                              $index      Index of the suppressed payload.
+	 * @param string                           $key        Its target key.
+	 * @param array<int, int>                  $codes      Codes it folds into.
+	 */
+	private static function fold_target( array $payloads, array $suppressed, int $index, string $key, array $codes ): ?int {
+		$before = null;
+		$after  = null;
+		foreach ( $payloads as $candidate => $payload ) {
+			if ( $suppressed[ $candidate ] || ! in_array( self::code_of( $payload ), $codes, true ) || self::target_key( $payload ) !== $key ) {
+				continue;
+			}
+			if ( $candidate < $index ) {
+				$before = $candidate;
+			} elseif ( null === $after ) {
+				$after = $candidate;
+			}
+		}
+
+		return $before ?? $after;
 	}
 
 	/**
