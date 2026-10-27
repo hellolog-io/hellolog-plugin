@@ -91,6 +91,33 @@ final class ExportCatalogTest extends TestCase {
 	}
 
 	/**
+	 * @return array<string, array{0: int, 1: string, 2: array<int, string>, 3: string, 4: string}> Code, label, vars, event type, severity.
+	 */
+	public static function post_status_codes(): array {
+		return [
+			'scheduled'            => [ 2007, '{post_type} "{title}" scheduled for {date}.', [ 'post_type', 'title', 'date' ], 'updated', 'info' ],
+			'submitted for review' => [ 2008, '{post_type} "{title}" submitted for review.', [ 'post_type', 'title' ], 'submitted', 'info' ],
+			'made private'         => [ 2009, '{post_type} "{title}" made private.', [ 'post_type', 'title' ], 'updated', 'low' ],
+		];
+	}
+
+	/**
+	 * @dataProvider post_status_codes
+	 *
+	 * @param array<int, string> $vars Expected placeholder names.
+	 */
+	public function test_post_status_codes_are_seeded( int $code, string $label, array $vars, string $event_type, string $severity ): void {
+		$by_code = array_column( $this->seeded_export(), null, 'code' );
+
+		$this->assertArrayHasKey( $code, $by_code );
+		$this->assertSame( $label, $by_code[ $code ]['label'] );
+		$this->assertSame( $vars, $by_code[ $code ]['vars'] );
+		$this->assertSame( 'post', $by_code[ $code ]['object'] );
+		$this->assertSame( $event_type, $by_code[ $code ]['event_type'] );
+		$this->assertSame( $severity, $by_code[ $code ]['severity'] );
+	}
+
+	/**
 	 * @return array<string, array{0: int, 1: string, 2: string}> Code, label, object.
 	 */
 	public static function auto_update_codes(): array {

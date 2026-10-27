@@ -104,7 +104,8 @@ namespace {
 	}
 
 	/**
-	 * Records the registration; nothing is ever fired.
+	 * Records the registration; nothing is fired here. A test fires the
+	 * recorded callbacks itself.
 	 *
 	 * @param string   $hook_name     Hook name.
 	 * @param callable $callback      Callback.
@@ -113,6 +114,12 @@ namespace {
 	 */
 	function add_action( string $hook_name, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
 		WpState::$actions[ $hook_name ] = [
+			'priority'      => $priority,
+			'accepted_args' => $accepted_args,
+		];
+
+		WpState::$callbacks[ $hook_name ][] = [
+			'callback'      => $callback,
 			'priority'      => $priority,
 			'accepted_args' => $accepted_args,
 		];

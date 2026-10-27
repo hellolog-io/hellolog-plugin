@@ -11,14 +11,30 @@ namespace HelloLog\Sensors\Core;
 
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
+use Throwable;
 use WP_Post;
 
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Tracks the post lifecycle: creation, publish / unpublish, trash, restore,
- * permanent delete, and ordinary updates. We follow {@see transition_post_status}
- * for state changes and {@see post_updated} for in-place content edits.
+ * Tracks the post lifecycle: creation, publish / unpublish, scheduling,
+ * review, private, trash, restore, permanent delete, and ordinary updates.
+ *
+ * A save is told in one event. Core fires `pre_post_update` before it writes
+ * an existing post, then `transition_post_status` and `post_updated`; the REST
+ * API (the block editor) writes the featured image, sticky flag, template and
+ * terms only after that, and `wp_after_insert_post` comes last, once core
+ * saved the revision. So the post is read on `pre_post_update` (see
+ * {@see PostSnapshot}), its status change is noted, and the event is built on
+ * `wp_after_insert_post` from that snapshot and the post as it ends up: the
+ * status event when the status change is one, carrying the other changes,
+ * otherwise an update (2006). A save that never gets to `wp_after_insert_post`
+ * (a REST save whose terms failed) is logged at shutdown. A status change
+ * outside a save this sensor saw start (a scheduled post going live, a post
+ * inserted) has nothing to compare and is logged as it happens.
+ *
+ * Terms and the sticky flag set on their own, outside a save, are an update
+ * of the post: its terms named by the taxonomy, or `sticky`.
  *
  * Which post types are logged is decided by {@see self::is_tracked_type()}:
  * the types another sensor reports itself, and internal types without an
@@ -62,49 +78,48 @@ final class ContentSensor extends AbstractSensor {
 	 *
 	 * @var array<int, int>
 	 */
-	private const OWNED_ELSEWHERE_CODES = [ 2000, 2001, 2002, 2005, 2006 ];
+	private const OWNED_ELSEWHERE_CODES = [ 2000, 2001, 2002, 2005, 2006, 2007, 2008, 2009 ];
 
 	/**
-	 * Post fields compared by an in-place update, in the order they are reported.
+	 * Old statuses of a save that brings a post into being: an insert (`new`)
+	 * and the first save of an editor placeholder (`auto-draft`). Every field
+	 * is filled in by such a save, so it carries no changes.
 	 *
 	 * @var array<int, string>
 	 */
-	private const DIFF_FIELDS = [ 'post_title', 'post_content', 'post_excerpt', 'post_name', 'post_parent', 'post_author', 'post_date', 'menu_order', 'comment_status', 'ping_status' ];
+	private const CREATION_STATUSES = [ 'new', 'auto-draft' ];
 
 	/**
-	 * Whether a password protects the post: compared after
-	 * {@see self::DIFF_FIELDS} and reported as `yes`/`no`. The password itself
-	 * is never read into a snapshot.
-	 */
-	private const PROTECTED_FIELD = 'password_protected';
-
-	/**
-	 * The `post_date_gmt` of a draft that has no date of its own: WordPress
-	 * gives such a post the time of every save, which is no date anybody set.
-	 */
-	private const FLOATING_DATE = '0000-00-00 00:00:00';
-
-	/**
-	 * Fields reported as "changed" without their values.
+	 * Snapshots of the posts whose save is open, taken on `pre_post_update`:
+	 * `site:post id` => {@see PostSnapshot}. A post id is unique on its own
+	 * site only.
 	 *
-	 * @var array<int, string>
+	 * @var array<string, array<string, mixed>>
 	 */
-	private const CONTENT_FIELDS = [ 'post_content' ];
+	private array $before = [];
 
 	/**
-	 * Posts `wp_untrash_post()` is restoring right now: post id => the status
-	 * the post had when it was trashed. Set on `untrash_post`, taken by the
-	 * status change that follows it.
+	 * The status change of an open save: `site:post id` => the status before
+	 * the save and extra `metadata` for its event.
 	 *
-	 * @var array<int, string>
+	 * @var array<string, array{old: string, extra: array<string, mixed>}>
+	 */
+	private array $pending = [];
+
+	/**
+	 * Posts `wp_untrash_post()` is restoring right now: `site:post id` => the
+	 * status the post had when it was trashed. Set on `untrash_post`, taken by
+	 * the status change that follows it.
+	 *
+	 * @var array<string, string>
 	 */
 	private array $untrashing = [];
 
 	/**
-	 * Posts whose restore by `wp_untrash_post()` the status change has logged,
+	 * Posts whose restore by `wp_untrash_post()` the status change has taken,
 	 * so the `untrashed_post` it fires next does not log it again.
 	 *
-	 * @var array<int, true>
+	 * @var array<string, true>
 	 */
 	private array $restored = [];
 
@@ -113,11 +128,42 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	public function boot(): void {
+		add_action( 'pre_post_update', [ $this, 'on_before_update' ], 10, 1 );
 		add_action( 'transition_post_status', [ $this, 'on_status' ], 10, 3 );
-		add_action( 'post_updated', [ $this, 'on_updated' ], 10, 3 );
+		// After core saved the revision of the save, at priority 9.
+		add_action( 'wp_after_insert_post', [ $this, 'on_after_insert' ], 10, 1 );
+		add_action( 'set_object_terms', [ $this, 'on_terms_set' ], 10, 6 );
+		add_action( 'post_stuck', [ $this, 'on_stuck' ], 10, 1 );
+		add_action( 'post_unstuck', [ $this, 'on_unstuck' ], 10, 1 );
 		add_action( 'before_delete_post', [ $this, 'on_delete' ], 10, 2 );
 		add_action( 'untrash_post', [ $this, 'on_untrash' ], 10, 2 );
 		add_action( 'untrashed_post', [ $this, 'on_untrashed' ], 10, 2 );
+		// Before the request's events are written, at priority 1.
+		add_action( 'shutdown', [ $this, 'flush_open_saves' ], 0 );
+	}
+
+	/**
+	 * An existing post is about to be saved: read it as it still is. A save
+	 * of the same post that is already open (a plugin saving it again from
+	 * the hooks of the first save) keeps the first snapshot, so one event
+	 * tells both saves.
+	 */
+	public function on_before_update( int $post_id ): void {
+		$key = self::state_key( $post_id );
+		if ( isset( $this->before[ $key ] ) ) {
+			return;
+		}
+
+		// Reading the post's terms and meta can fail (a filter on them that
+		// throws); that must never reach the request that saves the post.
+		try {
+			$post = get_post( $post_id );
+			if ( $post instanceof WP_Post && $this->should_track( $post, 2006 ) ) {
+				$this->before[ $key ] = $this->snapshot( $post );
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 2006, [ 'post_id' => $post_id ] );
+		}
 	}
 
 	/**
@@ -125,24 +171,139 @@ final class ContentSensor extends AbstractSensor {
 	 * editor restores a post with a plain status update, and
 	 * `wp_untrash_post()` changes the status too. The status the post had
 	 * before the trash is only known when `wp_untrash_post()` restores it.
+	 *
+	 * Inside a save whose start this sensor saw, the status change is only
+	 * noted: the save's event is built once the save is done, see
+	 * {@see self::on_after_insert()}. Any other status change is logged here.
 	 */
 	public function on_status( string $new_status, string $old_status, WP_Post $post ): void {
-		$code = self::status_event_code( $new_status, $old_status );
-		if ( 0 === $code ) {
+		$code  = self::status_event_code( $new_status, $old_status );
+		$key   = self::state_key( (int) $post->ID );
+		$extra = [];
+		if ( 2004 === $code && array_key_exists( $key, $this->untrashing ) ) {
+			$extra['previous_status'] = $this->untrashing[ $key ];
+			$this->restored[ $key ]   = true;
+			unset( $this->untrashing[ $key ] );
+		}
+
+		if ( isset( $this->before[ $key ] ) ) {
+			$this->pending[ $key ] = [
+				'old'   => $this->pending[ $key ]['old'] ?? $old_status,
+				'extra' => array_merge( $this->pending[ $key ]['extra'] ?? [], $extra ),
+			];
 			return;
 		}
 
-		$extra = [];
-		$id    = (int) $post->ID;
-		if ( 2004 === $code && array_key_exists( $id, $this->untrashing ) ) {
-			$extra['previous_status'] = $this->untrashing[ $id ];
-			$this->restored[ $id ]    = true;
-			unset( $this->untrashing[ $id ] );
-		}
-
-		if ( $this->should_track( $post, $code ) ) {
+		if ( 0 !== $code && $this->should_track( $post, $code ) ) {
 			$this->emit_post_event( $code, $post, $extra );
 		}
+	}
+
+	/**
+	 * A save is done, its terms and meta included: log it, if this sensor saw
+	 * it start.
+	 */
+	public function on_after_insert( int $post_id ): void {
+		$key = self::state_key( $post_id );
+		if ( ! isset( $this->before[ $key ] ) ) {
+			return;
+		}
+
+		$before  = $this->before[ $key ];
+		$pending = $this->pending[ $key ] ?? null;
+		unset( $this->before[ $key ], $this->pending[ $key ] );
+
+		$this->log_save( $post_id, $before, $pending );
+	}
+
+	/**
+	 * Log the saves that never got to `wp_after_insert_post`, each on the
+	 * site it happened on. Runs at shutdown, once.
+	 */
+	public function flush_open_saves(): void {
+		$open          = $this->before;
+		$pending       = $this->pending;
+		$this->before  = [];
+		$this->pending = [];
+
+		foreach ( $open as $key => $before ) {
+			$parts   = explode( ':', (string) $key, 2 );
+			$blog_id = (int) $parts[0];
+			$post_id = (int) ( $parts[1] ?? 0 );
+
+			try {
+				$this->on_site( $blog_id, fn() => $this->log_save( $post_id, $before, $pending[ $key ] ?? null ) );
+			} catch ( Throwable $e ) {
+				$this->report_failure( $e, 2006, [ 'post_id' => $post_id ] );
+			}
+		}
+	}
+
+	/**
+	 * Terms of an object were set. Outside a save whose start this sensor saw
+	 * (that save's event compares the terms itself), a change of the terms of
+	 * a post it logs is an update of the post, named by the taxonomy.
+	 *
+	 * @param int    $object_id  Object id.
+	 * @param mixed  $terms      The terms as given; not used.
+	 * @param mixed  $tt_ids     Term taxonomy ids set: the added ones when appending.
+	 * @param string $taxonomy   Taxonomy name.
+	 * @param mixed  $append     Whether the terms were added to the object's terms.
+	 * @param mixed  $old_tt_ids Term taxonomy ids the object had before.
+	 */
+	public function on_terms_set( int $object_id, $terms, $tt_ids, string $taxonomy, $append = false, $old_tt_ids = [] ): void {
+		if ( ! TaxonomySensor::is_tracked( $taxonomy ) || isset( $this->before[ self::state_key( $object_id ) ] ) ) {
+			return;
+		}
+
+		$old = self::ids( $old_tt_ids );
+		$new = self::ids( $tt_ids );
+		if ( $append ) {
+			$new = self::ids( array_merge( $old, $new ) );
+		}
+		if ( $old === $new ) {
+			return;
+		}
+
+		// Reading the post and the terms can fail (a filter on them that
+		// throws); that must never reach the request that set the terms.
+		try {
+			$post = $this->loggable_post( $object_id );
+			if ( null === $post || ! in_array( $taxonomy, get_object_taxonomies( (string) $post->post_type ), true ) ) {
+				return;
+			}
+
+			$changes = PostSnapshot::term_changes(
+				[ $taxonomy => self::term_names( $old, $taxonomy ) ],
+				[ $taxonomy => self::term_names( $new, $taxonomy ) ]
+			);
+			if ( [] !== $changes ) {
+				$this->emit_update( $post, $changes );
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure(
+				$e,
+				2006,
+				[
+					'post_id'  => $object_id,
+					'taxonomy' => $taxonomy,
+				]
+			);
+		}
+	}
+
+	/**
+	 * A post was made sticky.
+	 */
+	public function on_stuck( int $post_id ): void {
+		$this->sticky_changed( $post_id, true );
+	}
+
+	/**
+	 * A post is no longer sticky.
+	 */
+	public function on_unstuck( int $post_id ): void {
+		$this->sticky_changed( $post_id, false );
 	}
 
 	/**
@@ -153,7 +314,7 @@ final class ContentSensor extends AbstractSensor {
 	 * @param string $previous_status Status of the post when it was trashed.
 	 */
 	public function on_untrash( int $post_id, string $previous_status = '' ): void {
-		$this->untrashing[ $post_id ] = $previous_status;
+		$this->untrashing[ self::state_key( $post_id ) ] = $previous_status;
 	}
 
 	/**
@@ -164,8 +325,9 @@ final class ContentSensor extends AbstractSensor {
 	 * @param string $previous_status Status of the post when it was trashed.
 	 */
 	public function on_untrashed( int $post_id, string $previous_status ): void {
-		if ( isset( $this->restored[ $post_id ] ) ) {
-			unset( $this->restored[ $post_id ] );
+		$key = self::state_key( $post_id );
+		if ( isset( $this->restored[ $key ] ) ) {
+			unset( $this->restored[ $key ] );
 			return;
 		}
 
@@ -186,46 +348,24 @@ final class ContentSensor extends AbstractSensor {
 		$this->emit_post_event( 2005, $post );
 	}
 
-	public function on_updated( int $post_id, WP_Post $after, WP_Post $before ): void {
-		if ( ! $this->should_track( $after, 2006 ) ) {
-			return;
-		}
-		if ( $after->post_status !== $before->post_status ) {
-			return; // status changes are handled by `transition_post_status`
-		}
-		if ( $after->post_modified === $before->post_modified ) {
-			return; // no real change
-		}
-		$changes = self::field_changes( $this->snapshot( $before ), $this->snapshot( $after ) );
-
-		// An update that changed none of the listed fields still goes out, with
-		// no changes, so the per-request buffer can drop it.
-		$this->emit_post_event(
-			2006,
-			$after,
-			[
-				'changed' => array_column( $changes, 'field' ),
-			],
-			$changes
-		);
-	}
-
 	/**
-	 * The event a status change is, or 0 when it is none.
+	 * The event a status change is, or 0 when it is none. The first rule that
+	 * applies decides.
 	 *
-	 * A post that goes live is "published" even when it was never saved as a
-	 * draft first, otherwise a direct publish would be logged as a plain
-	 * creation. A post that comes into being as anything else visible, either
-	 * from `auto-draft` (the editor's placeholder) or from `new` (inserted
-	 * directly, by the REST API or an importer), is "created". A post that
-	 * already existed and is sent to `auto-draft`, from any state (published
-	 * or trashed included), is "reverted": WordPress deletes stale
+	 * A post that already existed and is sent to `auto-draft`, from any state
+	 * (published or trashed included), is "reverted": WordPress deletes stale
 	 * auto-drafts on its own, so the move is what has to be on record; a new
 	 * placeholder (`new` to `auto-draft`) is not an event. Moving to trash is
 	 * "trashed" from every state, and moving out of the trash, to any other
 	 * state, is "restored" (the block editor restores a post with a plain
-	 * status update). Going from published to anything else but trash or
-	 * `auto-draft` is "unpublished".
+	 * status update). A post that goes live is "published" even when it was
+	 * never saved as a draft first, otherwise a direct publish would be
+	 * logged as a plain creation. Going from published to anything else is
+	 * "unpublished". Otherwise a post sent to `future` is "scheduled", to
+	 * `pending` "submitted for review" and to `private` "made private", from
+	 * any state, the editor's placeholder (`auto-draft`) and a direct insert
+	 * (`new`) included. A post that comes into being as a draft, from either
+	 * of those two, is "created".
 	 * Everything else (including no change) is not an event of its own.
 	 *
 	 * @param string $new New post status.
@@ -247,14 +387,20 @@ final class ContentSensor extends AbstractSensor {
 		if ( 'publish' === $new ) {
 			return 2001;
 		}
-		if ( in_array( $old, [ 'auto-draft', 'new' ], true ) && in_array( $new, [ 'draft', 'pending', 'future', 'private' ], true ) ) {
-			return 2000;
-		}
 		if ( 'publish' === $old ) {
 			return 2002;
 		}
 
-		return 0;
+		$code = [
+			'future'  => 2007,
+			'pending' => 2008,
+			'private' => 2009,
+		][ $new ] ?? 0;
+		if ( 0 !== $code ) {
+			return $code;
+		}
+
+		return 'draft' === $new && in_array( $old, self::CREATION_STATUSES, true ) ? 2000 : 0;
 	}
 
 	/**
@@ -333,34 +479,6 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	/**
-	 * What changed between two post snapshots, as a change list.
-	 *
-	 * After the fields of {@see self::DIFF_FIELDS} comes `password_protected`
-	 * (a bool in the snapshot), reported as `yes`/`no`. It is compared here,
-	 * not by {@see ChangeSet::diff()}, whose masking would take the name for a
-	 * credential and hide the yes or no.
-	 *
-	 * @param array<string, mixed> $before Post fields before the update.
-	 * @param array<string, mixed> $after  Post fields after the update.
-	 * @return array<int, array{field: string, old: ?string, new: ?string}>
-	 */
-	public static function field_changes( array $before, array $after ): array {
-		$changes = ChangeSet::diff( $before, $after, self::DIFF_FIELDS, self::CONTENT_FIELDS );
-
-		$was = ! empty( $before[ self::PROTECTED_FIELD ] );
-		$is  = ! empty( $after[ self::PROTECTED_FIELD ] );
-		if ( $was !== $is ) {
-			$changes[] = [
-				'field' => self::PROTECTED_FIELD,
-				'old'   => ChangeSet::stringify( $was ),
-				'new'   => ChangeSet::stringify( $is ),
-			];
-		}
-
-		return $changes;
-	}
-
-	/**
 	 * Whether an event about this post is logged, see {@see self::is_tracked_type()}.
 	 *
 	 * @param WP_Post $post Post the event is about.
@@ -378,10 +496,127 @@ final class ContentSensor extends AbstractSensor {
 	}
 
 	/**
-	 * @param array<string, mixed>                                         $extra   Extra `metadata` entries.
-	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes What changed, for an update.
+	 * Log a save whose start this sensor saw: compare the post as it was
+	 * before the save with the post as it is now. A status change that is
+	 * an event is logged as that event, carrying the other changes; any
+	 * other save is an update, which names the status among its changes when
+	 * the status changed. A save that brought the post into being carries no
+	 * changes. When the reads fail, the event still goes out, without
+	 * changes.
+	 *
+	 * @param array<string, mixed>                                   $before  Snapshot taken before the save.
+	 * @param array{old: string, extra: array<string, mixed>}|null $pending The status change of the save, if any.
 	 */
-	private function emit_post_event( int $code, WP_Post $post, array $extra = [], array $changes = [] ): void {
+	private function log_save( int $post_id, array $before, ?array $pending ): void {
+		try {
+			$post = get_post( $post_id );
+			if ( ! $post instanceof WP_Post ) {
+				return;
+			}
+
+			$old   = (string) ( $pending['old'] ?? $before['post_status'] ?? '' );
+			$code  = self::status_event_code( (string) $post->post_status, $old );
+			$event = 0 === $code ? 2006 : $code;
+			if ( ! $this->should_track( $post, $event ) ) {
+				return;
+			}
+
+			$changes = [];
+			if ( ! in_array( $old, self::CREATION_STATUSES, true ) ) {
+				try {
+					$changes = PostSnapshot::changes( $before, $this->snapshot( $post ) );
+				} catch ( Throwable $e ) {
+					$this->report_failure( $e, $event, [ 'post_id' => $post_id ] );
+				}
+			}
+			if ( 2006 !== $event ) {
+				// The event itself says what the status became.
+				$changes = array_values( array_filter( $changes, static fn( array $item ): bool => 'post_status' !== $item['field'] ) );
+			}
+
+			$extra = $pending['extra'] ?? [];
+			if ( 2006 === $event ) {
+				$extra['changed'] = array_column( $changes, 'field' );
+			}
+
+			$links = [];
+			if ( in_array( 'post_content', array_column( $changes, 'field' ), true ) ) {
+				try {
+					$links = self::revision_link( $post_id );
+				} catch ( Throwable $e ) {
+					$this->report_failure( $e, $event, [ 'post_id' => $post_id ] );
+				}
+			}
+
+			$this->emit_post_event( $event, $post, $extra, $changes, $links );
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 2006, [ 'post_id' => $post_id ] );
+		}
+	}
+
+	/**
+	 * Log the sticky flag of a post set on its own, outside a save whose
+	 * start this sensor saw (that save's event compares the flag itself).
+	 *
+	 * @param int  $post_id Post id.
+	 * @param bool $sticky  Whether the post is sticky now.
+	 */
+	private function sticky_changed( int $post_id, bool $sticky ): void {
+		if ( isset( $this->before[ self::state_key( $post_id ) ] ) ) {
+			return;
+		}
+
+		try {
+			$post = $this->loggable_post( $post_id );
+			if ( null !== $post ) {
+				$this->emit_update(
+					$post,
+					[
+						[
+							'field' => 'sticky',
+							'old'   => ChangeSet::stringify( ! $sticky ),
+							'new'   => ChangeSet::stringify( $sticky ),
+						],
+					]
+				);
+			}
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 2006, [ 'post_id' => $post_id ] );
+		}
+	}
+
+	/**
+	 * The post with this id, when an update of it is logged: a post of a
+	 * tracked type that is no editor placeholder (an `auto-draft` has
+	 * nothing anybody changed yet).
+	 *
+	 * @param int $post_id Post id.
+	 */
+	private function loggable_post( int $post_id ): ?WP_Post {
+		$post = get_post( $post_id );
+		if ( ! $post instanceof WP_Post || 'auto-draft' === $post->post_status || ! $this->should_track( $post, 2006 ) ) {
+			return null;
+		}
+
+		return $post;
+	}
+
+	/**
+	 * Log an update of a post made outside a save.
+	 *
+	 * @param WP_Post                                                      $post    The post.
+	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes What changed.
+	 */
+	private function emit_update( WP_Post $post, array $changes ): void {
+		$this->emit_post_event( 2006, $post, [ 'changed' => array_column( $changes, 'field' ) ], $changes );
+	}
+
+	/**
+	 * @param array<string, mixed>                                         $extra   Extra `metadata` entries.
+	 * @param array<int, array{field: string, old: ?string, new: ?string}> $changes What changed.
+	 * @param array<string, string>                                        $links   Links beside the edit and view links.
+	 */
+	private function emit_post_event( int $code, WP_Post $post, array $extra = [], array $changes = [], array $links = [] ): void {
 		$id = (int) $post->ID;
 
 		$fields = [
@@ -401,37 +636,174 @@ final class ContentSensor extends AbstractSensor {
 				$extra
 			),
 		];
-		if ( 2006 === $code ) {
+		if ( 2006 === $code || [] !== $changes ) {
 			$fields['changes'] = $changes;
+		}
+		if ( 2007 === $code ) {
+			$fields['date'] = (string) $post->post_date;
 		}
 
 		// A permanently deleted post is gone, so there is nothing to open.
 		if ( 2005 !== $code ) {
-			$fields['links'] = $this->links( $post );
+			$fields['links'] = array_merge( $this->links( $post ), $links );
 		}
 
 		$this->emit( $code, $fields );
 	}
 
 	/**
-	 * The compared fields of a post, by name, and whether a password
-	 * protects it (never the password).
+	 * A {@see PostSnapshot} of a post as it is stored now: its fields, its
+	 * page template, featured image and sticky flag, and its terms in every
+	 * tracked taxonomy of its type.
 	 *
 	 * @return array<string, mixed>
 	 */
 	private function snapshot( WP_Post $post ): array {
-		$values = [];
-		foreach ( self::DIFF_FIELDS as $field ) {
-			$values[ $field ] = $post->$field;
+		$raw = [];
+		foreach ( PostSnapshot::POST_FIELDS as $field ) {
+			$raw[ $field ] = $post->$field;
 		}
 
-		// A floating date is no date anybody set; one set on the draft is.
-		if ( self::FLOATING_DATE === (string) $post->post_date_gmt ) {
-			$values['post_date'] = null;
+		$id       = (int) $post->ID;
+		$image_id = (int) get_post_thumbnail_id( $id );
+		$image    = null;
+		if ( $image_id > 0 ) {
+			$file  = get_post( $image_id );
+			$title = $file instanceof WP_Post ? (string) $file->post_title : '';
+			$image = '' !== $title ? $title : '#' . $image_id;
 		}
-		$values[ self::PROTECTED_FIELD ] = '' !== (string) $post->post_password;
 
-		return $values;
+		return PostSnapshot::from_values(
+			$raw,
+			[
+				'template'          => get_page_template_slug( $id ),
+				'featured_image'    => $image,
+				'featured_image_id' => $image_id,
+				'sticky'            => is_sticky( $id ),
+				'terms'             => self::terms( $post ),
+			]
+		);
+	}
+
+	/**
+	 * The terms of a post in every tracked taxonomy of its type: taxonomy
+	 * name => term taxonomy id => term name. A taxonomy whose terms could not
+	 * be read is left out.
+	 *
+	 * @return array<string, array<int, string>>
+	 */
+	private static function terms( WP_Post $post ): array {
+		$terms = [];
+		foreach ( get_object_taxonomies( (string) $post->post_type ) as $taxonomy ) {
+			if ( ! is_string( $taxonomy ) || ! TaxonomySensor::is_tracked( $taxonomy ) ) {
+				continue;
+			}
+
+			// False is a post without terms there; anything else but a list
+			// (an error) is terms that could not be read.
+			$found = get_the_terms( (int) $post->ID, $taxonomy );
+			if ( false !== $found && ! is_array( $found ) ) {
+				continue;
+			}
+
+			$terms[ $taxonomy ] = [];
+			foreach ( is_array( $found ) ? $found : [] as $term ) {
+				if ( is_object( $term ) && isset( $term->term_taxonomy_id ) ) {
+					$terms[ $taxonomy ][ (int) $term->term_taxonomy_id ] = (string) ( $term->name ?? '' );
+				}
+			}
+		}
+
+		return $terms;
+	}
+
+	/**
+	 * The names of terms given by their term taxonomy id (what core passes to
+	 * `set_object_terms`; a term id is something else). A term that can not
+	 * be found is named by its id (`#12`).
+	 *
+	 * @param array<int, int> $tt_ids   Term taxonomy ids.
+	 * @param string          $taxonomy Taxonomy name.
+	 * @return array<int, string> Term taxonomy id => name.
+	 */
+	private static function term_names( array $tt_ids, string $taxonomy ): array {
+		$names = [];
+		foreach ( $tt_ids as $tt_id ) {
+			$term            = get_term_by( 'term_taxonomy_id', $tt_id, $taxonomy );
+			$names[ $tt_id ] = is_object( $term ) && isset( $term->name ) ? (string) $term->name : '#' . $tt_id;
+		}
+
+		return $names;
+	}
+
+	/**
+	 * Term taxonomy ids as core passes them (ints or numeric strings), each
+	 * once, sorted.
+	 *
+	 * @param mixed $ids Ids.
+	 * @return array<int, int>
+	 */
+	private static function ids( $ids ): array {
+		$clean = [];
+		foreach ( (array) $ids as $id ) {
+			if ( is_numeric( $id ) && (int) $id > 0 ) {
+				$clean[ (int) $id ] = (int) $id;
+			}
+		}
+		sort( $clean );
+
+		return $clean;
+	}
+
+	/**
+	 * A link to the revision core saved for the post's text, if it saved
+	 * one: by `wp_after_insert_post` the latest revision is that of the save.
+	 *
+	 * @param int $post_id Post id.
+	 * @return array<string, string>
+	 */
+	private static function revision_link( int $post_id ): array {
+		$latest = wp_get_latest_revision_id_and_total_count( $post_id );
+		$id     = is_array( $latest ) ? (int) ( $latest['latest_id'] ?? 0 ) : 0;
+
+		return $id > 0 ? [ 'revision' => admin_url( 'revision.php?revision=' . $id ) ] : [];
+	}
+
+	/**
+	 * Run something on a site of the network, and come back.
+	 *
+	 * @param int      $blog_id Site id; 0 for the current one.
+	 * @param callable $work    What to run.
+	 */
+	private function on_site( int $blog_id, callable $work ): void {
+		$switch = $blog_id > 0 && self::blog_id() !== $blog_id && function_exists( 'switch_to_blog' );
+		if ( $switch ) {
+			switch_to_blog( $blog_id );
+		}
+
+		try {
+			$work();
+		} finally {
+			if ( $switch ) {
+				restore_current_blog();
+			}
+		}
+	}
+
+	/**
+	 * The key of a post's per-request state: `site:post id`.
+	 *
+	 * @param int $post_id Post id.
+	 */
+	private static function state_key( int $post_id ): string {
+		return self::blog_id() . ':' . $post_id;
+	}
+
+	/**
+	 * The current site; 0 outside WordPress.
+	 */
+	private static function blog_id(): int {
+		return function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
 	}
 
 	/**

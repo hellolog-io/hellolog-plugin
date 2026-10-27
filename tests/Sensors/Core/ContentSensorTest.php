@@ -1,6 +1,6 @@
 <?php
 /**
- * Tests for the pure parts of {@see HelloLog\Sensors\Core\ContentSensor}.
+ * Tests for {@see HelloLog\Sensors\Core\ContentSensor}.
  *
  * @package HelloLog\Tests
  */
@@ -9,15 +9,23 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Sensors\Core;
 
+use HelloLog\Events\EventBuilder;
+use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
+use HelloLog\Events\RequestContext;
+use HelloLog\Events\RequestSource;
+use HelloLog\Events\SuppressionRules;
+use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\ContentSensor;
+use HelloLog\Tests\Events\Fixtures\WpCalls;
 use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
 use PHPUnit\Framework\TestCase;
 
 /**
  * Pins which status change is which event, which post types the generic post
  * sensor leaves to someone else, and the shape of the target, links and
- * changes every post event carries.
+ * changes every post event carries. Saves are replayed hook by hook in the
+ * order WordPress fires them, from the classic editor and the REST API.
  */
 final class ContentSensorTest extends TestCase {
 
@@ -32,9 +40,9 @@ final class ContentSensorTest extends TestCase {
 			'pending to publish'        => [ 'publish', 'pending', 2001 ],
 			'future to publish'         => [ 'publish', 'future', 2001 ],
 			'auto-draft to draft'       => [ 'draft', 'auto-draft', 2000 ],
-			'auto-draft to pending'     => [ 'pending', 'auto-draft', 2000 ],
-			'auto-draft to future'      => [ 'future', 'auto-draft', 2000 ],
-			'auto-draft to private'     => [ 'private', 'auto-draft', 2000 ],
+			'auto-draft to pending'     => [ 'pending', 'auto-draft', 2008 ],
+			'auto-draft to future'      => [ 'future', 'auto-draft', 2007 ],
+			'auto-draft to private'     => [ 'private', 'auto-draft', 2009 ],
 			'publish to draft'          => [ 'draft', 'publish', 2002 ],
 			'publish to pending'        => [ 'pending', 'publish', 2002 ],
 			'publish to private'        => [ 'private', 'publish', 2002 ],
@@ -47,12 +55,23 @@ final class ContentSensorTest extends TestCase {
 			'draft to draft'            => [ 'draft', 'draft', 0 ],
 			'auto-draft to auto-draft'  => [ 'auto-draft', 'auto-draft', 0 ],
 			'trash to trash'            => [ 'trash', 'trash', 0 ],
-			'draft to pending'          => [ 'pending', 'draft', 0 ],
+			'draft to pending'          => [ 'pending', 'draft', 2008 ],
 			'pending to draft'          => [ 'draft', 'pending', 0 ],
+			'future to draft'           => [ 'draft', 'future', 0 ],
+			'private to draft'          => [ 'draft', 'private', 0 ],
+			'draft to future'           => [ 'future', 'draft', 2007 ],
+			'pending to future'         => [ 'future', 'pending', 2007 ],
+			'private to future'         => [ 'future', 'private', 2007 ],
+			'future to pending'         => [ 'pending', 'future', 2008 ],
+			'private to pending'        => [ 'pending', 'private', 2008 ],
+			'draft to private'          => [ 'private', 'draft', 2009 ],
+			'pending to private'        => [ 'private', 'pending', 2009 ],
+			'future to private'         => [ 'private', 'future', 2009 ],
+			'custom to private'         => [ 'private', 'acf-disabled', 2009 ],
 			'new to draft'              => [ 'draft', 'new', 2000 ],
-			'new to pending'            => [ 'pending', 'new', 2000 ],
-			'new to future'             => [ 'future', 'new', 2000 ],
-			'new to private'            => [ 'private', 'new', 2000 ],
+			'new to pending'            => [ 'pending', 'new', 2008 ],
+			'new to future'             => [ 'future', 'new', 2007 ],
+			'new to private'            => [ 'private', 'new', 2009 ],
 			'new to trash'              => [ 'trash', 'new', 2003 ],
 			'new to inherit'            => [ 'inherit', 'new', 0 ],
 			'new to auto-draft'         => [ 'auto-draft', 'new', 0 ],
@@ -70,6 +89,7 @@ final class ContentSensorTest extends TestCase {
 			'trash to draft'            => [ 'draft', 'trash', 2004 ],
 			'trash to pending'          => [ 'pending', 'trash', 2004 ],
 			'trash to private'          => [ 'private', 'trash', 2004 ],
+			'trash to future'           => [ 'future', 'trash', 2004 ],
 			'trash to inherit'          => [ 'inherit', 'trash', 2004 ],
 			'trash to an order status'  => [ 'wc-processing', 'trash', 2004 ],
 			'auto-draft to inherit'     => [ 'inherit', 'auto-draft', 0 ],
@@ -150,7 +170,7 @@ final class ContentSensorTest extends TestCase {
 			foreach ( [ 2003, 2004, 2013 ] as $code ) {
 				$cases[ $type . ' ' . $code ] = [ $type, $code, true ];
 			}
-			foreach ( [ 2000, 2001, 2002, 2005, 2006 ] as $code ) {
+			foreach ( [ 2000, 2001, 2002, 2005, 2006, 2007, 2008, 2009 ] as $code ) {
 				$cases[ $type . ' ' . $code ] = [ $type, $code, false ];
 			}
 		}
@@ -179,7 +199,7 @@ final class ContentSensorTest extends TestCase {
 	 * nobody else reports it.
 	 */
 	public function test_without_woocommerce_a_product_type_is_tracked_like_any_other(): void {
-		foreach ( [ 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2013 ] as $code ) {
+		foreach ( [ 2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007, 2008, 2009, 2013 ] as $code ) {
 			$this->assertTrue( ContentSensor::is_tracked_type( 'product', true, $code, false ), (string) $code );
 		}
 		$this->assertFalse( ContentSensor::is_tracked_type( 'product', false, 2006, false ) );
@@ -237,125 +257,6 @@ final class ContentSensorTest extends TestCase {
 			[ 'view' => 'https://example.test/hello/' ],
 			ContentSensor::post_links( null, 'https://example.test/hello/', 'publish' )
 		);
-	}
-
-	public function test_field_changes_reports_changed_fields_in_list_order(): void {
-		$before = $this->post_values();
-		$after  = array_merge(
-			$before,
-			[
-				'post_title'     => 'New title',
-				'comment_status' => 'closed',
-			]
-		);
-
-		$this->assertSame(
-			[
-				[
-					'field' => 'post_title',
-					'old'   => 'Old title',
-					'new'   => 'New title',
-				],
-				[
-					'field' => 'comment_status',
-					'old'   => 'open',
-					'new'   => 'closed',
-				],
-			],
-			ContentSensor::field_changes( $before, $after )
-		);
-	}
-
-	public function test_field_changes_hides_the_content_values(): void {
-		$before = $this->post_values();
-		$after  = array_merge( $before, [ 'post_content' => 'Something else entirely' ] );
-
-		$this->assertSame(
-			[
-				[
-					'field' => 'post_content',
-					'old'   => null,
-					'new'   => null,
-				],
-			],
-			ContentSensor::field_changes( $before, $after )
-		);
-	}
-
-	public function test_field_changes_shows_the_author_change_as_it_is(): void {
-		$before = $this->post_values();
-		$after  = array_merge( $before, [ 'post_author' => '3' ] );
-
-		$this->assertSame(
-			[
-				[
-					'field' => 'post_author',
-					'old'   => '1',
-					'new'   => '3',
-				],
-			],
-			ContentSensor::field_changes( $before, $after )
-		);
-	}
-
-	public function test_field_changes_reports_the_date_and_the_menu_order(): void {
-		$before = $this->post_values();
-		$after  = array_merge(
-			$before,
-			[
-				'post_date'  => '2020-01-01 09:00:00',
-				'menu_order' => 3,
-			]
-		);
-
-		$this->assertSame(
-			[
-				[
-					'field' => 'post_date',
-					'old'   => '2026-10-26 10:00:00',
-					'new'   => '2020-01-01 09:00:00',
-				],
-				[
-					'field' => 'menu_order',
-					'old'   => '0',
-					'new'   => '3',
-				],
-			],
-			ContentSensor::field_changes( $before, $after )
-		);
-	}
-
-	public function test_field_changes_reports_whether_a_password_protects_the_post(): void {
-		$before = $this->post_values();
-		$after  = array_merge( $before, [ 'password_protected' => true ] );
-
-		$this->assertSame(
-			[
-				[
-					'field' => 'password_protected',
-					'old'   => 'no',
-					'new'   => 'yes',
-				],
-			],
-			ContentSensor::field_changes( $before, $after )
-		);
-		$this->assertSame(
-			[
-				[
-					'field' => 'password_protected',
-					'old'   => 'yes',
-					'new'   => 'no',
-				],
-			],
-			ContentSensor::field_changes( $after, $before )
-		);
-	}
-
-	public function test_field_changes_is_empty_when_nothing_listed_changed(): void {
-		$before = $this->post_values();
-		$after  = array_merge( $before, [ 'post_modified' => '2026-10-26 12:00:00' ] );
-
-		$this->assertSame( [], ContentSensor::field_changes( $before, $after ) );
 	}
 
 	/**
@@ -512,7 +413,10 @@ final class ContentSensorTest extends TestCase {
 				$sensor->on_status( 'publish', 'draft', $post( [ 'post_type' => 'not_registered' ] ) );
 				$sensor->on_status( 'trash', 'publish', $post( [ 'post_type' => 'custom_css' ] ) );
 				$sensor->on_delete( 7, $post( [ 'post_type' => 'product' ] ) );
-				$sensor->on_updated( 7, $post( [ 'post_type' => 'product', 'post_title' => 'New', 'post_modified' => '2' ] ), $post( [ 'post_type' => 'product', 'post_modified' => '1' ] ) );
+
+				$sensor->boot();
+				self::update_post( $post( [ 'post_type' => 'product' ] ), $post( [ 'post_type' => 'product', 'post_title' => 'New' ] ) );
+				self::update_post( $post( [ 'post_type' => 'custom_css' ] ), $post( [ 'post_type' => 'custom_css', 'post_title' => 'New' ] ) );
 			}
 		);
 
@@ -559,13 +463,24 @@ final class ContentSensorTest extends TestCase {
 	public function test_a_restore_through_a_status_update_is_logged_once(): void {
 		$calls = $this->run_hook(
 			static function ( ContentSensor $sensor, callable $post ): void {
-				$draft = $post( [ 'post_status' => 'draft' ] );
-				$sensor->on_status( 'draft', 'trash', $draft );
-				$sensor->on_updated( 7, $draft, $post( [ 'post_status' => 'trash' ] ) );
+				$sensor->boot();
+				self::rest_update(
+					$post(
+						[
+							'post_status' => 'trash',
+							'post_name'   => 'hello__trashed',
+						]
+					),
+					$post( [ 'post_status' => 'draft' ] ),
+					static function (): void {
+					}
+				);
 			}
 		);
 
 		$this->assertSame( [ 2004 ], array_column( $calls, 0 ) );
+		// The slug only loses the suffix WordPress gave it in the trash.
+		$this->assertArrayNotHasKey( 'changes', $calls[0][1] );
 		$this->assertSame(
 			[
 				'type'  => 'post',
@@ -592,19 +507,25 @@ final class ContentSensorTest extends TestCase {
 	public function test_wp_untrash_post_logs_one_restore_with_the_previous_status(): void {
 		$calls = $this->run_hook(
 			static function ( ContentSensor $sensor, callable $post ): void {
-				$draft             = $post( [ 'post_status' => 'draft' ] );
-				WpState::$posts[7] = $draft;
-
-				$sensor->on_untrash( 7, 'publish' );
-				$sensor->on_status( 'draft', 'trash', $draft );
-				$sensor->on_updated( 7, $draft, $post( [ 'post_status' => 'trash' ] ) );
-				$sensor->on_untrashed( 7, 'publish' );
+				$sensor->boot();
+				self::fire( 'untrash_post', 7, 'publish' );
+				self::update_post(
+					$post(
+						[
+							'post_status' => 'trash',
+							'post_name'   => 'hello__trashed',
+						]
+					),
+					$post( [ 'post_status' => 'draft' ] )
+				);
+				self::fire( 'untrashed_post', 7, 'publish' );
 			}
 		);
 
 		$this->assertSame( [ 2004 ], array_column( $calls, 0 ) );
 		$this->assertSame( 'publish', $calls[0][1]['metadata']['previous_status'] );
 		$this->assertSame( '7', $calls[0][1]['target']['id'] );
+		$this->assertArrayNotHasKey( 'changes', $calls[0][1] );
 	}
 
 	/**
@@ -757,11 +678,8 @@ final class ContentSensorTest extends TestCase {
 	public function test_password_protecting_a_published_post_is_an_update_that_never_carries_the_password(): void {
 		$calls = $this->run_hook(
 			static function ( ContentSensor $sensor, callable $post ): void {
-				$sensor->on_updated(
-					7,
-					$post( [ 'post_password' => 'hunter2', 'post_modified' => '2026-10-26 12:00:00' ] ),
-					$post( [ 'post_password' => '', 'post_modified' => '2026-10-26 11:00:00' ] )
-				);
+				$sensor->boot();
+				self::update_post( $post( [ 'post_password' => '' ] ), $post( [ 'post_password' => 'hunter2' ] ) );
 			}
 		);
 
@@ -790,14 +708,12 @@ final class ContentSensorTest extends TestCase {
 	public function test_a_changed_password_is_never_reported(): void {
 		$calls = $this->run_hook(
 			static function ( ContentSensor $sensor, callable $post ): void {
-				$sensor->on_updated(
-					7,
-					$post( [ 'post_password' => 'NEWSECRET', 'post_modified' => '2026-10-26 12:00:00' ] ),
-					$post( [ 'post_password' => 'OLDSECRET', 'post_modified' => '2026-10-26 11:00:00' ] )
-				);
+				$sensor->boot();
+				self::update_post( $post( [ 'post_password' => 'OLDSECRET' ] ), $post( [ 'post_password' => 'NEWSECRET' ] ) );
 			}
 		);
 
+		$this->assertSame( [ 2006 ], array_column( $calls, 0 ) );
 		$this->assertSame( [], $calls[0][1]['changes'] );
 		$this->assertStringNotContainsString( 'SECRET', serialize( $calls ) );
 	}
@@ -809,16 +725,12 @@ final class ContentSensorTest extends TestCase {
 	public function test_backdating_or_reordering_a_post_is_an_update(): void {
 		$calls = $this->run_hook(
 			static function ( ContentSensor $sensor, callable $post ): void {
-				$sensor->on_updated(
-					7,
-					$post( [ 'post_date' => '2020-01-01 09:00:00', 'post_date_gmt' => '2020-01-01 08:00:00', 'post_modified' => '2' ] ),
-					$post( [ 'post_date' => '2026-10-26 10:00:00', 'post_date_gmt' => '2026-10-26 09:00:00', 'post_modified' => '1' ] )
+				$sensor->boot();
+				self::update_post(
+					$post( [ 'post_date' => '2026-10-26 10:00:00', 'post_date_gmt' => '2026-10-26 09:00:00' ] ),
+					$post( [ 'post_date' => '2020-01-01 09:00:00', 'post_date_gmt' => '2020-01-01 08:00:00' ] )
 				);
-				$sensor->on_updated(
-					7,
-					$post( [ 'menu_order' => 5, 'post_modified' => '3' ] ),
-					$post( [ 'menu_order' => 0, 'post_modified' => '2' ] )
-				);
+				self::update_post( $post( [ 'menu_order' => 0 ] ), $post( [ 'menu_order' => 5 ] ) );
 			}
 		);
 
@@ -859,15 +771,14 @@ final class ContentSensorTest extends TestCase {
 					'post_status'   => 'draft',
 					'post_date_gmt' => '0000-00-00 00:00:00',
 				];
-				$sensor->on_updated(
-					7,
-					$post( $floating + [ 'post_date' => '2026-10-26 10:05:00', 'post_modified' => '2' ] ),
-					$post( $floating + [ 'post_date' => '2026-10-26 10:00:00', 'post_modified' => '1' ] )
+				$sensor->boot();
+				self::update_post(
+					$post( $floating + [ 'post_date' => '2026-10-26 10:00:00' ] ),
+					$post( $floating + [ 'post_date' => '2026-10-26 10:05:00' ] )
 				);
-				$sensor->on_updated(
-					7,
-					$post( [ 'post_status' => 'draft', 'post_date' => '2026-12-24 18:00:00', 'post_date_gmt' => '2026-12-24 17:00:00', 'post_modified' => '3' ] ),
-					$post( $floating + [ 'post_date' => '2026-10-26 10:05:00', 'post_modified' => '2' ] )
+				self::update_post(
+					$post( $floating + [ 'post_date' => '2026-10-26 10:05:00' ] ),
+					$post( [ 'post_status' => 'draft', 'post_date' => '2026-12-24 18:00:00', 'post_date_gmt' => '2026-12-24 17:00:00' ] )
 				);
 			}
 		);
@@ -917,22 +828,900 @@ final class ContentSensorTest extends TestCase {
 	}
 
 	/**
+	 * Publishing a draft and changing its title in one save is one event,
+	 * the publish, and it carries the title change but not the status: the
+	 * event says that already. Core's hooks are replayed in their order.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_publish_with_a_title_change_is_one_published_event_carrying_the_change(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+				self::update_post(
+					$post(
+						[
+							'post_status' => 'draft',
+							'post_title'  => 'Draft title',
+						]
+					),
+					$post( [ 'post_title' => 'Final title' ] )
+				);
+			}
+		);
+
+		$this->assertSame( [ 2001 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_title',
+					'old'   => 'Draft title',
+					'new'   => 'Final title',
+				],
+			],
+			$calls[0][1]['changes']
+		);
+		$this->assertSame( 'Final title', $calls[0][1]['title'] );
+	}
+
+	/**
+	 * The block editor saves through the REST API, which writes the featured
+	 * image, the sticky flag, the template and the terms after the post
+	 * itself and fires `wp_after_insert_post` last: the publish carries all
+	 * of them, and nothing else is left for the per-request rules to drop.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_block_editor_publish_carries_what_the_rest_api_writes_after_the_save(): void {
+		$recorder = null;
+		$calls    = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$recorder ): void {
+				$recorder = $dispatcher;
+				self::term( 15, 5, 'News', 'category' );
+				self::term( 16, 6, 'Reviews', 'category' );
+				WpState::$post_terms[7]['category'] = [ 15 ];
+				WpState::$posts[30]                 = new \WP_Post(
+					[
+						'ID'         => 30,
+						'post_title' => 'Sunset',
+						'post_type'  => 'attachment',
+					]
+				);
+
+				$sensor->boot();
+				self::rest_update(
+					$post( [ 'post_status' => 'draft' ] ),
+					$post(),
+					static function (): void {
+						WpState::$thumbnails[7] = 30;
+						self::stick( 7, true );
+						WpState::$templates[7] = 'templates/wide.php';
+						self::set_terms( 7, 'category', [ 16 ] );
+					}
+				);
+			}
+		);
+
+		$this->assertSame( [ 2001 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'template',
+					'old'   => '',
+					'new'   => 'templates/wide.php',
+				],
+				[
+					'field' => 'featured_image',
+					'old'   => null,
+					'new'   => 'Sunset',
+				],
+				[
+					'field' => 'sticky',
+					'old'   => 'no',
+					'new'   => 'yes',
+				],
+				[
+					'field' => 'category',
+					'old'   => 'News',
+					'new'   => 'Reviews',
+				],
+			],
+			$calls[0][1]['changes']
+		);
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 2001 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( [ 'template', 'featured_image', 'sticky', 'category' ], array_column( $survivors[0]['changes'], 'field' ) );
+	}
+
+	/**
+	 * Terms given with a save (the classic editor's `tax_input`) are written
+	 * inside `wp_insert_post()`, before the status change; the update
+	 * compares them with the rest.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_terms_given_with_a_save_are_compared_by_its_update(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				self::term( 15, 5, 'News', 'category' );
+				self::term( 16, 6, 'Reviews', 'category' );
+				WpState::$post_terms[7]['category'] = [ 15 ];
+
+				$sensor->boot();
+				self::update_post(
+					$post(),
+					$post( [ 'post_title' => 'Hello again' ] ),
+					static function (): void {
+						self::set_terms( 7, 'category', [ 16 ] );
+					}
+				);
+			}
+		);
+
+		$this->assertSame( [ 2006 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_title',
+					'old'   => 'Hello',
+					'new'   => 'Hello again',
+				],
+				[
+					'field' => 'category',
+					'old'   => 'News',
+					'new'   => 'Reviews',
+				],
+			],
+			$calls[0][1]['changes']
+		);
+		$this->assertSame( [ 'post_title', 'category' ], $calls[0][1]['metadata']['changed'] );
+	}
+
+	/**
+	 * The classic editor makes a post sticky after `wp_update_post()` has
+	 * returned: that is an update of its own, and the per-request rules fold
+	 * it into the save's update.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_classic_editor_save_and_its_sticky_flag_end_up_as_one_update(): void {
+		$recorder = null;
+		$calls    = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$recorder ): void {
+				$recorder = $dispatcher;
+				$sensor->boot();
+				self::update_post( $post(), $post( [ 'post_title' => 'Hello again' ] ) );
+				self::stick( 7, true );
+			}
+		);
+
+		$this->assertSame( [ 2006, 2006 ], array_column( $calls, 0 ) );
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 2006 ], array_column( $survivors, 'code' ) );
+		$this->assertSame( [ 'post_title', 'sticky' ], array_column( $survivors[0]['changes'], 'field' ) );
+		$this->assertSame( [ 'post_title', 'sticky' ], $survivors[0]['metadata']['changed'] );
+	}
+
+	/**
+	 * A status change that is no event of its own (back to draft from
+	 * review, from scheduled or from private) is an update that names the
+	 * status among its changes.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_status_change_that_is_no_event_of_its_own_is_an_update_naming_the_status(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+				self::update_post(
+					$post(
+						[
+							'post_status' => 'pending',
+							'post_title'  => 'Under review',
+						]
+					),
+					$post(
+						[
+							'post_status' => 'draft',
+							'post_title'  => 'Back to work',
+						]
+					)
+				);
+				self::update_post(
+					$post(
+						[
+							'ID'          => 8,
+							'post_status' => 'future',
+						]
+					),
+					$post(
+						[
+							'ID'          => 8,
+							'post_status' => 'draft',
+						]
+					)
+				);
+			}
+		);
+
+		$this->assertSame( [ 2006, 2006 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_title',
+					'old'   => 'Under review',
+					'new'   => 'Back to work',
+				],
+				[
+					'field' => 'post_status',
+					'old'   => 'pending',
+					'new'   => 'draft',
+				],
+			],
+			$calls[0][1]['changes']
+		);
+		$this->assertSame( [ 'post_title', 'post_status' ], $calls[0][1]['metadata']['changed'] );
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_status',
+					'old'   => 'future',
+					'new'   => 'draft',
+				],
+			],
+			$calls[1][1]['changes']
+		);
+	}
+
+	/**
+	 * The first save of an editor placeholder fills in every field: that is
+	 * a creation, not a list of changes.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_first_save_of_an_auto_draft_carries_no_changes(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$placeholder = static fn( int $id ): \WP_Post => $post(
+					[
+						'ID'          => $id,
+						'post_status' => 'auto-draft',
+						'post_title'  => '',
+						'post_name'   => '',
+					]
+				);
+
+				$sensor->boot();
+				self::update_post( $placeholder( 7 ), $post() );
+				self::update_post( $placeholder( 8 ), $post( [ 'ID' => 8, 'post_status' => 'draft' ] ) );
+				// The editor's autosave of a placeholder by its own author.
+				self::update_post( $placeholder( 9 ), $post( [ 'ID' => 9, 'post_status' => 'auto-draft' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2001, 2000, 2006 ], array_column( $calls, 0 ) );
+		$this->assertArrayNotHasKey( 'changes', $calls[0][1] );
+		$this->assertArrayNotHasKey( 'changes', $calls[1][1] );
+		$this->assertSame( [], $calls[2][1]['changes'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_scheduling_a_post_names_its_date(): void {
+		$recorder = null;
+		$calls    = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$recorder ): void {
+				$recorder = $dispatcher;
+				$sensor->boot();
+				self::update_post(
+					$post(
+						[
+							'post_status'   => 'draft',
+							'post_date'     => '2026-10-27 09:00:00',
+							'post_date_gmt' => '0000-00-00 00:00:00',
+						]
+					),
+					$post(
+						[
+							'post_status'   => 'future',
+							'post_date'     => '2026-12-24 18:00:00',
+							'post_date_gmt' => '2026-12-24 17:00:00',
+						]
+					)
+				);
+				$sensor->on_status( 'future', 'new', $post( [ 'ID' => 8, 'post_status' => 'future', 'post_date' => '2027-01-01 08:00:00' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2007, 2007 ], array_column( $calls, 0 ) );
+		$this->assertSame( '2026-12-24 18:00:00', $calls[0][1]['date'] );
+		$this->assertSame(
+			[
+				[
+					'field' => 'post_date',
+					'old'   => null,
+					'new'   => '2026-12-24 18:00:00',
+				],
+			],
+			$calls[0][1]['changes']
+		);
+		$this->assertSame( '2027-01-01 08:00:00', $calls[1][1]['date'] );
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( 'Post "Hello" scheduled for 2026-12-24 18:00:00.', $survivors[0]['message'] );
+		$this->assertSame( '2026-12-24 18:00:00', $survivors[0]['vars']['date'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_submitting_for_review_and_making_private_are_events_of_their_own(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+				self::update_post( $post( [ 'post_status' => 'draft' ] ), $post( [ 'post_status' => 'pending' ] ) );
+				self::update_post( $post( [ 'post_status' => 'pending' ] ), $post( [ 'post_status' => 'private' ] ) );
+				self::update_post( $post( [ 'post_status' => 'private' ] ), $post( [ 'post_status' => 'publish' ] ) );
+				self::update_post( $post( [ 'post_status' => 'publish' ] ), $post( [ 'post_status' => 'private' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2008, 2009, 2001, 2002 ], array_column( $calls, 0 ) );
+		foreach ( $calls as $call ) {
+			$this->assertArrayNotHasKey( 'changes', $call[1] );
+			$this->assertArrayNotHasKey( 'date', $call[1] );
+		}
+	}
+
+	/**
+	 * A changed text links to the revision core saved for it, just before
+	 * the post event is built.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_content_change_links_the_revision(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				WpState::$revisions[7] = 99;
+
+				$sensor->boot();
+				self::update_post( $post( [ 'post_content' => 'Old body' ] ), $post( [ 'post_content' => 'New body' ] ) );
+				self::update_post( $post( [ 'post_title' => 'Hello' ] ), $post( [ 'post_title' => 'Hi' ] ) );
+				self::update_post(
+					$post(
+						[
+							'post_status'  => 'draft',
+							'post_content' => 'Old body',
+						]
+					),
+					$post( [ 'post_content' => 'Newest body' ] )
+				);
+				self::update_post( $post( [ 'ID' => 8, 'post_content' => 'Old body' ] ), $post( [ 'ID' => 8, 'post_content' => 'New body' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2006, 2006, 2001, 2006 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				'edit'     => 'https://example.test/wp-admin/post.php?post=7&action=edit',
+				'view'     => 'https://example.test/p/7/',
+				'revision' => 'https://example.test/wp-admin/revision.php?revision=99',
+			],
+			$calls[0][1]['links']
+		);
+		$this->assertArrayNotHasKey( 'revision', $calls[1][1]['links'] );
+		$this->assertSame( 'https://example.test/wp-admin/revision.php?revision=99', $calls[2][1]['links']['revision'] );
+		// No revision was saved for the other post.
+		$this->assertArrayNotHasKey( 'revision', $calls[3][1]['links'] );
+	}
+
+	/**
+	 * Terms set on their own are an update named by the taxonomy, with the
+	 * term names before and after. Core passes term taxonomy ids, which are
+	 * not the term ids.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_term_change_outside_a_save_is_an_update_named_by_the_taxonomy(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				self::term( 15, 5, 'News', 'category' );
+				self::term( 16, 6, 'Reviews', 'category' );
+				self::term( 21, 11, 'aside', 'post_format' );
+				self::term( 31, 3, 'Gold', 'product_tag' );
+				WpState::$posts[7]                  = $post();
+				WpState::$post_terms[7]['category'] = [ 15 ];
+
+				$sensor->boot();
+				self::set_terms( 7, 'category', [ '16' ], true );
+				// The same terms again, in another order: nothing changed.
+				self::set_terms( 7, 'category', [ 16, 15 ] );
+				// Post formats are not tracked, product tags are not on posts.
+				self::set_terms( 7, 'post_format', [ 21 ] );
+				self::set_terms( 7, 'product_tag', [ 31 ] );
+				self::set_terms( 7, 'category', [] );
+			}
+		);
+
+		$this->assertSame( [ 2006, 2006 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'category',
+					'old'   => 'News',
+					'new'   => 'News, Reviews',
+				],
+			],
+			$calls[0][1]['changes']
+		);
+		$this->assertSame( [ 'category' ], $calls[0][1]['metadata']['changed'] );
+		$this->assertSame(
+			[
+				'type'  => 'post',
+				'id'    => '7',
+				'label' => 'Hello',
+			],
+			$calls[0][1]['target']
+		);
+		$this->assertSame(
+			[
+				[
+					'field' => 'category',
+					'old'   => 'News, Reviews',
+					'new'   => '',
+				],
+			],
+			$calls[1][1]['changes']
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_sticking_and_unsticking_a_post_outside_a_save_is_an_update(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				WpState::$posts[7] = $post();
+
+				$sensor->boot();
+				self::stick( 7, true );
+				self::stick( 7, false );
+			}
+		);
+
+		$this->assertSame( [ 2006, 2006 ], array_column( $calls, 0 ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'sticky',
+					'old'   => 'no',
+					'new'   => 'yes',
+				],
+			],
+			$calls[0][1]['changes']
+		);
+		$this->assertSame(
+			[
+				[
+					'field' => 'sticky',
+					'old'   => 'yes',
+					'new'   => 'no',
+				],
+			],
+			$calls[1][1]['changes']
+		);
+	}
+
+	/**
+	 * Terms or the sticky flag of a post this sensor does not log, or of an
+	 * editor placeholder, are no event.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_term_and_sticky_changes_of_untracked_posts_and_placeholders_emit_nothing(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				self::term( 15, 5, 'News', 'category' );
+				WpState::$taxonomies['attachment'] = [ 'category' ];
+				WpState::$taxonomies['custom_css'] = [ 'category' ];
+				WpState::$posts[7]                 = $post( [ 'post_type' => 'attachment' ] );
+				WpState::$posts[8]                 = $post(
+					[
+						'ID'          => 8,
+						'post_status' => 'auto-draft',
+					]
+				);
+				WpState::$posts[9]                 = $post(
+					[
+						'ID'        => 9,
+						'post_type' => 'custom_css',
+					]
+				);
+
+				$sensor->boot();
+				foreach ( [ 7, 8, 9 ] as $id ) {
+					self::set_terms( $id, 'category', [ 15 ] );
+					self::stick( $id, true );
+				}
+			}
+		);
+
+		$this->assertSame( [], $calls );
+	}
+
+	/**
+	 * The same post id is another post on every site of a network: a save on
+	 * one site is compared with what that site's post was.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_saves_are_compared_per_site(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+
+				WpState::$posts[7] = $post( [ 'post_title' => 'One' ] );
+				self::fire( 'pre_post_update', 7, [] );
+
+				switch_to_blog( 2 );
+				self::update_post( $post( [ 'post_title' => 'Two' ] ), $post( [ 'post_title' => 'Two edited' ] ) );
+				restore_current_blog();
+
+				$after             = $post( [ 'post_title' => 'One edited' ] );
+				WpState::$posts[7] = $after;
+				self::fire( 'transition_post_status', 'publish', 'publish', $after );
+				self::fire( 'post_updated', 7, $after, $post( [ 'post_title' => 'One' ] ) );
+				self::fire( 'wp_after_insert_post', 7, $after, true, $post( [ 'post_title' => 'One' ] ) );
+			}
+		);
+
+		$this->assertSame( [ 2006, 2006 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 2, 1 ], array_column( $calls, 2 ) );
+		$this->assertSame( [ 'Two', 'Two edited' ], [ $calls[0][1]['changes'][0]['old'], $calls[0][1]['changes'][0]['new'] ] );
+		$this->assertSame( [ 'One', 'One edited' ], [ $calls[1][1]['changes'][0]['old'], $calls[1][1]['changes'][0]['new'] ] );
+	}
+
+	/**
+	 * A REST save stops before `wp_after_insert_post` when writing its terms
+	 * fails, after the post itself was saved: the save is still logged, at
+	 * the end of the request and on the site it happened on.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_save_that_never_finishes_is_logged_at_shutdown(): void {
+		$seen  = [];
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$seen ): void {
+				$sensor->boot();
+				self::update_post(
+					$post(
+						[
+							'post_status' => 'draft',
+							'post_title'  => 'Draft title',
+						]
+					),
+					$post( [ 'post_title' => 'Final title' ] ),
+					null,
+					false
+				);
+
+				switch_to_blog( 3 );
+				self::update_post(
+					$post(
+						[
+							'ID'         => 8,
+							'post_title' => 'Elsewhere',
+						]
+					),
+					$post(
+						[
+							'ID'         => 8,
+							'post_title' => 'Elsewhere too',
+						]
+					),
+					null,
+					false
+				);
+				restore_current_blog();
+
+				$seen[] = count( $dispatcher->calls );
+				self::fire( 'shutdown' );
+				$seen[] = get_current_blog_id();
+			}
+		);
+
+		$this->assertSame( [ 0, 1 ], $seen );
+		$this->assertSame( [ 2001, 2006 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 1, 3 ], array_column( $calls, 2 ) );
+		$this->assertSame( 'Final title', $calls[0][1]['changes'][0]['new'] );
+		$this->assertSame( 'Elsewhere too', $calls[1][1]['changes'][0]['new'] );
+	}
+
+	/**
+	 * `wp_publish_post()` (a scheduled post going live) changes the status
+	 * without `pre_post_update`: there is nothing to compare, so the status
+	 * change is logged as it happens, once.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_status_change_outside_an_open_save_is_logged_at_once(): void {
+		$seen  = [];
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$seen ): void {
+				$sensor->boot();
+
+				$before            = $post( [ 'post_status' => 'future' ] );
+				$after             = $post();
+				WpState::$posts[7] = $after;
+				self::fire( 'transition_post_status', 'publish', 'future', $after );
+				$seen[] = count( $dispatcher->calls );
+				self::fire( 'wp_after_insert_post', 7, $after, true, $before );
+				self::fire( 'shutdown' );
+			}
+		);
+
+		$this->assertSame( [ 1 ], $seen );
+		$this->assertSame( [ 2001 ], array_column( $calls, 0 ) );
+		$this->assertArrayNotHasKey( 'changes', $calls[0][1] );
+	}
+
+	/**
+	 * A plugin that saves the post again from its own `save_post` callback
+	 * opens a save inside the save: one event tells both.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_save_inside_a_save_is_one_event(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$draft     = $post(
+					[
+						'post_status'  => 'draft',
+						'post_title'   => 'A',
+						'post_excerpt' => '',
+					]
+				);
+				$published = $post(
+					[
+						'post_title'   => 'B',
+						'post_excerpt' => '',
+					]
+				);
+				$final     = $post(
+					[
+						'post_title'   => 'B',
+						'post_excerpt' => 'C',
+					]
+				);
+
+				$sensor->boot();
+				WpState::$posts[7] = $draft;
+				self::fire( 'pre_post_update', 7, [] );
+				WpState::$posts[7] = $published;
+				self::fire( 'transition_post_status', 'publish', 'draft', $published );
+				self::fire( 'post_updated', 7, $published, $draft );
+				self::update_post( $published, $final );
+				self::fire( 'wp_after_insert_post', 7, $final, true, $draft );
+				self::fire( 'shutdown' );
+			}
+		);
+
+		$this->assertSame( [ 2001 ], array_column( $calls, 0 ) );
+		$this->assertSame( [ 'post_title', 'post_excerpt' ], array_column( $calls[0][1]['changes'], 'field' ) );
+	}
+
+	/**
+	 * `wp_trash_post()` saves the post with the trash status and a
+	 * `__trashed` slug: one trash event, with no slug change.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_trashing_a_post_is_one_event_without_the_trash_slug(): void {
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+				self::update_post(
+					$post(),
+					$post(
+						[
+							'post_status' => 'trash',
+							'post_name'   => 'hello__trashed',
+						]
+					)
+				);
+			}
+		);
+
+		$this->assertSame( [ 2003 ], array_column( $calls, 0 ) );
+		$this->assertArrayNotHasKey( 'changes', $calls[0][1] );
+	}
+
+	/**
+	 * Core unsticks a post on `wp_trash_post`, before the trash save starts:
+	 * that update says nothing the trash does not, and only the trash stays.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_trashing_a_sticky_post_leaves_only_the_trash(): void {
+		$recorder = null;
+		$this->run_hook(
+			static function ( ContentSensor $sensor, callable $post, EventDispatcher $dispatcher ) use ( &$recorder ): void {
+				$recorder          = $dispatcher;
+				WpState::$sticky   = [ 7 ];
+				WpState::$posts[7] = $post();
+
+				$sensor->boot();
+				self::stick( 7, false );
+				self::update_post(
+					$post(),
+					$post(
+						[
+							'post_status' => 'trash',
+							'post_name'   => 'hello__trashed',
+						]
+					)
+				);
+			}
+		);
+
+		$this->assertSame( [ 2006, 2003 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ 2003 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	/**
+	 * Reading the post before its save can fail (a filter on the terms that
+	 * throws): the failure is reported, never thrown at the save, and the
+	 * status change is still logged.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_failing_read_before_a_save_is_reported_and_the_publish_still_logged(): void {
+		require_once __DIR__ . '/../../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../../Events/Fixtures/wordpress-functions.php';
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+				WpState::$term_reads_throw = true;
+				self::update_post( $post( [ 'post_status' => 'draft' ] ), $post() );
+			}
+		);
+
+		$this->assertSame( [ 2001 ], array_column( $calls, 0 ) );
+		$this->assertArrayNotHasKey( 'changes', $calls[0][1] );
+		$this->assertSame( [ 'hellolog_dispatch_failed' ], array_column( WpCalls::$actions, 0 ) );
+		$this->assertSame( [ 'post_id' => 7 ], WpCalls::$actions[0][1][2] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_failing_read_after_a_save_is_reported_and_the_event_still_logged(): void {
+		require_once __DIR__ . '/../../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../../Events/Fixtures/wordpress-functions.php';
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				$sensor->boot();
+				self::rest_update(
+					$post( [ 'post_status' => 'draft' ] ),
+					$post(),
+					static function (): void {
+						WpState::$term_reads_throw = true;
+					}
+				);
+			}
+		);
+
+		$this->assertSame( [ 2001 ], array_column( $calls, 0 ) );
+		$this->assertArrayNotHasKey( 'changes', $calls[0][1] );
+		$this->assertSame( [ 'hellolog_dispatch_failed' ], array_column( WpCalls::$actions, 0 ) );
+		$this->assertSame( 2001, WpCalls::$actions[0][1][1] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_failing_term_read_outside_a_save_is_reported(): void {
+		require_once __DIR__ . '/../../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../../Events/Fixtures/wordpress-functions.php';
+
+		$calls = $this->run_hook(
+			static function ( ContentSensor $sensor, callable $post ): void {
+				WpState::$posts[7] = $post();
+
+				$sensor->boot();
+				WpState::$term_reads_throw = true;
+				self::set_terms( 7, 'category', [ 15 ] );
+			}
+		);
+
+		$this->assertSame( [], $calls );
+		$this->assertSame( [ 'hellolog_dispatch_failed' ], array_column( WpCalls::$actions, 0 ) );
+		$this->assertSame(
+			[
+				'post_id'  => 7,
+				'taxonomy' => 'category',
+			],
+			WpCalls::$actions[0][1][2]
+		);
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_post_hooks_are_registered_with_their_arguments(): void {
+		$this->run_hook( static fn( ContentSensor $sensor ) => $sensor->boot() );
+
+		$expected = [
+			'pre_post_update'        => [ 10, 1 ],
+			'transition_post_status' => [ 10, 3 ],
+			'set_object_terms'       => [ 10, 6 ],
+			'post_stuck'             => [ 10, 1 ],
+			'post_unstuck'           => [ 10, 1 ],
+			'before_delete_post'     => [ 10, 2 ],
+			'shutdown'               => [ 0, 1 ],
+		];
+		foreach ( $expected as $hook => [ $priority, $args ] ) {
+			$this->assertSame(
+				[
+					'priority'      => $priority,
+					'accepted_args' => $args,
+				],
+				WpState::$actions[ $hook ] ?? null,
+				$hook
+			);
+		}
+
+		// After core saves the revision (priority 9).
+		$this->assertGreaterThanOrEqual( 10, WpState::$actions['wp_after_insert_post']['priority'] ?? 0 );
+		$this->assertSame( 1, WpState::$actions['wp_after_insert_post']['accepted_args'] ?? null );
+		$this->assertArrayNotHasKey( 'post_updated', WpState::$actions );
+	}
+
+	/**
 	 * Run hook calls against a recording dispatcher, with the WordPress
 	 * stand-ins loaded. Only call this from a test of its own process.
 	 *
-	 * @param callable(ContentSensor, callable(array<string, mixed>): \WP_Post): void $hooks What to call.
-	 * @return array<int, array{0: int, 1: array<string, mixed>}> Every dispatch as `[ code, fields ]`.
+	 * @param callable(ContentSensor, callable(array<string, mixed>): \WP_Post, EventDispatcher): void $hooks What to call.
+	 * @return array<int, array{0: int, 1: array<string, mixed>, 2: int}> Every dispatch as `[ code, fields, site ]`.
 	 */
 	private function run_hook( callable $hooks ): array {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
 		require_once __DIR__ . '/Fixtures/wordpress-content-functions.php';
 
 		$dispatcher = new class() implements EventDispatcher {
 
-			/** @var array<int, array{0: int, 1: array<string, mixed>}> */
+			/** @var array<int, array{0: int, 1: array<string, mixed>, 2: int}> */
 			public array $calls = [];
 
 			public function dispatch( int $code, array $fields = [] ): void {
-				$this->calls[] = [ $code, $fields ];
+				$this->calls[] = [ $code, $fields, get_current_blog_id() ];
 			}
 		};
 
@@ -950,28 +1739,158 @@ final class ContentSensorTest extends TestCase {
 			)
 		);
 
-		$hooks( new ContentSensor( $dispatcher ), $post );
+		$hooks( new ContentSensor( $dispatcher ), $post, $dispatcher );
 
 		return $dispatcher->calls;
 	}
 
 	/**
-	 * @return array<string, mixed>
+	 * Fire a hook the way `do_action()` does: every callback registered on
+	 * it, by priority, with as many arguments as it accepts.
+	 *
+	 * @param string $hook    Hook name.
+	 * @param mixed  ...$args Arguments of the hook.
 	 */
-	private function post_values(): array {
-		return [
-			'post_title'         => 'Old title',
-			'post_content'       => 'Old body',
-			'post_excerpt'       => '',
-			'post_name'          => 'old-title',
-			'post_parent'        => 0,
-			'post_author'        => '1',
-			'post_date'          => '2026-10-26 10:00:00',
-			'menu_order'         => 0,
-			'comment_status'     => 'open',
-			'ping_status'        => 'open',
-			'password_protected' => false,
-			'post_modified'      => '2026-10-26 11:00:00',
+	private static function fire( string $hook, ...$args ): void {
+		$callbacks = WpState::$callbacks[ $hook ] ?? [];
+		usort( $callbacks, static fn( array $a, array $b ): int => $a['priority'] <=> $b['priority'] );
+		foreach ( $callbacks as $registered ) {
+			( $registered['callback'] )( ...array_slice( $args, 0, $registered['accepted_args'] ) );
+		}
+	}
+
+	/**
+	 * The hooks `wp_update_post()` fires when a post that was `$before` is
+	 * saved as `$after`, in core's order (`wp_insert_post()`): the post is
+	 * still the old one on `pre_post_update`; the terms, featured image and
+	 * template given with the save are written (`$in_save`) before the
+	 * status change; `post_updated` follows, and `wp_after_insert_post` comes
+	 * last, unless the caller fires it itself later, as the REST API does.
+	 *
+	 * @param \WP_Post      $before      The post before the save.
+	 * @param \WP_Post      $after       The post as saved.
+	 * @param callable|null $in_save     Writes made inside the save.
+	 * @param bool          $after_hooks Whether `wp_after_insert_post` fires.
+	 */
+	private static function update_post( \WP_Post $before, \WP_Post $after, ?callable $in_save = null, bool $after_hooks = true ): void {
+		$id = (int) $after->ID;
+
+		WpState::$posts[ $id ] = $before;
+		self::fire( 'pre_post_update', $id, [] );
+
+		WpState::$posts[ $id ] = $after;
+		if ( null !== $in_save ) {
+			$in_save();
+		}
+		self::fire( 'transition_post_status', (string) $after->post_status, (string) $before->post_status, $after );
+		self::fire( 'post_updated', $id, $after, $before );
+
+		if ( $after_hooks ) {
+			self::fire( 'wp_after_insert_post', $id, $after, true, $before );
+		}
+	}
+
+	/**
+	 * A save through the REST API (the block editor), in the order of its
+	 * posts controller: `wp_update_post()` without its closing hook, then the
+	 * featured image, sticky flag, template and terms (`$after_save`), then
+	 * `wp_after_insert_post`.
+	 *
+	 * @param \WP_Post $before     The post before the save.
+	 * @param \WP_Post $after      The post as saved.
+	 * @param callable $after_save Writes made after the post itself.
+	 */
+	private static function rest_update( \WP_Post $before, \WP_Post $after, callable $after_save ): void {
+		self::update_post( $before, $after, null, false );
+		$after_save();
+		self::fire( 'wp_after_insert_post', (int) $after->ID, $after, true, $before );
+	}
+
+	/**
+	 * Set the terms of a post in one taxonomy the way `wp_set_object_terms()`
+	 * does, with the term taxonomy ids before and after.
+	 *
+	 * @param int                   $post_id  Post id.
+	 * @param string                $taxonomy Taxonomy name.
+	 * @param array<int, int|string> $tt_ids   Term taxonomy ids given.
+	 * @param bool                  $append   Whether they are added to the post's terms.
+	 */
+	private static function set_terms( int $post_id, string $taxonomy, array $tt_ids, bool $append = false ): void {
+		$old = WpState::$post_terms[ $post_id ][ $taxonomy ] ?? [];
+		$ids = array_map( 'intval', $tt_ids );
+		$new = $append ? array_values( array_unique( array_merge( $old, $ids ) ) ) : $ids;
+
+		WpState::$post_terms[ $post_id ][ $taxonomy ] = $new;
+		self::fire( 'set_object_terms', $post_id, $tt_ids, $tt_ids, $taxonomy, $append, $old );
+	}
+
+	/**
+	 * `stick_post()` / `unstick_post()`: the sticky list changes, then the
+	 * hook fires, only on a real change.
+	 *
+	 * @param int  $post_id Post id.
+	 * @param bool $sticky  Whether the post is made sticky.
+	 */
+	private static function stick( int $post_id, bool $sticky ): void {
+		$is = in_array( $post_id, WpState::$sticky, true );
+		if ( $is === $sticky ) {
+			return;
+		}
+
+		WpState::$sticky = $sticky
+			? array_merge( WpState::$sticky, [ $post_id ] )
+			: array_values( array_diff( WpState::$sticky, [ $post_id ] ) );
+		self::fire( $sticky ? 'post_stuck' : 'post_unstuck', $post_id );
+	}
+
+	/**
+	 * A term `get_term_by( 'term_taxonomy_id' )` and `get_the_terms()` find.
+	 *
+	 * @param int    $tt_id    Term taxonomy id.
+	 * @param int    $term_id  Term id.
+	 * @param string $name     Term name.
+	 * @param string $taxonomy Taxonomy name.
+	 */
+	private static function term( int $tt_id, int $term_id, string $name, string $taxonomy ): void {
+		WpState::$terms[ $tt_id ] = (object) [
+			'term_id'          => $term_id,
+			'term_taxonomy_id' => $tt_id,
+			'name'             => $name,
+			'taxonomy'         => $taxonomy,
 		];
+	}
+
+	/**
+	 * Build what the recorder saw as an admin would on the dashboard and run
+	 * the default per-request rules over it.
+	 *
+	 * @param EventDispatcher|null $recorder The recording dispatcher.
+	 * @return array<int, array<string, mixed>> The payloads that would be written.
+	 */
+	private function survive( ?EventDispatcher $recorder ): array {
+		$this->assertNotNull( $recorder );
+
+		$catalog = new EventCatalog();
+		CatalogSeeder::seed( $catalog );
+
+		$builder = new class( $catalog ) extends EventBuilder {
+
+			public function __construct( EventCatalog $catalog ) {
+				parent::__construct( $catalog, false, static fn(): string => RequestSource::ADMIN );
+			}
+
+			protected function current_context(): RequestContext {
+				return new RequestContext( 1, 'admin', [ 'administrator' ], null, null, null );
+			}
+		};
+
+		$payloads = [];
+		foreach ( $recorder->calls as [ $code, $fields ] ) {
+			$payload = $builder->build( $code, $fields );
+			$this->assertIsArray( $payload );
+			$payloads[] = $payload;
+		}
+
+		return SuppressionRules::defaults()->apply( $payloads );
 	}
 }

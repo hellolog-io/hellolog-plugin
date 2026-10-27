@@ -74,6 +74,91 @@ namespace {
 		);
 	}
 
+	/**
+	 * @param string $object Post type name; core also takes a post object.
+	 * @param string $output Only `names` is stubbed.
+	 * @return array<int, string>
+	 */
+	function get_object_taxonomies( $object, string $output = 'names' ): array {
+		return WpState::$taxonomies[ (string) $object ] ?? [];
+	}
+
+	/**
+	 * Like core: false when the post has no terms in the taxonomy.
+	 *
+	 * @param int    $post     Post id; core also takes a post object.
+	 * @param string $taxonomy Taxonomy name.
+	 * @return array<int, object>|false
+	 */
+	function get_the_terms( $post, string $taxonomy ) {
+		if ( WpState::$term_reads_throw ) {
+			throw new \RuntimeException( 'unreadable' );
+		}
+
+		$terms = [];
+		foreach ( WpState::$post_terms[ (int) $post ][ $taxonomy ] ?? [] as $tt_id ) {
+			if ( isset( WpState::$terms[ $tt_id ] ) ) {
+				$terms[] = WpState::$terms[ $tt_id ];
+			}
+		}
+
+		return [] === $terms ? false : $terms;
+	}
+
+	/**
+	 * Only the lookup by term taxonomy id is stubbed. Like core, a term of
+	 * another taxonomy than the one asked for is not found.
+	 *
+	 * @param string     $field    `term_taxonomy_id`.
+	 * @param int|string $value    Term taxonomy id.
+	 * @param string     $taxonomy Taxonomy; empty for any.
+	 * @return object|false
+	 */
+	function get_term_by( string $field, $value, string $taxonomy = '' ) {
+		if ( WpState::$term_reads_throw ) {
+			throw new \RuntimeException( 'unreadable' );
+		}
+		$term = 'term_taxonomy_id' === $field ? ( WpState::$terms[ (int) $value ] ?? null ) : null;
+		if ( null === $term || ( '' !== $taxonomy && $term->taxonomy !== $taxonomy ) ) {
+			return false;
+		}
+
+		return $term;
+	}
+
+	function is_sticky( int $post_id = 0 ): bool {
+		return in_array( $post_id, WpState::$sticky, true );
+	}
+
+	/**
+	 * @param int $post Post id; core also takes a post object.
+	 * @return int|false
+	 */
+	function get_post_thumbnail_id( $post = null ) {
+		return WpState::$thumbnails[ (int) $post ] ?? 0;
+	}
+
+	/**
+	 * @param int $post Post id; core also takes a post object.
+	 * @return string|false
+	 */
+	function get_page_template_slug( $post = null ) {
+		return WpState::$templates[ (int) $post ] ?? '';
+	}
+
+	/**
+	 * @param int $post Post id; core also takes a post object.
+	 * @return array{latest_id: int, count: int}
+	 */
+	function wp_get_latest_revision_id_and_total_count( $post = 0 ): array {
+		$latest = WpState::$revisions[ (int) $post ] ?? 0;
+
+		return [
+			'latest_id' => $latest,
+			'count'     => $latest > 0 ? 1 : 0,
+		];
+	}
+
 	function get_comment( int $id ): ?WP_Comment {
 		return WpState::$comment;
 	}

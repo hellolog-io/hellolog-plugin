@@ -89,4 +89,71 @@ final class WpState {
 	 * @var array<string, array{priority: int, accepted_args: int}>
 	 */
 	public static array $actions = [];
+
+	/**
+	 * Hook name => every callback `add_action()` registered on it, in the
+	 * order of registration, for a test to fire.
+	 *
+	 * @var array<string, array<int, array{callback: callable, priority: int, accepted_args: int}>>
+	 */
+	public static array $callbacks = [];
+
+	/**
+	 * Post type => the taxonomies `get_object_taxonomies()` reports for it. A
+	 * type that is not listed has none.
+	 *
+	 * @var array<string, array<int, string>>
+	 */
+	public static array $taxonomies = [
+		'post' => [ 'category', 'post_tag', 'post_format' ],
+	];
+
+	/**
+	 * Term taxonomy id => the term `get_term_by( 'term_taxonomy_id' )` finds,
+	 * as an object with core's `term_id`, `term_taxonomy_id`, `name` and
+	 * `taxonomy`. An id that is not listed has no such term.
+	 *
+	 * @var array<int, object>
+	 */
+	public static array $terms = [];
+
+	/**
+	 * Post id => taxonomy => the term taxonomy ids of the post's terms, which
+	 * `get_the_terms()` answers with.
+	 *
+	 * @var array<int, array<string, array<int, int>>>
+	 */
+	public static array $post_terms = [];
+
+	/** Whether `get_the_terms()` and `get_term_by()` fail the way a broken filter on them would. */
+	public static bool $term_reads_throw = false;
+
+	/**
+	 * Ids of the sticky posts.
+	 *
+	 * @var array<int, int>
+	 */
+	public static array $sticky = [];
+
+	/**
+	 * Post id => id of its featured image. A post that is not listed has none.
+	 *
+	 * @var array<int, int>
+	 */
+	public static array $thumbnails = [];
+
+	/**
+	 * Post id => its page template file. A post that is not listed uses the
+	 * default template.
+	 *
+	 * @var array<int, string>
+	 */
+	public static array $templates = [];
+
+	/**
+	 * Post id => id of its latest revision. A post that is not listed has none.
+	 *
+	 * @var array<int, int>
+	 */
+	public static array $revisions = [];
 }

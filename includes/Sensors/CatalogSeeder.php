@@ -70,6 +70,9 @@ final class CatalogSeeder {
 		$c->register( new EventDefinition( 2004, ObjectType::POST, EventType::RESTORED, Severity::INFO, '{post_type} "{title}" restored from trash.' ) );
 		$c->register( new EventDefinition( 2005, ObjectType::POST, EventType::DELETED, Severity::MEDIUM, '{post_type} "{title}" permanently deleted.' ) );
 		$c->register( new EventDefinition( 2006, ObjectType::POST, EventType::UPDATED, Severity::INFO, '{post_type} "{title}" updated.' ) );
+		$c->register( new EventDefinition( 2007, ObjectType::POST, EventType::UPDATED, Severity::INFO, '{post_type} "{title}" scheduled for {date}.' ) );
+		$c->register( new EventDefinition( 2008, ObjectType::POST, EventType::SUBMITTED, Severity::INFO, '{post_type} "{title}" submitted for review.' ) );
+		$c->register( new EventDefinition( 2009, ObjectType::POST, EventType::UPDATED, Severity::LOW, '{post_type} "{title}" made private.' ) );
 		$c->register( new EventDefinition( 2013, ObjectType::POST, EventType::UPDATED, Severity::MEDIUM, '{post_type} "{title}" reverted to auto-draft.' ) );
 	}
 
