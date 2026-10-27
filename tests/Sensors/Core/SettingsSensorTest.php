@@ -17,6 +17,7 @@ use HelloLog\Events\RequestSource;
 use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\SettingsSensor;
 use HelloLog\Sensors\SensitiveOption;
+use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
 use HelloLog\Tests\Sensors\Fixtures\RequestState;
 use PHPUnit\Framework\TestCase;
 
@@ -24,10 +25,42 @@ use PHPUnit\Framework\TestCase;
  * A core setting is reported the way the plugin settings are: the setting
  * as its target, the old-to-new change, and values that never carry a
  * secret, in the changes, the template values or the metadata.
+ *
+ * The roles option is told by role: which roles came or went, and which
+ * capabilities each role gained or lost.
  */
 final class SettingsSensorTest extends TestCase {
 
 	private const URL_WITH_PASSWORD = 'see https://user:p@ss@host/x';
+
+	/**
+	 * The roles option of a site, as `WP_Roles` stores it (shortened).
+	 *
+	 * @var array<string, array{name: string, capabilities: array<string, bool>}>
+	 */
+	private const ROLES = [
+		'administrator' => [
+			'name'         => 'Administrator',
+			'capabilities' => [
+				'manage_options' => true,
+				'read'           => true,
+			],
+		],
+		'editor'        => [
+			'name'         => 'Editor',
+			'capabilities' => [
+				'edit_others_posts' => true,
+				'read'              => true,
+			],
+		],
+		'subscriber'    => [
+			'name'         => 'Subscriber',
+			'capabilities' => [
+				'read'    => true,
+				'level_0' => true,
+			],
+		],
+	];
 
 	public function test_a_core_setting_has_the_setting_as_its_target_and_its_change(): void {
 		$recorder = $this->recorder();
@@ -135,6 +168,566 @@ final class SettingsSensorTest extends TestCase {
 		$this->assertSame( [ 6001, 6002 ], array_column( $recorder->calls, 0 ) );
 	}
 
+	// ---- the core settings allow-list ---------------------------------------
+
+	/**
+	 * @return array<string, array{0: string, 1: string, 2: string}> Option, old value, new value.
+	 */
+	public static function more_core_settings(): array {
+		return [
+			'default comment status'      => [ 'default_comment_status', 'open', 'closed' ],
+			'default ping status'         => [ 'default_ping_status', 'open', 'closed' ],
+			'close comments on old posts' => [ 'close_comments_for_old_posts', '0', '1' ],
+			'days before comments close'  => [ 'close_comments_days_old', '14', '30' ],
+			'previously approved author'  => [ 'comment_previously_approved', '1', '0' ],
+			'links before moderation'     => [ 'comment_max_links', '2', '5' ],
+			'threaded comments'           => [ 'thread_comments', '1', '0' ],
+			'utc offset'                  => [ 'gmt_offset', '0', '2' ],
+			'site icon'                   => [ 'site_icon', '0', '42' ],
+			'privacy policy page'         => [ 'wp_page_for_privacy_policy', '3', '7' ],
+			'default category'            => [ 'default_category', '1', '5' ],
+			'uploads in dated folders'    => [ 'uploads_use_yearmonth_folders', '1', '0' ],
+		];
+	}
+
+	/**
+	 * @dataProvider more_core_settings
+	 */
+	public function test_more_core_settings_are_logged( string $option, string $old, string $new ): void {
+		$recorder = $this->recorder();
+		( new SettingsSensor( $recorder ) )->on_update( $option, $old, $new );
+
+		$this->assertCount( 1, $recorder->calls );
+		[ $code, $fields ] = $recorder->calls[0];
+		$this->assertSame( 6000, $code );
+		$this->assertSame( $option, $fields['target']['id'] );
+		$this->assertSame(
+			[
+				[
+					'field' => $option,
+					'old'   => $old,
+					'new'   => $new,
+				],
+			],
+			$fields['changes']
+		);
+	}
+
+	/**
+	 * @return array<string, array{0: string}>
+	 */
+	public static function word_lists(): array {
+		return [
+			'comment moderation words' => [ 'moderation_keys' ],
+			'disallowed comment words' => [ 'disallowed_keys' ],
+		];
+	}
+
+	/**
+	 * The words a site holds comments for (or throws them out for) are a
+	 * list somebody wrote: the event says the list changed, never what is
+	 * on it, in the changes, the metadata or the template values.
+	 *
+	 * @dataProvider word_lists
+	 */
+	public function test_a_comment_word_list_is_reported_as_changed_without_its_words( string $option ): void {
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+		$sensor->on_update( $option, "casino\nlottery", "casino\nlottery\nhttps://user:hunter2@spam.example.com" );
+		$sensor->on_add( $option, 'roulette' );
+
+		$this->assertSame( [ 6000, 6000 ], array_column( $recorder->calls, 0 ) );
+		foreach ( $recorder->calls as $call ) {
+			$fields = $call[1];
+			$this->assertSame(
+				[
+					[
+						'field' => $option,
+						'old'   => null,
+						'new'   => null,
+					],
+				],
+				$fields['changes']
+			);
+			$this->assertSame( [ 'option' => $option ], $fields['metadata'] );
+			$this->assertArrayNotHasKey( 'old', $fields );
+			$this->assertArrayNotHasKey( 'new', $fields );
+			$this->assertArrayNotHasKey( 'state', $fields );
+
+			$text = serialize( $fields ) . json_encode( $this->payload( $call ) );
+			foreach ( [ 'casino', 'lottery', 'hunter2', 'roulette' ] as $word ) {
+				$this->assertStringNotContainsString( $word, $text );
+			}
+		}
+	}
+
+	/**
+	 * A word list saved again with the same words is no change.
+	 *
+	 * @dataProvider word_lists
+	 */
+	public function test_a_word_list_saved_unchanged_logs_nothing( string $option ): void {
+		$recorder = $this->recorder();
+		( new SettingsSensor( $recorder ) )->on_update( $option, "casino\nlottery", "casino\nlottery" );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * `update_option()` adds an option that does not exist yet, and only
+	 * `added_option` tells that: the setting is logged from nothing.
+	 */
+	public function test_a_core_setting_written_for_the_first_time_is_logged_from_nothing(): void {
+		$recorder = $this->recorder();
+		( new SettingsSensor( $recorder ) )->on_add( 'WPLANG', 'hu_HU' );
+
+		$this->assertCount( 1, $recorder->calls );
+		[ $code, $fields ] = $recorder->calls[0];
+		$this->assertSame( 6000, $code );
+		$this->assertSame(
+			[
+				'type'  => 'setting',
+				'id'    => 'WPLANG',
+				'label' => 'WPLANG',
+			],
+			$fields['target']
+		);
+		$this->assertSame(
+			[
+				[
+					'field' => 'WPLANG',
+					'old'   => null,
+					'new'   => 'hu_HU',
+				],
+			],
+			$fields['changes']
+		);
+		$this->assertSame(
+			[
+				'option' => 'WPLANG',
+				'old'    => null,
+				'new'    => 'hu_HU',
+			],
+			$fields['metadata']
+		);
+	}
+
+	public function test_an_added_value_is_masked_too(): void {
+		$recorder = $this->recorder();
+		( new SettingsSensor( $recorder ) )->on_add( 'blogdescription', self::URL_WITH_PASSWORD );
+
+		$fields = $recorder->calls[0][1];
+		$masked = 'see https://' . SensitiveOption::REDACTED . '@host/x';
+		$this->assertSame( $masked, $fields['changes'][0]['new'] );
+		$this->assertSame( $masked, $fields['metadata']['new'] );
+		$this->assertStringNotContainsString( 'p@ss', serialize( $fields ) . json_encode( $this->payload( $recorder->calls[0] ) ) );
+	}
+
+	public function test_an_option_that_is_not_watched_logs_nothing_when_added(): void {
+		$recorder = $this->recorder();
+		( new SettingsSensor( $recorder ) )->on_add( 'woocommerce_currency', 'EUR' );
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	// ---- role capabilities --------------------------------------------------
+
+	public function test_a_new_role_is_reported_with_the_capabilities_it_has(): void {
+		$new                 = self::ROLES;
+		$new['shop_auditor'] = [
+			'name'         => 'Shop auditor',
+			'capabilities' => [
+				'view_shop_reports' => true,
+				'read'              => true,
+			],
+		];
+
+		$this->assertSame(
+			[
+				[
+					'field' => 'role:shop_auditor',
+					'old'   => null,
+					'new'   => 'added',
+				],
+				[
+					'field' => 'caps:shop_auditor',
+					'old'   => null,
+					'new'   => 'read, view_shop_reports',
+				],
+			],
+			SettingsSensor::roles_changes( self::ROLES, $new )
+		);
+	}
+
+	public function test_a_new_role_without_capabilities_is_only_reported_as_added(): void {
+		$new                 = self::ROLES;
+		$new['shop_auditor'] = [
+			'name'         => 'Shop auditor',
+			'capabilities' => [],
+		];
+
+		$this->assertSame(
+			[
+				[
+					'field' => 'role:shop_auditor',
+					'old'   => null,
+					'new'   => 'added',
+				],
+			],
+			SettingsSensor::roles_changes( self::ROLES, $new )
+		);
+	}
+
+	public function test_a_removed_role_is_reported_with_the_capabilities_it_had(): void {
+		$new = self::ROLES;
+		unset( $new['subscriber'] );
+
+		$this->assertSame(
+			[
+				[
+					'field' => 'role:subscriber',
+					'old'   => 'present',
+					'new'   => null,
+				],
+				[
+					'field' => 'caps:subscriber',
+					'old'   => 'level_0, read',
+					'new'   => null,
+				],
+			],
+			SettingsSensor::roles_changes( self::ROLES, $new )
+		);
+	}
+
+	public function test_a_capability_given_to_a_role_is_reported_as_added(): void {
+		$new = self::ROLES;
+		$new['editor']['capabilities']['manage_options'] = true;
+
+		$this->assertSame(
+			[
+				[
+					'field' => 'caps:editor',
+					'old'   => null,
+					'new'   => 'manage_options',
+				],
+			],
+			SettingsSensor::roles_changes( self::ROLES, $new )
+		);
+	}
+
+	public function test_capabilities_taken_and_given_are_listed_sorted_on_their_sides(): void {
+		$new = self::ROLES;
+		unset( $new['editor']['capabilities']['read'], $new['editor']['capabilities']['edit_others_posts'] );
+		$new['editor']['capabilities']['moderate_comments'] = true;
+		$new['editor']['capabilities']['list_users']        = true;
+
+		$this->assertSame(
+			[
+				[
+					'field' => 'caps:editor',
+					'old'   => 'edit_others_posts, read',
+					'new'   => 'list_users, moderate_comments',
+				],
+			],
+			SettingsSensor::roles_changes( self::ROLES, $new )
+		);
+	}
+
+	/**
+	 * `add_cap( $role, $cap, false )` stores the capability as denied: the
+	 * role does not have it, the same as when it is not listed at all.
+	 */
+	public function test_a_denied_capability_is_not_one_the_role_has(): void {
+		$denied = self::ROLES;
+		$denied['editor']['capabilities']['manage_options'] = false;
+		$this->assertSame( [], SettingsSensor::roles_changes( self::ROLES, $denied ) );
+
+		$revoked = self::ROLES;
+
+		$revoked['editor']['capabilities']['read'] = false;
+		$this->assertSame(
+			[
+				[
+					'field' => 'caps:editor',
+					'old'   => 'read',
+					'new'   => null,
+				],
+			],
+			SettingsSensor::roles_changes( self::ROLES, $revoked )
+		);
+	}
+
+	public function test_a_renamed_role_with_the_same_capabilities_is_no_change(): void {
+		$new                   = self::ROLES;
+		$new['editor']['name'] = 'Chief editor';
+
+		$this->assertSame( [], SettingsSensor::roles_changes( self::ROLES, $new ) );
+	}
+
+	/**
+	 * Role and capability names are identifiers, not secrets: a name that
+	 * reads like a credential is reported as it is.
+	 */
+	public function test_role_and_capability_names_are_never_masked(): void {
+		$new                       = self::ROLES;
+		$new['license_key_keeper'] = [
+			'name'         => 'License keeper',
+			'capabilities' => [ 'manage_api_keys' => true ],
+		];
+		$new['editor']['capabilities']['reset_passwords'] = true;
+
+		$changes = SettingsSensor::roles_changes( self::ROLES, $new );
+		$this->assertSame(
+			[ 'caps:editor', 'role:license_key_keeper', 'caps:license_key_keeper' ],
+			array_column( $changes, 'field' )
+		);
+		$this->assertSame( [ 'reset_passwords', 'added', 'manage_api_keys' ], array_column( $changes, 'new' ) );
+
+		$payload = $this->payload( [ 6005, [ 'changes' => $changes ] ] );
+		$this->assertSame( $changes, $payload['changes'] );
+	}
+
+	public function test_a_long_capability_list_is_cut_to_the_value_limit(): void {
+		$caps = [];
+		for ( $i = 0; $i < 300; $i++ ) {
+			$caps[ sprintf( 'custom_cap_%03d', $i ) ] = true;
+		}
+		$new                 = self::ROLES;
+		$new['shop_manager'] = [
+			'name'         => 'Shop manager',
+			'capabilities' => $caps,
+		];
+
+		$changes = SettingsSensor::roles_changes( self::ROLES, $new );
+		$this->assertSame( 'caps:shop_manager', $changes[1]['field'] );
+		$this->assertSame( 1024, mb_strlen( (string) $changes[1]['new'], 'UTF-8' ) );
+		$this->assertStringStartsWith( 'custom_cap_000, custom_cap_001, ', (string) $changes[1]['new'] );
+		$this->assertStringEndsWith( '…', (string) $changes[1]['new'] );
+	}
+
+	public function test_the_roles_option_is_named_by_the_table_prefix_of_the_site(): void {
+		$this->assertTrue( SettingsSensor::is_roles_option( 'wp2_user_roles', 'wp2_' ) );
+		$this->assertFalse( SettingsSensor::is_roles_option( 'wp_user_roles', 'wp2_' ) );
+		$this->assertFalse( SettingsSensor::is_roles_option( 'wp2_user_roles_backup', 'wp2_' ) );
+		$this->assertTrue( SettingsSensor::is_roles_option( 'wp_3_user_roles', 'wp_3_' ) );
+	}
+
+	/**
+	 * `WP_Roles::add_cap()` and `remove_cap()` write the whole option on every
+	 * call, so a plugin setting up its capabilities writes it many times in
+	 * one request. That is one event, at shutdown, from the roles before the
+	 * first write to the roles after the last.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_capability_edits_of_a_request_are_one_event_at_shutdown(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		$step1 = self::ROLES;
+		$step1['editor']['capabilities']['manage_options'] = true;
+		$step2 = $step1;
+		$step2['editor']['capabilities']['list_users'] = true;
+		$step3 = $step2;
+		unset( $step3['editor']['capabilities']['edit_others_posts'] );
+
+		$sensor->on_update( 'wp_user_roles', self::ROLES, $step1 );
+		$sensor->on_update( 'wp_user_roles', $step1, $step2 );
+		$sensor->on_update( 'wp_user_roles', $step2, $step3 );
+		$this->assertSame( [], $recorder->calls, 'Nothing goes out before shutdown.' );
+
+		$sensor->emit_role_changes();
+
+		$this->assertCount( 1, $recorder->calls );
+		[ $code, $fields ] = $recorder->calls[0];
+		$this->assertSame( 6005, $code );
+		$this->assertSame(
+			[
+				'type'  => 'setting',
+				'id'    => 'wp_user_roles',
+				'label' => 'wp_user_roles',
+			],
+			$fields['target']
+		);
+		$this->assertSame(
+			[
+				[
+					'field' => 'caps:editor',
+					'old'   => 'edit_others_posts',
+					'new'   => 'list_users, manage_options',
+				],
+			],
+			$fields['changes']
+		);
+
+		$payload = $this->payload( $recorder->calls[0] );
+		$this->assertSame( 'critical', $payload['severity'] );
+		$this->assertSame( 'setting', $payload['object'] );
+		$this->assertSame( 'updated', $payload['event_type'] );
+		$this->assertSame( 'User role capabilities changed.', $payload['message'] );
+		$this->assertSame( 'wp_user_roles', $payload['target']['id'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_capability_edits_that_cancel_out_log_nothing(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		$granted = self::ROLES;
+		$granted['editor']['capabilities']['manage_options'] = true;
+		$sensor->on_update( 'wp_user_roles', self::ROLES, $granted );
+		$sensor->on_update( 'wp_user_roles', $granted, self::ROLES );
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * The event goes out once. A write made after it (by a later shutdown
+	 * callback) is its own event, at the second emission, from where the
+	 * first one ended.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_role_edits_go_out_once_and_a_later_edit_on_its_own(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		$step1 = self::ROLES;
+		$step1['editor']['capabilities']['manage_options'] = true;
+		$step2 = $step1;
+		$step2['editor']['capabilities']['list_users'] = true;
+
+		$sensor->on_update( 'wp_user_roles', self::ROLES, $step1 );
+		$sensor->emit_role_changes();
+		$sensor->emit_role_changes();
+		$this->assertCount( 1, $recorder->calls );
+
+		$sensor->on_update( 'wp_user_roles', $step1, $step2 );
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [ 6005, 6005 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'caps:editor',
+					'old'   => null,
+					'new'   => 'list_users',
+				],
+			],
+			$recorder->calls[1][1]['changes']
+		);
+	}
+
+	/**
+	 * On a network every site has its own roles option, named by its table
+	 * prefix. A request that edits the roles of two sites makes one event on
+	 * each, each on its own site.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_each_site_of_a_network_gets_its_own_event_on_that_site(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		$granted = self::ROLES;
+		$granted['editor']['capabilities']['manage_options'] = true;
+		$without = self::ROLES;
+		unset( $without['subscriber'] );
+
+		$sensor->on_update( 'wp_user_roles', self::ROLES, $granted );
+		switch_to_blog( 2 );
+		$GLOBALS['wpdb']->prefix = 'wp_2_';
+		$sensor->on_update( 'wp_2_user_roles', self::ROLES, $without );
+		restore_current_blog();
+		$GLOBALS['wpdb']->prefix = 'wp_';
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [ 6005, 6005 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ 1, 2 ], $recorder->blogs );
+		$this->assertSame( [ 'wp_user_roles', 'wp_2_user_roles' ], array_column( array_column( array_column( $recorder->calls, 1 ), 'target' ), 'id' ) );
+		$this->assertSame( 'caps:editor', $recorder->calls[0][1]['changes'][0]['field'] );
+		$this->assertSame( 'role:subscriber', $recorder->calls[1][1]['changes'][0]['field'] );
+		$this->assertSame( 1, WpState::$blog_id, 'Back on the site of the request.' );
+	}
+
+	/**
+	 * Only the roles option of the current site counts: the name is compared
+	 * with the table prefix in force when the write happens.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_roles_option_of_another_prefix_logs_nothing(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		$without = self::ROLES;
+		unset( $without['subscriber'] );
+		$sensor->on_update( 'wp_2_user_roles', self::ROLES, $without );
+		$sensor->on_update( 'user_roles', self::ROLES, $without );
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * Setting up a new site of a network creates its roles option and then
+	 * writes it role by role: those are the roles the site starts with, not
+	 * an edit of roles it had.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_roles_a_new_site_is_set_up_with_log_nothing(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		$first = [ 'administrator' => self::ROLES['administrator'] ];
+		switch_to_blog( 5 );
+		$GLOBALS['wpdb']->prefix = 'wp_5_';
+		$sensor->on_add( 'wp_5_user_roles', $first );
+		$sensor->on_update( 'wp_5_user_roles', $first, self::ROLES );
+		restore_current_blog();
+		$GLOBALS['wpdb']->prefix = 'wp_';
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_the_option_hooks_and_both_shutdown_emissions_are_registered(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$sensor = new SettingsSensor( $this->recorder() );
+		$sensor->boot();
+
+		$this->assertSame( 3, WpState::$actions['updated_option']['accepted_args'] );
+		$this->assertSame( 2, WpState::$actions['added_option']['accepted_args'] );
+
+		$shutdown = WpState::$callbacks['shutdown'];
+		// Before the buffer is written at priority 1, and again before the
+		// final flush at PHP_INT_MAX for writes made by later callbacks.
+		$this->assertSame( [ 0, PHP_INT_MAX - 1 ], array_column( $shutdown, 'priority' ) );
+		foreach ( $shutdown as $registration ) {
+			$this->assertSame( [ $sensor, 'emit_role_changes' ], $registration['callback'] );
+		}
+	}
+
 	/**
 	 * @param array{0: int, 1: array<string, mixed>} $call A recorded dispatch.
 	 *
@@ -161,7 +754,20 @@ final class SettingsSensorTest extends TestCase {
 	}
 
 	/**
-	 * A dispatcher that keeps what it was given.
+	 * A site of a network whose tables start with the given prefix: the
+	 * site stand-ins are loaded and `$wpdb` names the prefix. Only call this
+	 * from a test of its own process.
+	 *
+	 * @param string $prefix Table prefix of the current site.
+	 */
+	private function on_site_with_prefix( string $prefix ): void {
+		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+		$GLOBALS['wpdb'] = (object) [ 'prefix' => $prefix ];
+	}
+
+	/**
+	 * A dispatcher that keeps what it was given, and the site each event was
+	 * dispatched on in `blogs` (0 outside a network).
 	 */
 	private function recorder(): EventDispatcher {
 		return new class() implements EventDispatcher {
@@ -169,8 +775,12 @@ final class SettingsSensorTest extends TestCase {
 			/** @var array<int, array{0: int, 1: array<string, mixed>}> */
 			public array $calls = [];
 
+			/** @var array<int, int> */
+			public array $blogs = [];
+
 			public function dispatch( int $code, array $fields = [] ): void {
 				$this->calls[] = [ $code, $fields ];
+				$this->blogs[] = function_exists( 'get_current_blog_id' ) ? get_current_blog_id() : 0;
 			}
 		};
 	}

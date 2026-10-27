@@ -698,10 +698,24 @@ final class OptionSensorsTest extends TestCase {
 	}
 
 	/**
+	 * @return array<string, array{0: string, 1: array<int, string>}> The method the hook calls, the arguments before the value.
+	 */
+	public static function core_setting_writes(): array {
+		return [
+			'an update'          => [ 'on_update', [ 'admin_email', 'a@example.com' ] ],
+			'a first-time write' => [ 'on_add', [ 'admin_email' ] ],
+		];
+	}
+
+	/**
+	 * @dataProvider core_setting_writes
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
+	 *
+	 * @param string             $method The method the option hook calls.
+	 * @param array<int, string> $args   Its arguments before the new value.
 	 */
-	public function test_a_core_setting_that_cannot_be_read_is_reported_and_never_thrown(): void {
+	public function test_a_core_setting_that_cannot_be_read_is_reported_and_never_thrown( string $method, array $args ): void {
 		$recorder = $this->recorder();
 		require_once __DIR__ . '/../Events/Fixtures/WpCalls.php';
 		require_once __DIR__ . '/../Events/Fixtures/wordpress-functions.php';
@@ -712,12 +726,66 @@ final class OptionSensorsTest extends TestCase {
 			}
 		};
 
-		( new SettingsSensor( $recorder ) )->on_update( 'admin_email', 'a@example.com', $unreadable );
+		( new SettingsSensor( $recorder ) )->$method( ...[ ...$args, $unreadable ] );
 
 		$this->assertSame( [], $recorder->calls );
 		$this->assertSame( 'hellolog_dispatch_failed', WpCalls::$actions[0][0] );
 		$this->assertSame( 6002, WpCalls::$actions[0][1][1] );
 		$this->assertSame( [ 'option' => 'admin_email' ], WpCalls::$actions[0][1][2] );
+	}
+
+	/**
+	 * The role event is built at shutdown, long after the write. Whatever
+	 * fails then is reported and stays out of the request; the event of
+	 * another site still goes out.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_event_that_cannot_be_written_is_reported_and_never_thrown(): void {
+		require_once __DIR__ . '/../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../Events/Fixtures/wordpress-functions.php';
+		require_once __DIR__ . '/../Events/Fixtures/wordpress-multisite-functions.php';
+		$GLOBALS['wpdb'] = (object) [ 'prefix' => 'wp_' ];
+
+		$dispatcher = new class() implements EventDispatcher {
+
+			/** @var array<int, array{0: int, 1: array<string, mixed>}> */
+			public array $calls = [];
+
+			public function dispatch( int $code, array $fields = [] ): void {
+				if ( 'wp_user_roles' === ( $fields['target']['id'] ?? '' ) ) {
+					throw new \RuntimeException( 'unwritable' );
+				}
+				$this->calls[] = [ $code, $fields ];
+			}
+		};
+
+		$before = [ 'editor' => [ 'capabilities' => [ 'read' => true ] ] ];
+		$after  = [
+			'editor' => [
+				'capabilities' => [
+					'read'           => true,
+					'manage_options' => true,
+				],
+			],
+		];
+
+		$sensor = new SettingsSensor( $dispatcher );
+		$sensor->on_update( 'wp_user_roles', $before, $after );
+		WpCalls::$blog_id        = 3;
+		$GLOBALS['wpdb']->prefix = 'wp_3_';
+		$sensor->on_update( 'wp_3_user_roles', $before, $after );
+		$sensor->emit_role_changes();
+
+		$this->assertCount( 1, $dispatcher->calls );
+		$this->assertSame( 'wp_3_user_roles', $dispatcher->calls[0][1]['target']['id'] );
+		$this->assertCount( 1, WpCalls::$actions );
+		[ $hook, $args ] = WpCalls::$actions[0];
+		$this->assertSame( 'hellolog_dispatch_failed', $hook );
+		$this->assertSame( 'unwritable', $args[0]->getMessage() );
+		$this->assertSame( 6005, $args[1] );
+		$this->assertSame( [ 'option' => 'wp_user_roles' ], $args[2] );
 	}
 
 	/**
