@@ -233,6 +233,17 @@ final class ExportCatalogTest extends TestCase {
 		$this->assertSame( 'info', $by_code[9005]['severity'] );
 	}
 
+	public function test_the_bank_account_code_is_seeded(): void {
+		$by_code = array_column( $this->seeded_export(), null, 'code' );
+
+		$this->assertArrayHasKey( 9401, $by_code );
+		$this->assertSame( 'Bank account details (BACS) changed.', $by_code[9401]['label'] );
+		$this->assertSame( [], $by_code[9401]['vars'] );
+		$this->assertSame( 'setting', $by_code[9401]['object'] );
+		$this->assertSame( 'updated', $by_code[9401]['event_type'] );
+		$this->assertSame( 'critical', $by_code[9401]['severity'] );
+	}
+
 	public function test_the_role_capabilities_code_is_seeded(): void {
 		$by_code = array_column( $this->seeded_export(), null, 'code' );
 

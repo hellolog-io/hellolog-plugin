@@ -200,6 +200,7 @@ final class CatalogSeeder {
 
 		// Settings
 		$c->register( new EventDefinition( 9400, ObjectType::SETTING, EventType::UPDATED, Severity::MEDIUM, 'WC setting {option} changed.' ) );
+		$c->register( new EventDefinition( 9401, ObjectType::SETTING, EventType::UPDATED, Severity::CRITICAL, 'Bank account details (BACS) changed.' ) );
 	}
 
 	private static function forms( EventCatalog $c ): void {

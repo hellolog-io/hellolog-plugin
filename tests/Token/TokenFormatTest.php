@@ -46,7 +46,7 @@ final class CatalogSeederIntegrityTest extends TestCase {
 			9106, 9107, 9108, 9111,                         // WC order items, deleted notes
 			9200, 9201, 9202,                               // WC coupons
 			9300, 9301,                                     // WC customers
-			9400,                                           // WC settings
+			9400, 9401,                                     // WC settings, bank accounts
 			5700, 5701, 5702, 5710,                         // Gravity Forms
 			5800, 5801, 5810,                               // WPForms
 			5850, 5851,                                     // CF7

@@ -488,6 +488,7 @@ final class OptionSensorsTest extends TestCase {
 
 	/**
 	 * A gateway keeps all its settings, secrets included, in one array option.
+	 * Each changed key is its own change; a secret key never shows a value.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
@@ -499,6 +500,11 @@ final class OptionSensorsTest extends TestCase {
 			'test_secret_key' => 'sk_test_' . $suffix,
 			'webhook_secret'  => 'whsec_' . $suffix,
 		];
+		$masked   = static fn( string $field ): array => [
+			'field' => $field,
+			'old'   => SensitiveOption::REDACTED,
+			'new'   => SensitiveOption::REDACTED,
+		];
 
 		$recorder = $this->recorder();
 		$sensor   = new WooCommerceSettingsSensor( $recorder );
@@ -507,11 +513,23 @@ final class OptionSensorsTest extends TestCase {
 
 		$this->assertCount( 2, $recorder->calls );
 		$this->assertSame(
-			'{"enabled":"yes","secret_key":"[redacted]","test_secret_key":"[redacted]","webhook_secret":"[redacted]"}',
-			$recorder->calls[0][1]['changes'][0]['new']
+			[
+				[
+					'field' => 'enabled',
+					'old'   => 'no',
+					'new'   => 'yes',
+				],
+				$masked( 'secret_key' ),
+				$masked( 'test_secret_key' ),
+				$masked( 'webhook_secret' ),
+			],
+			$recorder->calls[0][1]['changes']
 		);
-		$this->assertNull( $recorder->calls[1][1]['changes'][0]['old'], 'A secret that is the only change is a plain changed flag.' );
-		$this->assertNull( $recorder->calls[1][1]['changes'][0]['new'] );
+		$this->assertSame(
+			[ $masked( 'secret_key' ), $masked( 'test_secret_key' ), $masked( 'webhook_secret' ) ],
+			$recorder->calls[1][1]['changes'],
+			'Secrets that are the only change are still told, without values.'
+		);
 		foreach ( $recorder->calls as $call ) {
 			$flat = serialize( $call[1] );
 			foreach ( [ 'sk_live_', 'sk_test_', 'whsec_', 'OLD', 'NEW' ] as $secret ) {
