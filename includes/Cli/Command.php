@@ -11,6 +11,7 @@ namespace HelloLog\Cli;
 
 use HelloLog\Plugin;
 use HelloLog\Queue\QueueRepository;
+use HelloLog\Sensors\SensorManager;
 use HelloLog\Settings\Options;
 use HelloLog\Transport\ApiClient;
 use WP_CLI;
@@ -283,6 +284,9 @@ final class Command {
 	private function update_sensor_state( string $key, bool $disable ): void {
 		if ( '' === $key ) {
 			WP_CLI::error( 'Sensor key required.' );
+		}
+		if ( $disable && in_array( $key, SensorManager::ALWAYS_ON, true ) ) {
+			WP_CLI::error( sprintf( 'Sensor %s logs changes to helloLOG itself and can not be turned off.', $key ) );
 		}
 		$filters         = (array) get_option( Options::KEY_SENSOR_FILTERS, [] );
 		$filters[ $key ] = $disable;
