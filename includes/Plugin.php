@@ -56,6 +56,7 @@ use HelloLog\Sensors\SensorManager;
 use HelloLog\Settings\Options;
 use HelloLog\Transport\ApiClient;
 use HelloLog\Transport\FinalDelivery;
+use HelloLog\Transport\NetworkDelivery;
 use HelloLog\Transport\PayloadBuilder;
 use HelloLog\Transport\QueueFlusher;
 use HelloLog\Transport\RetryPolicy;
@@ -224,16 +225,24 @@ final class Plugin {
 	 * under the key the request started with, see {@see FinalDelivery}: no job
 	 * will send the queue once the plugin stops. It is sent whenever a key is
 	 * stored, verified or not (a re-saved or failed key must not hide it);
-	 * nothing happens before boot or without a key.
+	 * nothing happens before boot or without a key. Deactivated for the whole
+	 * network, every other active site with a key sends its own as well, see
+	 * {@see NetworkDelivery}.
 	 *
 	 * @param bool $network_wide Whether helloLOG is deactivated on every site of the network.
 	 */
 	public function deliver_own_deactivation( bool $network_wide = false ): void {
-		if ( ! $this->booted || ! $this->options->is_configured() ) {
+		if ( ! $this->booted ) {
 			return;
 		}
 
-		$this->delivery->deliver( 5002, PluginsSensor::deactivation_fields( plugin_basename( HELLOLOG_FILE ), $network_wide ) );
+		$fields = PluginsSensor::deactivation_fields( plugin_basename( HELLOLOG_FILE ), $network_wide );
+		if ( $this->options->is_configured() ) {
+			$this->delivery->deliver( 5002, $fields );
+		}
+		if ( $network_wide && is_multisite() ) {
+			( new NetworkDelivery( $this->catalog, [ $this, 'rules' ] ) )->deliver( 5002, $fields );
+		}
 	}
 
 	private function load_textdomain(): void {
