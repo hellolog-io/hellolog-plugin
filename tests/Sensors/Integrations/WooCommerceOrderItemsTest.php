@@ -126,8 +126,9 @@ final class WooCommerceOrderItemsTest extends TestCase {
 		$sensor->on_created( 5, $order );
 		$sensor->on_item_added( 31, $this->line_item( 31, 5 ), 5 );
 		$sensor->on_item_added( 32, new FakeOrderItem( 32, 5, 'shipping', [ 'name' => 'Flat rate' ] ), 5 );
+		$sensor->flush_new_orders();
 
-		$this->assertSame( [ 9100, 9106, 9106 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ 9106, 9106, 9100 ], array_column( $recorder->calls, 0 ) );
 		$this->assertSame( [ 9100 ], array_column( $this->survive( $recorder ), 'code' ) );
 	}
 

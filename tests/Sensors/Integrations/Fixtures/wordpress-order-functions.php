@@ -100,6 +100,7 @@ namespace {
 			'priority'      => $priority,
 			'accepted_args' => $accepted_args,
 		];
+		OrderNoteState::$registered[]          = [ $hook_name, $callback, $priority, $accepted_args ];
 
 		return true;
 	}

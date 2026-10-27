@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Integrations;
 
 use Automattic\WooCommerce\Utilities\OrderUtil;
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\ChangeSet;
 use HelloLog\Sensors\AbstractSensor;
 use HelloLog\Sensors\StoreTargets;
@@ -22,7 +23,11 @@ defined( 'ABSPATH' ) || exit;
  * stores work identically — no direct `$wpdb` reads.
  *
  * Every event names its order as `target` (labelled with the order number)
- * and, while the order still exists, links to its edit screen. An order note
+ * and, while the order still exists, links to its edit screen. A new order
+ * (9100) is told when the request, or the Action Scheduler job that created
+ * it, ends, with the total, currency, payment method and channel it has
+ * then: WooCommerce announces an order made through its REST API or
+ * `wc_create_order()` before it calculates its totals. An order note
  * event also carries the text of the note and its kind, see
  * {@see self::note_type()}; a deleted note (9111) its text, unless the note
  * goes with the erasure of the customer's personal data.
@@ -181,6 +186,16 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 */
 	private array $added_items = [];
 
+	/**
+	 * New orders, held until the request (or the job that created them)
+	 * ends: `site:order id` => the site, how many Action Scheduler jobs were
+	 * running (see {@see ActionSchedulerContext::depth()}) and the creation
+	 * as the order told it when it was announced.
+	 *
+	 * @var array<string, array{blog: int, depth: int, order_id: int, fields: array<string, mixed>}>
+	 */
+	private array $created = [];
+
 	public function key(): string {
 		return 'woocommerce-order';
 	}
@@ -213,6 +228,14 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		// hook per item, then added again.
 		add_action( 'woocommerce_resume_order', [ $this, 'on_order_resumed' ], 10, 1 );
 		add_action( 'woocommerce_remove_order_items', [ $this, 'on_items_removing' ], 10, 2 );
+		// New orders, before the request's events are written at priority 1.
+		add_action( 'shutdown', [ $this, 'flush_new_orders' ], 0 );
+		// Those a later shutdown callback created, before the final write at
+		// PHP_INT_MAX.
+		add_action( 'shutdown', [ $this, 'flush_new_orders' ], PHP_INT_MAX - 1 );
+		// Those a job created, before its context ends at PHP_INT_MAX.
+		add_action( 'action_scheduler_after_execute', [ $this, 'flush_job_orders' ], PHP_INT_MAX - 1, 0 );
+		add_action( 'action_scheduler_failed_execution', [ $this, 'flush_job_orders' ], PHP_INT_MAX - 1, 0 );
 	}
 
 	/**
@@ -381,8 +404,14 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	}
 
 	/**
-	 * A new order: its total and currency go into `vars`, how it was placed
-	 * (`created_via`) and paid into `metadata`.
+	 * A new order. WooCommerce announces some orders before their totals are
+	 * calculated: the REST API, and `wc_create_order()` (which renewals,
+	 * point-of-sale and import tools use) save the order, announce it, and
+	 * only then add its items and calculate its totals. So the creation is
+	 * held until the request (or the Action Scheduler job that created it)
+	 * ends, and told then with what the order holds at that point, see
+	 * {@see self::flush_new_orders()}. What the order holds now is kept for
+	 * an order that can no longer be loaded then.
 	 *
 	 * @param mixed $order_id Order id.
 	 * @param mixed $order    Order object the hook passed, if any.
@@ -390,35 +419,41 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	public function on_created( $order_id, $order = null ): void {
 		try {
 			$order_id = self::id_of( $order_id );
-			$order    = $this->order_object( $order_id, $order );
-			$vars     = array_filter(
-				[
-					'total'    => self::read( $order, 'get_total' ),
-					'currency' => self::read( $order, 'get_currency' ),
-				],
-				'is_string'
-			);
-			$metadata = array_filter(
-				[
-					'created_via'    => self::read( $order, 'get_created_via' ),
-					'payment_method' => self::read( $order, 'get_payment_method' ),
-				],
-				'is_string'
-			);
+			$fields   = $this->creation_fields( $order_id, $this->order_object( $order_id, $order ) );
+			if ( $order_id <= 0 ) {
+				// Nothing to load again later.
+				$this->emit( 9100, $fields );
+				return;
+			}
 
-			$this->emit(
-				9100,
-				array_merge(
-					[
-						'id'       => $order_id,
-						'vars'     => $vars,
-						'metadata' => [ 'order_id' => $order_id ] + $metadata,
-					],
-					$this->order_fields( $order_id, $order )
-				)
-			);
+			$this->created[ self::state_key( $order_id ) ] = [
+				'blog'     => self::blog_id(),
+				'depth'    => ActionSchedulerContext::depth(),
+				'order_id' => $order_id,
+				'fields'   => $fields,
+			];
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9100, [ 'order_id' => self::id_of( $order_id ) ] );
+		}
+	}
+
+	/**
+	 * Tell the new orders still held when the request ends, each on the site
+	 * it was created on. Runs at shutdown before the request's events are
+	 * written, and again for orders a later shutdown callback created.
+	 */
+	public function flush_new_orders(): void {
+		$this->tell_created( 0 );
+	}
+
+	/**
+	 * Tell the new orders the Action Scheduler job that is ending created,
+	 * while the job is still the context. Nothing outside a job.
+	 */
+	public function flush_job_orders(): void {
+		$depth = ActionSchedulerContext::depth();
+		if ( $depth > 0 ) {
+			$this->tell_created( $depth );
 		}
 	}
 
@@ -1031,6 +1066,107 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	}
 
 	/**
+	 * The fields of a new order's event: its total and currency go into
+	 * `vars`, how it was placed (`created_via`) and paid into `metadata`,
+	 * with its target and link (see {@see self::order_fields()}).
+	 *
+	 * @param int         $order_id Order id.
+	 * @param object|null $order    The order, if it could be loaded.
+	 * @return array<string, mixed>
+	 */
+	private function creation_fields( int $order_id, ?object $order ): array {
+		$vars     = array_filter(
+			[
+				'total'    => self::read( $order, 'get_total' ),
+				'currency' => self::read( $order, 'get_currency' ),
+			],
+			'is_string'
+		);
+		$metadata = array_filter(
+			[
+				'created_via'    => self::read( $order, 'get_created_via' ),
+				'payment_method' => self::read( $order, 'get_payment_method' ),
+			],
+			'is_string'
+		);
+
+		return array_merge(
+			[
+				'id'       => $order_id,
+				'vars'     => $vars,
+				'metadata' => [ 'order_id' => $order_id ] + $metadata,
+			],
+			$this->order_fields( $order_id, $order )
+		);
+	}
+
+	/**
+	 * Tell the new orders held from at least `$depth` running jobs on (0: all
+	 * of them), each on its own site, and forget them; the rest stays held.
+	 *
+	 * @param int $depth Jobs running when the order was created, at least.
+	 */
+	private function tell_created( int $depth ): void {
+		foreach ( $this->created as $key => $held ) {
+			if ( $held['depth'] < $depth ) {
+				continue;
+			}
+			unset( $this->created[ $key ] );
+
+			try {
+				$this->on_site( $held['blog'], fn() => $this->emit( 9100, $this->final_creation_fields( $held['order_id'], $held['fields'] ) ) );
+			} catch ( Throwable $e ) {
+				$this->report_failure( $e, 9100, [ 'order_id' => $held['order_id'] ] );
+			}
+		}
+	}
+
+	/**
+	 * The fields of a new order's event read from the order as it is now. An
+	 * order that can no longer be loaded is told as it was announced, with
+	 * nothing left to open; one that fails to be read, as it was announced.
+	 *
+	 * @param int                  $order_id Order id.
+	 * @param array<string, mixed> $captured The fields read when the order was announced.
+	 * @return array<string, mixed>
+	 */
+	private function final_creation_fields( int $order_id, array $captured ): array {
+		try {
+			$order = $this->order_object( $order_id, null );
+			if ( null === $order ) {
+				unset( $captured['links'] );
+				return $captured;
+			}
+
+			return $this->creation_fields( $order_id, $order );
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9100, [ 'order_id' => $order_id ] );
+			return $captured;
+		}
+	}
+
+	/**
+	 * Run something on a site of the network, and come back.
+	 *
+	 * @param int      $blog_id Site id; 0 for the current one.
+	 * @param callable $work    What to run.
+	 */
+	private function on_site( int $blog_id, callable $work ): void {
+		$switch = $blog_id > 0 && self::blog_id() !== $blog_id && function_exists( 'switch_to_blog' );
+		if ( $switch ) {
+			switch_to_blog( $blog_id );
+		}
+
+		try {
+			$work();
+		} finally {
+			if ( $switch ) {
+				restore_current_blog();
+			}
+		}
+	}
+
+	/**
 	 * Dispatch the restore of an order from the trash.
 	 *
 	 * @param int                  $order_id        Order id.
@@ -1460,9 +1596,14 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * @param int $order_id Order id.
 	 */
 	private static function state_key( int $order_id ): string {
-		$site = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
+		return self::blog_id() . ':' . $order_id;
+	}
 
-		return $site . ':' . $order_id;
+	/**
+	 * The current site; 0 outside WordPress.
+	 */
+	private static function blog_id(): int {
+		return function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
 	}
 
 	/**

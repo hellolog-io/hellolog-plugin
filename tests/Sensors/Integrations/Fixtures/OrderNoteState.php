@@ -82,14 +82,31 @@ final class OrderNoteState {
 	public static array $translations = [];
 
 	/**
-	 * Hook name => how it was registered with `add_action()`.
+	 * Hook name => how it was registered with `add_action()`; the last
+	 * registration of a hook registered twice.
 	 *
 	 * @var array<string, array{callback: mixed, priority: int, accepted_args: int}>
 	 */
 	public static array $actions = [];
 
+	/**
+	 * Every `add_action()` call, in order, as `[ hook name, callback, priority,
+	 * accepted arguments ]`.
+	 *
+	 * @var array<int, array{0: string, 1: mixed, 2: int, 3: int}>
+	 */
+	public static array $registered = [];
+
 	/** The site `get_current_blog_id()` answers (`wordpress-site-functions.php`). */
 	public static int $blog_id = 1;
+
+	/**
+	 * The sites `switch_to_blog()` left, the last one last
+	 * (`wordpress-site-functions.php`).
+	 *
+	 * @var array<int, int>
+	 */
+	public static array $switched = [];
 
 	/**
 	 * Post id => the post type `get_post_type()` answers

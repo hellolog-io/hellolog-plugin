@@ -10,6 +10,7 @@ declare(strict_types=1);
 
 namespace HelloLog\Tests\Sensors\Integrations;
 
+use HelloLog\Events\ActionSchedulerContext;
 use HelloLog\Events\EventBuilder;
 use HelloLog\Events\EventCatalog;
 use HelloLog\Events\EventDispatcher;
@@ -19,6 +20,7 @@ use HelloLog\Events\SuppressionRules;
 use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\ContentSensor;
 use HelloLog\Sensors\Integrations\WooCommerceOrderSensor;
+use HelloLog\Tests\Sensors\Core\Fixtures\BuildingRecorder;
 use HelloLog\Tests\Sensors\Integrations\Fixtures\FakeOrder;
 use HelloLog\Tests\Sensors\Integrations\Fixtures\OrderNoteState;
 use PHPUnit\Framework\TestCase;
@@ -165,9 +167,227 @@ final class WooCommerceOrderSensorTest extends TestCase {
 		$sensor   = new WooCommerceOrderSensor( $recorder );
 		$sensor->on_created( 5, $this->order( 5 ) );
 		$sensor->on_before_save( $this->order( 5, self::stored(), [ 'billing' => [ 'city' => 'Szeged' ] ] ) );
+		$sensor->flush_new_orders();
 
-		$this->assertSame( [ 9100, 9105 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( [ 9105, 9100 ], array_column( $recorder->calls, 0 ) );
 		$this->assertSame( [ 9100 ], array_column( $this->survive( $recorder ), 'code' ) );
+	}
+
+	/**
+	 * The REST API (and `wc_create_order()`, which renewals, point-of-sale and
+	 * import tools use) announces a new order before it calculates its
+	 * totals, then saves it again: the creation is told once, when the
+	 * request ends, with the total the order has then.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_order_announced_before_its_totals_tells_its_final_total(): void {
+		$this->stubs();
+		$details = [
+			'total'          => '0',
+			'currency'       => 'EUR',
+			'created_via'    => 'rest-api',
+			'payment_method' => 'bacs',
+		];
+		$stored  = self::stored(
+			[
+				'status' => '',
+				'total'  => '0',
+			]
+		);
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_created( 5, $this->order( 5, $stored, [], $details ) );
+		// The save of the totals: the order is still being created.
+		$sensor->on_before_save( $this->order( 5, $stored, [ 'total' => '59.00' ], $details ) );
+		$this->assertSame( [], $recorder->calls, 'Nothing is told before the request ends.' );
+
+		OrderNoteState::$orders[5] = $this->order( 5, [], [], array_merge( $details, [ 'total' => '59.00' ] ) );
+		$sensor->flush_new_orders();
+		$sensor->flush_new_orders();
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( [ 9100 ], array_column( $survivors, 'code' ) );
+		$this->assertSame(
+			[
+				'id'       => '5',
+				'total'    => '59.00',
+				'currency' => 'EUR',
+			],
+			$survivors[0]['vars']
+		);
+		$this->assertSame(
+			[
+				'order_id'       => 5,
+				'created_via'    => 'rest-api',
+				'payment_method' => 'bacs',
+			],
+			$survivors[0]['metadata']
+		);
+		$this->assertSame( WooCommerceOrderSensor::order_target( 5, 'A-17' ), $survivors[0]['target'] );
+		$this->assertCount( 1, $recorder->calls, 'Told once.' );
+	}
+
+	/**
+	 * An Action Scheduler job that creates an order (a subscription renewal)
+	 * adds its items and calculates its totals after announcing it: the
+	 * creation is told when the job ends, while the job is still the
+	 * context, with the total the order has then, and not again when the
+	 * request ends.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_order_created_by_a_job_is_told_when_the_job_ends_with_its_final_total(): void {
+		$this->stubs();
+		$details  = [
+			'total'          => '0',
+			'currency'       => 'EUR',
+			'created_via'    => 'subscription',
+			'payment_method' => 'stripe',
+		];
+		$recorder = new BuildingRecorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+
+		ActionSchedulerContext::begin( 41 );
+		$sensor->on_created( 5, $this->order( 5, [], [], $details ) );
+		$this->assertSame( [], $recorder->payloads );
+		OrderNoteState::$orders[5] = $this->order( 5, [], [], array_merge( $details, [ 'total' => '19.99' ] ) );
+		$sensor->flush_job_orders();
+		ActionSchedulerContext::end( 41 );
+
+		$this->assertSame( [ 9100 ], array_column( $recorder->payloads, 'code' ) );
+		$this->assertSame( 'action-scheduler', $recorder->payloads[0]['source'] );
+		$this->assertSame( '19.99', $recorder->payloads[0]['vars']['total'] );
+		$this->assertSame( 'subscription', $recorder->payloads[0]['metadata']['created_via'] );
+
+		$sensor->flush_new_orders();
+		$this->assertCount( 1, $recorder->payloads, 'Not again when the request ends.' );
+	}
+
+	/**
+	 * An order the request created before a job runs inside it is the
+	 * request's: the job's end does not tell it, the request's end does.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_order_created_by_the_request_is_not_told_by_a_job_it_runs(): void {
+		$this->stubs();
+		OrderNoteState::$orders[5] = $this->order( 5 );
+		OrderNoteState::$orders[6] = $this->order( 6 );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_created( 5, $this->order( 5 ) );
+		ActionSchedulerContext::begin( 41 );
+		$sensor->on_created( 6, $this->order( 6 ) );
+		$sensor->flush_job_orders();
+		ActionSchedulerContext::end( 41 );
+		$this->assertSame( [ 6 ], array_map( static fn( array $call ): int => $call[1]['id'], $recorder->calls ) );
+
+		$sensor->flush_job_orders();
+		$sensor->flush_new_orders();
+		$this->assertSame( [ 6, 5 ], array_map( static fn( array $call ): int => $call[1]['id'], $recorder->calls ) );
+	}
+
+	/**
+	 * An order that can no longer be loaded when the request ends (a checkout
+	 * that failed and was cleaned up) is told as it was announced, with
+	 * nothing left to open.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_order_gone_when_the_request_ends_is_told_as_it_was_announced(): void {
+		$this->stubs();
+		$details = [
+			'total'       => '25.00',
+			'currency'    => 'EUR',
+			'created_via' => 'checkout',
+		];
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_created( 5, $this->order( 5, [], [], $details ) );
+		$sensor->flush_new_orders();
+
+		$this->assertSame( [ 9100 ], array_column( $recorder->calls, 0 ) );
+		$fields = $recorder->calls[0][1];
+		$this->assertSame(
+			[
+				'total'    => '25.00',
+				'currency' => 'EUR',
+			],
+			$fields['vars']
+		);
+		$this->assertSame( 'checkout', $fields['metadata']['created_via'] );
+		$this->assertSame( WooCommerceOrderSensor::order_target( 5, 'A-17' ), $fields['target'] );
+		$this->assertArrayNotHasKey( 'links', $fields );
+	}
+
+	/**
+	 * A new order is told on the site it was created on, and the same id on
+	 * another site is another order.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_new_order_is_told_on_the_site_it_was_created_on(): void {
+		$this->stubs();
+		$recorder = new class() implements EventDispatcher {
+
+			/** @var array<int, array{0: int, 1: int}> */
+			public array $calls = [];
+
+			public function dispatch( int $code, array $fields = [] ): void {
+				$this->calls[] = [ $fields['id'], OrderNoteState::$blog_id ];
+			}
+		};
+
+		$sensor                  = new WooCommerceOrderSensor( $recorder );
+		OrderNoteState::$blog_id = 2;
+		$sensor->on_created( 5, $this->order( 5 ) );
+		OrderNoteState::$blog_id = 1;
+		$sensor->on_created( 5, $this->order( 5 ) );
+		$sensor->flush_new_orders();
+
+		$this->assertSame( [ [ 5, 2 ], [ 5, 1 ] ], $recorder->calls );
+		$this->assertSame( 1, OrderNoteState::$blog_id );
+	}
+
+	/**
+	 * Reading the order again when the request ends can fail: it is
+	 * reported, never thrown, the order is told as it was announced, and
+	 * the other new orders are told too.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_new_order_that_fails_to_be_read_again_never_breaks_the_end_of_the_request(): void {
+		$this->stubs();
+		OrderNoteState::$orders[5] = new class( 5 ) extends FakeOrder {
+			public function get_total(): string {
+				throw new \RuntimeException( 'A filter broke.' );
+			}
+		};
+		OrderNoteState::$orders[6] = $this->order( 6, [], [], [ 'total' => '30.00' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_created( 5, $this->order( 5, [], [], [ 'total' => '25.00' ] ) );
+		$sensor->on_created( 6, $this->order( 6 ) );
+		$sensor->flush_new_orders();
+
+		$this->assertSame( [ 5, 6 ], array_map( static fn( array $call ): int => $call[1]['id'], $recorder->calls ) );
+		$this->assertSame( [ 'total' => '25.00' ], $recorder->calls[0][1]['vars'] );
+		$this->assertSame( [ 'total' => '30.00' ], $recorder->calls[1][1]['vars'] );
+		$this->assertCount( 1, OrderNoteState::$fired );
+		$this->assertSame( 'hellolog_dispatch_failed', OrderNoteState::$fired[0][0] );
+		$this->assertSame( 9100, OrderNoteState::$fired[0][1][1] );
+		$this->assertSame( [ 'order_id' => 5 ], OrderNoteState::$fired[0][1][2] );
 	}
 
 	/**
@@ -581,10 +801,16 @@ final class WooCommerceOrderSensorTest extends TestCase {
 			]
 		);
 
+		// A checkout saves the order with its totals before announcing it.
+		OrderNoteState::$orders[5] = $order;
+
 		$recorder = $this->recorder();
-		( new WooCommerceOrderSensor( $recorder ) )->on_created( 5, $order );
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_created( 5, $order );
+		$sensor->flush_new_orders();
 
 		$payloads = $this->build( $recorder );
+		$this->assertCount( 1, $payloads );
 		$this->assertSame(
 			[
 				'id'       => '5',
@@ -614,7 +840,9 @@ final class WooCommerceOrderSensorTest extends TestCase {
 		$this->stubs();
 
 		$recorder = $this->recorder();
-		( new WooCommerceOrderSensor( $recorder ) )->on_created( 5, $this->order( 5 ) );
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_created( 5, $this->order( 5 ) );
+		$sensor->flush_new_orders();
 
 		$payloads = $this->build( $recorder );
 		$this->assertSame( [ 'id' => '5' ], $payloads[0]['vars'] );
@@ -944,8 +1172,12 @@ final class WooCommerceOrderSensorTest extends TestCase {
 			}
 		};
 
+		OrderNoteState::$orders[5] = $order;
+
 		$recorder = $this->recorder();
-		( new WooCommerceOrderSensor( $recorder ) )->on_created( 5, $order );
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_created( 5, $order );
+		$sensor->flush_new_orders();
 
 		$json = (string) json_encode( $this->build( $recorder )[0] );
 		foreach ( [ 'anna@example', '36301234567', 'Anna', 'Kovacs', 'Fo utca', 'Budapest' ] as $value ) {
@@ -1035,12 +1267,35 @@ final class WooCommerceOrderSensorTest extends TestCase {
 				'woocommerce_privacy_remove_order_personal_data' => [ 'on_privacy_erased', 1 ],
 				'woocommerce_resume_order'             => [ 'on_order_resumed', 1 ],
 				'woocommerce_remove_order_items'       => [ 'on_items_removing', 2 ],
+				'shutdown'                             => [ 'flush_new_orders', 1 ],
+				'action_scheduler_after_execute'       => [ 'flush_job_orders', 0 ],
+				'action_scheduler_failed_execution'    => [ 'flush_job_orders', 0 ],
 			],
 			array_map( static fn( array $action ): array => [ $action['callback'][1], $action['accepted_args'] ], OrderNoteState::$actions )
 		);
 		foreach ( OrderNoteState::$actions as $hook => $action ) {
 			$this->assertSame( $sensor, $action['callback'][0], $hook );
 		}
+
+		// New orders are told before the request's events are written (at
+		// priority 1), again for those a later shutdown callback creates
+		// (before the final write at PHP_INT_MAX), and those of a job before
+		// its context ends (at PHP_INT_MAX).
+		$late = array_values(
+			array_filter(
+				OrderNoteState::$registered,
+				static fn( array $call ): bool => in_array( $call[0], [ 'shutdown', 'action_scheduler_after_execute', 'action_scheduler_failed_execution' ], true )
+			)
+		);
+		$this->assertSame(
+			[
+				[ 'shutdown', 0 ],
+				[ 'shutdown', PHP_INT_MAX - 1 ],
+				[ 'action_scheduler_after_execute', PHP_INT_MAX - 1 ],
+				[ 'action_scheduler_failed_execution', PHP_INT_MAX - 1 ],
+			],
+			array_map( static fn( array $call ): array => [ $call[0], $call[2] ], $late )
+		);
 	}
 
 	/**
@@ -1095,6 +1350,7 @@ final class WooCommerceOrderSensorTest extends TestCase {
 		$sensor   = new WooCommerceOrderSensor( $recorder );
 		$order    = $this->order( 5, self::stored(), [ 'total' => '30.00' ] );
 		$sensor->on_created( '5', $order );
+		$sensor->flush_new_orders();
 		$sensor->on_status_changed( '5', 'pending', 'processing', $order );
 		$sensor->on_trashed( '5' );
 		$sensor->on_untrashed( '5', 'wc-processing' );
@@ -1186,8 +1442,10 @@ final class WooCommerceOrderSensorTest extends TestCase {
 		OrderNoteState::$orders       = [];
 		OrderNoteState::$translations = [];
 		OrderNoteState::$actions      = [];
+		OrderNoteState::$registered   = [];
 		OrderNoteState::$statuses     = OrderNoteState::DEFAULT_STATUSES;
 		OrderNoteState::$blog_id      = 1;
+		OrderNoteState::$switched     = [];
 		OrderNoteState::$post_types   = [];
 		OrderNoteState::$fired        = [];
 

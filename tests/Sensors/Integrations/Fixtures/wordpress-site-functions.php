@@ -1,7 +1,7 @@
 <?php
 /**
- * Stand-ins for the WordPress functions the order sensor calls to tell the
- * site, the type of a post and to report its own failures.
+ * Stand-ins for the WordPress functions the order sensor calls to tell and
+ * switch the site, the type of a post and to report its own failures.
  *
  * Loaded only by tests that run in a separate process: defining these makes
  * `function_exists()` true for the rest of the process.
@@ -17,6 +17,25 @@ namespace {
 
 	function get_current_blog_id(): int {
 		return OrderNoteState::$blog_id;
+	}
+
+	/**
+	 * @param int $blog_id Site to switch to.
+	 */
+	function switch_to_blog( int $blog_id ): bool {
+		OrderNoteState::$switched[] = OrderNoteState::$blog_id;
+		OrderNoteState::$blog_id    = $blog_id;
+
+		return true;
+	}
+
+	function restore_current_blog(): bool {
+		if ( [] === OrderNoteState::$switched ) {
+			return false;
+		}
+		OrderNoteState::$blog_id = (int) array_pop( OrderNoteState::$switched );
+
+		return true;
 	}
 
 	/**

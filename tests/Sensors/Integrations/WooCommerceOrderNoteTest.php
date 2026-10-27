@@ -740,8 +740,12 @@ final class WooCommerceOrderNoteTest extends TestCase {
 	public function test_a_new_order_has_a_target_and_an_edit_link(): void {
 		$this->stubs( true );
 
+		OrderNoteState::$orders[5] = $this->order( 5, 'A-17' );
+
 		$recorder = $this->recorder();
-		( new WooCommerceOrderSensor( $recorder ) )->on_created( 5, $this->order( 5, 'A-17' ) );
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_created( 5, $this->order( 5, 'A-17' ) );
+		$sensor->flush_new_orders();
 
 		$this->assertSame( 9100, $recorder->calls[0][0] );
 		$fields = $recorder->calls[0][1];
@@ -762,7 +766,9 @@ final class WooCommerceOrderNoteTest extends TestCase {
 		OrderNoteState::$orders[5] = new FakeOrder( 5, 'A-17', null, [], [], $details );
 
 		$recorder = $this->recorder();
-		( new WooCommerceOrderSensor( $recorder ) )->on_created( 5 );
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_created( 5 );
+		$sensor->flush_new_orders();
 
 		$fields = $recorder->calls[0][1];
 		$this->assertSame( WooCommerceOrderSensor::order_target( 5, 'A-17' ), $fields['target'] );
