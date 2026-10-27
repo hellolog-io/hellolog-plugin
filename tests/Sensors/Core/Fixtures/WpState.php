@@ -10,8 +10,8 @@ declare(strict_types=1);
 namespace HelloLog\Tests\Sensors\Core\Fixtures;
 
 /**
- * Shared state of `wordpress-content-functions.php` and
- * `wordpress-user-functions.php`. Only ever used inside a test that runs in
+ * Shared state of `wordpress-content-functions.php`,
+ * `wordpress-user-functions.php` and `wordpress-option-functions.php`. Only ever used inside a test that runs in
  * its own process, together with those stubs.
  */
 final class WpState {
@@ -127,6 +127,20 @@ final class WpState {
 
 	/** Whether `get_the_terms()` and `get_term_by()` fail the way a broken filter on them would. */
 	public static bool $term_reads_throw = false;
+
+	/**
+	 * Site id => option name => the value `get_option()` finds. An option
+	 * that is not listed does not exist.
+	 *
+	 * @var array<int, array<string, mixed>>
+	 */
+	public static array $options = [];
+
+	/** Whether `get_option()` fails the way a broken filter on it would. */
+	public static bool $option_reads_throw = false;
+
+	/** What `wp_installing()` answers: whether WordPress is setting up a site. */
+	public static bool $installing = false;
 
 	/**
 	 * Ids of the sticky posts.

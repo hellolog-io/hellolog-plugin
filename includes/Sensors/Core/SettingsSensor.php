@@ -44,8 +44,12 @@ defined( 'ABSPATH' ) || exit;
  * telling which roles came or went and which capabilities each role gained or
  * lost; nothing when they ended where they started. A write made later, by
  * another shutdown callback, goes out on its own just before the final flush.
- * The roles a new site of a network is set up with (its roles option is
- * created in the request) are not an edit and are not logged.
+ * A roles option that is created is compared with no roles (every role in it
+ * is reported), and one that is deleted with no roles left (every role it held
+ * is reported removed); a delete followed by a write in the same request is
+ * one edit, from the roles before the delete. Only the roles WordPress sets a
+ * site up with, while `wp_installing()` is on (a new site of a network, an
+ * install), are not an edit and are not logged.
  */
 final class SettingsSensor extends AbstractSensor {
 
@@ -102,10 +106,10 @@ final class SettingsSensor extends AbstractSensor {
 
 	/**
 	 * The roles option as it was before its first write of the request and
-	 * after its latest, per site. `old` is null when the option was created
-	 * in the request.
+	 * after its latest, per site, and whether WordPress was setting the site
+	 * up at the first write. A missing option holds no roles.
 	 *
-	 * @var array<int, array{option: string, old: ?array<int|string, mixed>, new: array<int|string, mixed>}>
+	 * @var array<int, array{option: string, installing: bool, old: array<int|string, mixed>, new: array<int|string, mixed>}>
 	 */
 	private array $roles = [];
 
@@ -116,6 +120,7 @@ final class SettingsSensor extends AbstractSensor {
 	public function boot(): void {
 		add_action( 'updated_option', [ $this, 'on_update' ], 10, 3 );
 		add_action( 'added_option', [ $this, 'on_add' ], 10, 2 );
+		add_action( 'delete_option', [ $this, 'on_delete' ], 10, 1 );
 		// Before the request's events are written, at priority 1.
 		add_action( 'shutdown', [ $this, 'emit_role_changes' ], 0 );
 		// Role writes made by later shutdown callbacks, before the final flush
@@ -133,7 +138,7 @@ final class SettingsSensor extends AbstractSensor {
 			return;
 		}
 
-		$this->note_roles( $option, true, $old_value, $value );
+		$this->note_roles( $option, $old_value, $value );
 	}
 
 	/**
@@ -147,7 +152,29 @@ final class SettingsSensor extends AbstractSensor {
 			return;
 		}
 
-		$this->note_roles( $option, false, null, $value );
+		// A roles option that did not exist held no roles.
+		$this->note_roles( $option, [], $value );
+	}
+
+	/**
+	 * An option is about to be deleted. For the roles option of the current
+	 * site that leaves no roles; the roles it holds are still readable here,
+	 * the row is removed after this hook.
+	 */
+	public function on_delete( string $option ): void {
+		try {
+			if ( ! self::is_current_roles_option( $option ) ) {
+				return;
+			}
+
+			$blog_id = self::blog_id();
+			if ( ! isset( $this->roles[ $blog_id ] ) ) {
+				$this->start_note( $blog_id, $option, function_exists( 'get_option' ) ? get_option( $option ) : [] );
+			}
+			$this->roles[ $blog_id ]['new'] = [];
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 6005, [ 'option' => $option ] );
+		}
 	}
 
 	/**
@@ -161,8 +188,8 @@ final class SettingsSensor extends AbstractSensor {
 
 		foreach ( $pending as $blog_id => $note ) {
 			try {
-				if ( null === $note['old'] ) {
-					continue; // Created in this request: the roles a new site starts with.
+				if ( $note['installing'] ) {
+					continue; // The roles WordPress sets the site up with.
 				}
 				$changes = self::roles_changes( $note['old'], $note['new'] );
 				if ( [] === $changes ) {
@@ -298,30 +325,54 @@ final class SettingsSensor extends AbstractSensor {
 	 * Note a write to the roles option of the current site: the roles before
 	 * it, if it is the first of the request, and the roles after it.
 	 *
-	 * @param string $option  Option name.
-	 * @param bool   $existed Whether the option existed before the write.
-	 * @param mixed  $old     Value before the write.
-	 * @param mixed  $value   Value after the write.
+	 * @param string $option Option name.
+	 * @param mixed  $old    Value before the write.
+	 * @param mixed  $value  Value after the write.
 	 */
-	private function note_roles( string $option, bool $existed, $old, $value ): void {
+	private function note_roles( string $option, $old, $value ): void {
 		try {
-			$prefix = self::table_prefix();
-			if ( null === $prefix || ! self::is_roles_option( $option, $prefix ) ) {
+			if ( ! self::is_current_roles_option( $option ) ) {
 				return;
 			}
 
 			$blog_id = self::blog_id();
 			if ( ! isset( $this->roles[ $blog_id ] ) ) {
-				$this->roles[ $blog_id ] = [
-					'option' => $option,
-					'old'    => $existed ? self::role_map( $old ) : null,
-					'new'    => [],
-				];
+				$this->start_note( $blog_id, $option, $old );
 			}
 			$this->roles[ $blog_id ]['new'] = self::role_map( $value );
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 6005, [ 'option' => $option ] );
 		}
+	}
+
+	/**
+	 * Start the note of a site's roles at the first write of the request:
+	 * the roles before it, and whether WordPress is setting the site up.
+	 *
+	 * @param int    $blog_id Site id.
+	 * @param string $option  Option name.
+	 * @param mixed  $old     Value of the roles option before the write.
+	 */
+	private function start_note( int $blog_id, string $option, $old ): void {
+		$roles = self::role_map( $old );
+
+		$this->roles[ $blog_id ] = [
+			'option'     => $option,
+			'installing' => function_exists( 'wp_installing' ) && wp_installing(),
+			'old'        => $roles,
+			'new'        => $roles,
+		];
+	}
+
+	/**
+	 * Whether an option is the roles option of the current site.
+	 *
+	 * @param string $option Option name.
+	 */
+	private static function is_current_roles_option( string $option ): bool {
+		$prefix = self::table_prefix();
+
+		return null !== $prefix && self::is_roles_option( $option, $prefix );
 	}
 
 	private function code_for( string $option ): int {

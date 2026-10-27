@@ -17,6 +17,7 @@ use HelloLog\Events\RequestSource;
 use HelloLog\Sensors\CatalogSeeder;
 use HelloLog\Sensors\Core\SettingsSensor;
 use HelloLog\Sensors\SensitiveOption;
+use HelloLog\Tests\Events\Fixtures\WpCalls;
 use HelloLog\Tests\Sensors\Core\Fixtures\WpState;
 use HelloLog\Tests\Sensors\Fixtures\RequestState;
 use PHPUnit\Framework\TestCase;
@@ -683,28 +684,220 @@ final class SettingsSensorTest extends TestCase {
 	}
 
 	/**
-	 * Setting up a new site of a network creates its roles option and then
-	 * writes it role by role: those are the roles the site starts with, not
-	 * an edit of roles it had.
+	 * WordPress sets up a site (a new site of a network, an install) with
+	 * `wp_installing()` on: the roles option it creates and fills there holds
+	 * the roles the site starts with, not an edit. Whether it was installing
+	 * is taken at the first write, so it is still known at shutdown, when it
+	 * no longer is.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
 	 */
-	public function test_the_roles_a_new_site_is_set_up_with_log_nothing(): void {
+	public function test_the_roles_a_site_is_set_up_with_log_nothing(): void {
 		$this->on_site_with_prefix( 'wp_' );
 		$recorder = $this->recorder();
 		$sensor   = new SettingsSensor( $recorder );
 
-		$first = [ 'administrator' => self::ROLES['administrator'] ];
+		$first               = [ 'administrator' => self::ROLES['administrator'] ];
+		WpState::$installing = true;
 		switch_to_blog( 5 );
 		$GLOBALS['wpdb']->prefix = 'wp_5_';
 		$sensor->on_add( 'wp_5_user_roles', $first );
 		$sensor->on_update( 'wp_5_user_roles', $first, self::ROLES );
 		restore_current_blog();
 		$GLOBALS['wpdb']->prefix = 'wp_';
+		WpState::$installing     = false;
 		$sensor->emit_role_changes();
 
 		$this->assertSame( [], $recorder->calls );
+	}
+
+	/**
+	 * Outside an install, a roles option that is created (it was missing,
+	 * deleted earlier, or added over a row the cache did not know about)
+	 * is compared with no roles at all: every role in it is reported.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_roles_option_created_outside_an_install_reports_every_role(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		$sensor->on_add( 'wp_user_roles', self::ROLES );
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [ 6005 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame(
+			[ 'role:administrator', 'caps:administrator', 'role:editor', 'caps:editor', 'role:subscriber', 'caps:subscriber' ],
+			array_column( $recorder->calls[0][1]['changes'], 'field' )
+		);
+		$this->assertSame( [ null, null, null, null, null, null ], array_column( $recorder->calls[0][1]['changes'], 'old' ) );
+	}
+
+	/**
+	 * `delete_option` fires before the row is removed, so the roles are
+	 * still readable: a site left without its roles option has every role
+	 * removed.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_deleting_the_roles_option_reports_every_role_removed(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		WpState::$options[1]['wp_user_roles'] = self::ROLES;
+		$recorder                             = $this->recorder();
+		$sensor                               = new SettingsSensor( $recorder );
+
+		$sensor->on_delete( 'wp_user_roles' );
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [ 6005 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame(
+			[
+				[
+					'field' => 'role:administrator',
+					'old'   => 'present',
+					'new'   => null,
+				],
+				[
+					'field' => 'caps:administrator',
+					'old'   => 'manage_options, read',
+					'new'   => null,
+				],
+				[
+					'field' => 'role:editor',
+					'old'   => 'present',
+					'new'   => null,
+				],
+				[
+					'field' => 'caps:editor',
+					'old'   => 'edit_others_posts, read',
+					'new'   => null,
+				],
+				[
+					'field' => 'role:subscriber',
+					'old'   => 'present',
+					'new'   => null,
+				],
+				[
+					'field' => 'caps:subscriber',
+					'old'   => 'level_0, read',
+					'new'   => null,
+				],
+			],
+			$recorder->calls[0][1]['changes']
+		);
+		$this->assertSame( 'wp_user_roles', $recorder->calls[0][1]['target']['id'] );
+	}
+
+	/**
+	 * Deleting the roles option and writing it again in one request (the
+	 * write falls back to adding it) is one edit, from the roles before the
+	 * delete to the roles written: a capability slipped in that way shows.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_roles_deleted_and_written_again_are_one_event_with_the_escalation(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		WpState::$options[1]['wp_user_roles'] = self::ROLES;
+		$recorder                             = $this->recorder();
+		$sensor                               = new SettingsSensor( $recorder );
+
+		$escalated = self::ROLES;
+		$escalated['subscriber']['capabilities']['manage_options'] = true;
+		$sensor->on_delete( 'wp_user_roles' );
+		$sensor->on_add( 'wp_user_roles', $escalated );
+		$sensor->emit_role_changes();
+
+		$this->assertCount( 1, $recorder->calls );
+		$this->assertSame( 6005, $recorder->calls[0][0] );
+		$this->assertSame(
+			[
+				[
+					'field' => 'caps:subscriber',
+					'old'   => null,
+					'new'   => 'manage_options',
+				],
+			],
+			$recorder->calls[0][1]['changes']
+		);
+	}
+
+	/**
+	 * An update, a delete and an add in one request still start from the
+	 * roles before the update.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_update_then_a_delete_and_an_add_keep_the_first_old_roles(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		$recorder = $this->recorder();
+		$sensor   = new SettingsSensor( $recorder );
+
+		$step1 = self::ROLES;
+		$step1['editor']['capabilities']['list_users'] = true;
+		$step2 = self::ROLES;
+		unset( $step2['subscriber'] );
+
+		$sensor->on_update( 'wp_user_roles', self::ROLES, $step1 );
+		WpState::$options[1]['wp_user_roles'] = $step1;
+		$sensor->on_delete( 'wp_user_roles' );
+		$sensor->on_add( 'wp_user_roles', $step2 );
+		$sensor->emit_role_changes();
+
+		$this->assertCount( 1, $recorder->calls );
+		$this->assertSame( [ 'role:subscriber', 'caps:subscriber' ], array_column( $recorder->calls[0][1]['changes'], 'field' ) );
+	}
+
+	/**
+	 * Any other option, the roles option of another site included, is not
+	 * even read when it is deleted (a read here would fail).
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_deleting_another_option_reads_nothing_and_logs_nothing(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		require_once __DIR__ . '/../../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../../Events/Fixtures/wordpress-functions.php';
+		WpState::$option_reads_throw = true;
+		$recorder                    = $this->recorder();
+		$sensor                      = new SettingsSensor( $recorder );
+
+		$sensor->on_delete( 'blogname' );
+		$sensor->on_delete( 'wp_2_user_roles' );
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertSame( [], WpCalls::$actions );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_roles_that_cannot_be_read_on_delete_are_reported_and_never_thrown(): void {
+		$this->on_site_with_prefix( 'wp_' );
+		require_once __DIR__ . '/../../Events/Fixtures/WpCalls.php';
+		require_once __DIR__ . '/../../Events/Fixtures/wordpress-functions.php';
+		WpState::$option_reads_throw = true;
+		$recorder                    = $this->recorder();
+		$sensor                      = new SettingsSensor( $recorder );
+
+		$sensor->on_delete( 'wp_user_roles' );
+		$sensor->emit_role_changes();
+
+		$this->assertSame( [], $recorder->calls );
+		$this->assertCount( 1, WpCalls::$actions );
+		[ $hook, $args ] = WpCalls::$actions[0];
+		$this->assertSame( 'hellolog_dispatch_failed', $hook );
+		$this->assertSame( 'unreadable', $args[0]->getMessage() );
+		$this->assertSame( 6005, $args[1] );
+		$this->assertSame( [ 'option' => 'wp_user_roles' ], $args[2] );
 	}
 
 	/**
@@ -718,6 +911,7 @@ final class SettingsSensorTest extends TestCase {
 
 		$this->assertSame( 3, WpState::$actions['updated_option']['accepted_args'] );
 		$this->assertSame( 2, WpState::$actions['added_option']['accepted_args'] );
+		$this->assertSame( 1, WpState::$actions['delete_option']['accepted_args'] );
 
 		$shutdown = WpState::$callbacks['shutdown'];
 		// Before the buffer is written at priority 1, and again before the
@@ -755,13 +949,14 @@ final class SettingsSensorTest extends TestCase {
 
 	/**
 	 * A site of a network whose tables start with the given prefix: the
-	 * site stand-ins are loaded and `$wpdb` names the prefix. Only call this
-	 * from a test of its own process.
+	 * site and option stand-ins are loaded and `$wpdb` names the prefix.
+	 * Only call this from a test of its own process.
 	 *
 	 * @param string $prefix Table prefix of the current site.
 	 */
 	private function on_site_with_prefix( string $prefix ): void {
 		require_once __DIR__ . '/Fixtures/wordpress-user-functions.php';
+		require_once __DIR__ . '/Fixtures/wordpress-option-functions.php';
 		$GLOBALS['wpdb'] = (object) [ 'prefix' => $prefix ];
 	}
 
