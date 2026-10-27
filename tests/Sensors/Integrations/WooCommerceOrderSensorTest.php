@@ -1009,6 +1009,8 @@ final class WooCommerceOrderSensorTest extends TestCase {
 				'woocommerce_order_note_deleted'       => [ 'on_note_deleted', 2 ],
 				'woocommerce_privacy_before_remove_order_personal_data' => [ 'on_privacy_erasing', 1 ],
 				'woocommerce_privacy_remove_order_personal_data' => [ 'on_privacy_erased', 1 ],
+				'woocommerce_resume_order'             => [ 'on_order_resumed', 1 ],
+				'woocommerce_remove_order_items'       => [ 'on_items_removing', 2 ],
 			],
 			array_map( static fn( array $action ): array => [ $action['callback'][1], $action['accepted_args'] ], OrderNoteState::$actions )
 		);

@@ -31,8 +31,9 @@ defined( 'ABSPATH' ) || exit;
  * save, see {@see self::ITEM_FIELDS}) or removed (9107) is told on its order.
  * The items a refund copies onto itself are not (the refund event, 9104,
  * tells the refund), nor are the items of an order that is still being
- * created. A refund tells its amount, currency and reason, and whether the
- * gateway returned the money.
+ * created, or rebuilt from the cart in the request (a retried checkout). An
+ * item added in a request is not also changed in it. A refund tells its
+ * amount, currency and reason, and whether the gateway returned the money.
  *
  * A save of an existing order tells which of {@see self::ORDER_FIELDS}
  * changed (9105), read from the order before WooCommerce writes it; the
@@ -163,6 +164,23 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 */
 	private array $erasing = [];
 
+	/**
+	 * The orders whose items are rebuilt from the cart in this request (a
+	 * checkout retried after a failed payment removes them all and adds them
+	 * again): `site:order id` => true. Their items are not told.
+	 *
+	 * @var array<string, true>
+	 */
+	private array $rebuilt = [];
+
+	/**
+	 * The items added in this request: `site:item id` => true. Saving one
+	 * again in the request is part of adding it, no change.
+	 *
+	 * @var array<string, true>
+	 */
+	private array $added_items = [];
+
 	public function key(): string {
 		return 'woocommerce-order';
 	}
@@ -191,6 +209,10 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		// order between these two.
 		add_action( 'woocommerce_privacy_before_remove_order_personal_data', [ $this, 'on_privacy_erasing' ], 10, 1 );
 		add_action( 'woocommerce_privacy_remove_order_personal_data', [ $this, 'on_privacy_erased' ], 10, 1 );
+		// An order's items rebuilt from the cart: removed all at once, with no
+		// hook per item, then added again.
+		add_action( 'woocommerce_resume_order', [ $this, 'on_order_resumed' ], 10, 1 );
+		add_action( 'woocommerce_remove_order_items', [ $this, 'on_items_removing' ], 10, 2 );
 	}
 
 	/**
@@ -703,7 +725,9 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * type, and the quantity of a product line. The hook also fires for the
 	 * copies a refund makes of the refunded items and for the items of an
 	 * order still being created; neither is told, see
-	 * {@see self::item_order_fields()}.
+	 * {@see self::item_order_fields()}. Nor are the items of an order rebuilt
+	 * from the cart in this request, see {@see self::on_order_resumed()}.
+	 * Told or not, the item counts as added in this request.
 	 *
 	 * @param mixed $item_id  Item id.
 	 * @param mixed $item     The item; `wc_add_order_item()` may pass none, then it is read by its id.
@@ -719,6 +743,8 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 			if ( $ids['item_id'] <= 0 ) {
 				return;
 			}
+			$this->added_items[ self::state_key( $ids['item_id'] ) ] = true;
+
 			$item = is_object( $item ) ? $item : self::stored_item( $ids['item_id'] );
 			if ( null === $item ) {
 				return;
@@ -726,6 +752,9 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 			$ids['order_id'] = self::id_of( $order_id );
 			if ( $ids['order_id'] <= 0 ) {
 				$ids['order_id'] = self::item_order_id( $item );
+			}
+			if ( $this->is_rebuilt( $ids['order_id'] ) ) {
+				return;
 			}
 
 			$fields = $this->item_order_fields( $ids['order_id'], $item );
@@ -762,8 +791,9 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	 * (`get_data()`) and those the save is about to write (`get_changes()`),
 	 * one event per item. Every save of an order saves its items again,
 	 * mostly without a change: such a save reads nothing more and tells
-	 * nothing. An item without an id is being inserted (its addition tells
-	 * it).
+	 * nothing. An item without an id is being inserted, and one added in
+	 * this request is still being added (the order's taxes and totals are
+	 * recalculated after it): its addition tells it.
 	 *
 	 * @param mixed $item The item WooCommerce is about to save.
 	 */
@@ -777,7 +807,7 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 				return;
 			}
 			$ids['item_id'] = self::id_of( $item->get_id() );
-			if ( $ids['item_id'] <= 0 ) {
+			if ( $ids['item_id'] <= 0 || isset( $this->added_items[ self::state_key( $ids['item_id'] ) ] ) ) {
 				return;
 			}
 			$ids['order_id'] = self::item_order_id( $item );
@@ -816,7 +846,8 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	/**
 	 * An item of an order is about to be deleted: read while it still can
 	 * be, and told on its order with its name. An item that cannot be read
-	 * has no order to tell it on.
+	 * has no order to tell it on; the items of an order rebuilt from the
+	 * cart in this request are not told.
 	 *
 	 * @param mixed $item_id Item id.
 	 */
@@ -835,6 +866,9 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 				return;
 			}
 			$ids['order_id'] = self::item_order_id( $item );
+			if ( $this->is_rebuilt( $ids['order_id'] ) ) {
+				return;
+			}
 
 			$fields = $this->item_order_fields( $ids['order_id'], $item );
 			if ( null === $fields ) {
@@ -931,6 +965,64 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 		} catch ( Throwable $e ) {
 			$this->report_failure( $e, 9111 );
 		}
+	}
+
+	/**
+	 * The checkout resumes an order still waiting for its payment (a retry
+	 * after a failed payment, with the same cart): it removes all of the
+	 * order's items at once, with no hook per item, and adds them again from
+	 * the cart. Nothing changed, so no item of that order is told for the
+	 * rest of the request.
+	 *
+	 * @param mixed $order_id Id of the order resumed.
+	 */
+	public function on_order_resumed( $order_id ): void {
+		try {
+			$this->note_rebuilt( self::id_of( $order_id ) );
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9106, [ 'order_id' => self::id_of( $order_id ) ] );
+		}
+	}
+
+	/**
+	 * All of an order's items (or all of one type) are about to be removed at
+	 * once, with no hook per item: WooCommerce does that only to add them
+	 * again from the cart (the resumed checkout, the Store API's draft, a
+	 * recomputation of the fees), so the order is rebuilt as with
+	 * {@see self::on_order_resumed()}. An order not saved yet has none.
+	 *
+	 * @param mixed $order The order.
+	 * @param mixed $type  Item type removed; null for all. Not used.
+	 */
+	public function on_items_removing( $order, $type = null ): void {
+		$order_id = 0;
+		try {
+			$order_id = is_object( $order ) && method_exists( $order, 'get_id' ) ? self::id_of( $order->get_id() ) : 0;
+			$this->note_rebuilt( $order_id );
+		} catch ( Throwable $e ) {
+			$this->report_failure( $e, 9106, $order_id > 0 ? [ 'order_id' => $order_id ] : [] );
+		}
+	}
+
+	/**
+	 * Note the items of an order as rebuilt in this request.
+	 *
+	 * @param int $order_id Order id; nothing is noted for 0.
+	 */
+	private function note_rebuilt( int $order_id ): void {
+		if ( $order_id > 0 ) {
+			$this->rebuilt[ self::state_key( $order_id ) ] = true;
+		}
+	}
+
+	/**
+	 * Whether the items of an order are rebuilt from the cart in this
+	 * request.
+	 *
+	 * @param int $order_id Order id.
+	 */
+	private function is_rebuilt( int $order_id ): bool {
+		return $order_id > 0 && isset( $this->rebuilt[ self::state_key( $order_id ) ] );
 	}
 
 	/**
@@ -1090,8 +1182,12 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 	}
 
 	/**
-	 * Whether an order, as stored, is still being created, see
-	 * {@see self::CREATION_STATUSES}. An order that cannot tell is not.
+	 * Whether an order is still being created, by its status (see
+	 * {@see self::CREATION_STATUSES}). Like every getter of the shop, the
+	 * status read is the one the order holds: a status set but not saved yet
+	 * counts. An order loaded for the item holds what is stored; one an item
+	 * holds on to is the one being worked on, saved before its items are. An
+	 * order that cannot tell is not being created.
 	 *
 	 * @param object|null $order The order.
 	 */
@@ -1100,7 +1196,8 @@ final class WooCommerceOrderSensor extends AbstractSensor {
 			return false;
 		}
 
-		// `edit` reads the status as stored: for display an unset one reads `pending`.
+		// `edit` skips the filters and the default an unset status reads for
+		// display (`pending`); it still reads a pending change.
 		$status = $order->get_status( 'edit' );
 
 		return ( null === $status || is_string( $status ) ) && in_array( self::status_slug( (string) $status ), self::CREATION_STATUSES, true );

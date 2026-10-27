@@ -414,6 +414,107 @@ final class WooCommerceOrderItemsTest extends TestCase {
 	}
 
 	/**
+	 * @return array<string, array{0: string}> The hook that says the order's items are rebuilt.
+	 */
+	public static function rebuilds(): array {
+		return [
+			'checkout resumes the order' => [ 'resumed' ],
+			'all items removed'          => [ 'removed' ],
+		];
+	}
+
+	/**
+	 * A checkout retried after a failed payment resumes the pending order:
+	 * WooCommerce removes all its items at once (no item hook fires) and adds
+	 * them again from the cart. Other code that rebuilds an order's items
+	 * from the cart removes them the same way. Nothing changed: no item of
+	 * that order is told for the rest of the request. Another order, or the
+	 * same id on another site, is.
+	 *
+	 * @dataProvider rebuilds
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_items_rebuilt_from_the_cart_are_not_told( string $rebuild ): void {
+		$this->stubs();
+		$order                     = $this->order( 5, [ 'status' => 'failed' ] );
+		OrderNoteState::$orders[5] = $order;
+		OrderNoteState::$orders[6] = $this->order( 6 );
+		OrderNoteState::$items[31] = $this->line_item( 31, 5 );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		if ( 'resumed' === $rebuild ) {
+			$sensor->on_order_resumed( '5' );
+		} else {
+			$sensor->on_items_removing( $order, null );
+		}
+		$sensor->on_item_added( 41, $this->line_item( 41, 5 ), 5 );
+		$sensor->on_item_added( 42, new FakeOrderItem( 42, 5, 'shipping', [ 'name' => 'Flat rate' ] ), 5 );
+		$sensor->on_item_deleting( 31 );
+		$this->assertSame( [], $recorder->calls );
+
+		$sensor->on_item_added( 51, $this->line_item( 51, 6 ), 6 );
+		OrderNoteState::$blog_id = 2;
+		$sensor->on_item_added( 43, $this->line_item( 43, 5 ), 5 );
+
+		$this->assertSame( [ 9106, 9106 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 6, $recorder->calls[0][1]['metadata']['order_id'] );
+		$this->assertSame( 43, $recorder->calls[1][1]['metadata']['item_id'] );
+		$this->assertSame( [], OrderNoteState::$fired );
+	}
+
+	/**
+	 * Removing the items of an order that is not saved yet rebuilds nothing.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_removing_the_items_of_an_unsaved_order_rebuilds_nothing(): void {
+		$this->stubs();
+		OrderNoteState::$orders[5] = $this->order( 5 );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_items_removing( $this->order( 0 ), 'line_item' );
+		$sensor->on_order_resumed( 0 );
+		$sensor->on_item_added( 41, $this->line_item( 41, 5 ), 5 );
+
+		$this->assertSame( [ 9106 ], array_column( $recorder->calls, 0 ) );
+	}
+
+	/**
+	 * An item added in a request is often saved again in it (the order's
+	 * taxes and totals are recalculated after the addition): that is part of
+	 * adding it, not a change. So is an item added to an order that was still
+	 * being created. Other items, and the same id on another site, are told.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_an_item_added_in_the_request_is_not_also_changed(): void {
+		$this->stubs();
+		OrderNoteState::$orders[5] = $this->order( 5 );
+		OrderNoteState::$orders[7] = $this->order( 7, [ 'status' => 'checkout-draft' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new WooCommerceOrderSensor( $recorder );
+		$sensor->on_item_added( 31, $this->line_item( 31, 5 ), 5 );
+		$sensor->on_item_added( 33, $this->line_item( 33, 7 ), 7 );
+		OrderNoteState::$orders[7] = $this->order( 7 );
+
+		$sensor->on_item_saving( $this->line_item( 31, 5, [], [ 'total_tax' => '5.4' ] ) );
+		$sensor->on_item_saving( $this->line_item( 33, 7, [], [ 'total_tax' => '5.4' ] ) );
+		$sensor->on_item_saving( $this->line_item( 32, 5, [], [ 'total_tax' => '5.4' ] ) );
+		OrderNoteState::$blog_id = 2;
+		$sensor->on_item_saving( $this->line_item( 31, 5, [], [ 'total_tax' => '5.4' ] ) );
+
+		$this->assertSame( [ 9106, 9108, 9108 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 32, $recorder->calls[1][1]['metadata']['item_id'] );
+		$this->assertSame( 31, $recorder->calls[2][1]['metadata']['item_id'] );
+	}
+
+	/**
 	 * WooCommerce's items hold on to the order they were read or added with:
 	 * that order is used, not loaded again for every item of a save. An
 	 * order held that is not the item's (moved since) is not.
@@ -790,6 +891,7 @@ final class WooCommerceOrderItemsTest extends TestCase {
 			'refunded'        => [ 9104, 'on_refunded', [ 'order_id' => 5 ] ],
 			'erasure started' => [ 9111, 'on_privacy_erasing', [] ],
 			'erasure ended'   => [ 9111, 'on_privacy_erased', [] ],
+			'items removed'   => [ 9106, 'on_items_removing', [] ],
 		];
 	}
 
@@ -898,6 +1000,8 @@ final class WooCommerceOrderItemsTest extends TestCase {
 			$sensor->on_note_deleted( $odd, $odd );
 			$sensor->on_privacy_erasing( $odd );
 			$sensor->on_privacy_erased( $odd );
+			$sensor->on_order_resumed( $odd );
+			$sensor->on_items_removing( $odd, $odd );
 		}
 		$this->assertSame( [], $recorder->calls );
 		$this->assertSame( [], OrderNoteState::$fired );

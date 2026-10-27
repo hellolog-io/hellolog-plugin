@@ -92,8 +92,10 @@ class FakeOrder {
 	}
 
 	/**
-	 * The status as stored (`edit`), `processing` when the details give none.
-	 * Like WooCommerce's, an unset status reads `pending` for display.
+	 * The status the order holds (in WooCommerce a pending change too, in
+	 * either context), `processing` when the details give none. Like
+	 * WooCommerce's, an unset status reads `pending` for display (`view`) and
+	 * stays empty in `edit`.
 	 *
 	 * @param string $context `view` or `edit`.
 	 * @return mixed
