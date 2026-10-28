@@ -131,6 +131,25 @@ wp hellolog sensors --format=csv
 wp hellolog sensors --format=yaml
 ```
 
+No sensor is set up until the site key is verified. Before that, the
+command says so and names what to run (`wp hellolog test`, after
+`wp hellolog set-token` when no key is stored), and lists the switches
+as stored, key and state only: a sensor shown as `NO` stays off once the
+key is verified, the others start. `enable-sensor` and `disable-sensor`
+work in the same state.
+
+```sh
+$ wp hellolog sensors
+Warning: No sensor runs yet: sensors start once the site key is verified. Run `wp hellolog test` to verify it. The switches below apply from then on.
++---------------------+---------+
+| key                 | enabled |
++---------------------+---------+
+| core-auth           | yes     |
+| core-failed-login   | NO      |
+| …                             |
++---------------------+---------+
+```
+
 ### `wp hellolog requeue-dead`
 
 Move every `dead` row in the local outgoing queue back to `pending`

@@ -230,12 +230,21 @@ final class Command {
 	/**
 	 * List every sensor that can be switched and whether it runs.
 	 *
+	 * Before the site key is verified no sensor runs yet: the list then shows
+	 * the switches as stored, which apply once the key is verified.
+	 *
 	 * ## EXAMPLES
 	 *
 	 *     wp hellolog sensors
 	 */
 	public function sensors(): void {
-		$manager = Plugin::instance()->sensors();
+		$plugin  = Plugin::instance();
+		$manager = $plugin->sensors();
+		if ( ! $plugin->options()->is_active() ) {
+			$this->list_switches( $plugin->options(), $manager );
+			return;
+		}
+
 		$sensors = $manager->toggleable();
 		if ( empty( $sensors ) ) {
 			WP_CLI::warning( 'No sensors registered (plugin booted?).' );
@@ -251,6 +260,32 @@ final class Command {
 			];
 		}
 		\WP_CLI\Utils\format_items( 'table', $rows, [ 'key', 'enabled', 'class' ] );
+	}
+
+	/**
+	 * `wp hellolog sensors` while no sensor is set up: why nothing runs, and
+	 * the switches an operator can already set.
+	 *
+	 * @param Options       $options The plugin's settings.
+	 * @param SensorManager $manager The sensor registry.
+	 */
+	private function list_switches( Options $options, SensorManager $manager ): void {
+		WP_CLI::warning(
+			'No sensor runs yet: sensors start once the site key is verified. '
+			. ( $options->is_configured()
+				? 'Run `wp hellolog test` to verify it.'
+				: 'Run `wp hellolog set-token <token>`, then `wp hellolog test` to verify it.' )
+			. ' The switches below apply from then on.'
+		);
+
+		$rows = [];
+		foreach ( $manager->switches( $options->sensor_filters() ) as $switch ) {
+			$rows[] = [
+				'key'     => $switch['key'],
+				'enabled' => $switch['enabled'] ? 'yes' : 'NO',
+			];
+		}
+		\WP_CLI\Utils\format_items( 'table', $rows, [ 'key', 'enabled' ] );
 	}
 
 	/**

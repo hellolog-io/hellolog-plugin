@@ -21,6 +21,9 @@ namespace {
 		/** @var array<int, string> */
 		public static array $successes = [];
 
+		/** @var array<int, string> */
+		public static array $warnings = [];
+
 		/** @var array<int, array<int, array<string, mixed>>> */
 		public static array $tables = [];
 
@@ -34,6 +37,10 @@ namespace {
 
 		public static function success( string $message ): void {
 			self::$successes[] = $message;
+		}
+
+		public static function warning( string $message ): void {
+			self::$warnings[] = $message;
 		}
 	}
 }
