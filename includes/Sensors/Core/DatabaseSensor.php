@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace HelloLog\Sensors\Core;
 
 use HelloLog\Sensors\AbstractSensor;
+use HelloLog\Sensors\DatabaseTargets;
 
 defined( 'ABSPATH' ) || exit;
 
@@ -141,14 +142,14 @@ final class DatabaseSensor extends AbstractSensor {
 		$tables = $certain ? self::read_tables( $statement, $head ) : null;
 		if ( null === $tables ) {
 			// Fail closed: logged as it is, with no exemption.
-			$this->emit_table( $code, self::name_after_keyword( $statement ), $statement, true );
+			$this->emit_table( $code, self::name_after_keyword( $statement ), $statement, null );
 			return;
 		}
 
 		$site_prefix = self::site_prefix();
 		foreach ( $tables as $table ) {
 			if ( ! self::is_skipped( $table, $site_prefix ) ) {
-				$this->emit_table( $code, $table['name'], $statement, false );
+				$this->emit_table( $code, $table['name'], $statement, $table );
 			}
 		}
 	}
@@ -369,14 +370,14 @@ final class DatabaseSensor extends AbstractSensor {
 	/**
 	 * Emit the creation or drop of one table.
 	 *
-	 * @param int    $code      7100 or 7101.
-	 * @param string $name      Table name as logged.
-	 * @param string $statement The statement as read, shortened in the metadata.
-	 * @param bool   $unparsed  Whether the statement could not be read.
+	 * @param int                                                           $code      7100 or 7101.
+	 * @param string                                                        $name      Table name as logged.
+	 * @param string                                                        $statement The statement as read, shortened in the metadata.
+	 * @param array{name: string, database: ?string, table: string}|null    $table     The table as read; null when the statement could not be read, the table is then only a guess and no target.
 	 */
-	private function emit_table( int $code, string $name, string $statement, bool $unparsed ): void {
+	private function emit_table( int $code, string $name, string $statement, ?array $table ): void {
 		$metadata = [ 'query' => substr( $statement, 0, 256 ) ];
-		if ( $unparsed ) {
+		if ( null === $table ) {
 			$metadata['unparsed'] = 'yes';
 		}
 
@@ -384,6 +385,7 @@ final class DatabaseSensor extends AbstractSensor {
 			$code,
 			[
 				'name'     => $name,
+				'target'   => null === $table ? null : DatabaseTargets::table( $table['database'], $table['table'], self::current_database() ),
 				'metadata' => $metadata,
 			]
 		);

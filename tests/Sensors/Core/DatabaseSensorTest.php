@@ -559,6 +559,52 @@ final class DatabaseSensorTest extends TestCase {
 	}
 
 	/**
+	 * The table is what the event is about. It has one target whichever way a
+	 * statement writes its name: without a database, or with the one WordPress
+	 * works in.
+	 */
+	public function test_a_created_and_a_dropped_table_have_the_table_as_target(): void {
+		$recorder = $this->recorder();
+		$sensor   = new DatabaseSensor( $recorder );
+
+		$sensor->on_query( 'CREATE TABLE wp_shop_orders ( id BIGINT )' );
+		$sensor->on_query( 'DROP TABLE wordpress.wp_shop_orders' );
+
+		$this->assertSame( [ 7100, 7101 ], array_column( $recorder->calls, 0 ) );
+		$target = [
+			'type'  => 'table',
+			'id'    => 'wp_shop_orders',
+			'label' => 'wp_shop_orders',
+		];
+		$this->assertSame( $target, $recorder->calls[0][1]['target'] );
+		$this->assertSame( $target, $recorder->calls[1][1]['target'] );
+		$this->assertSame( 'wordpress.wp_shop_orders', $recorder->calls[1][1]['name'], 'The message still names the table as written.' );
+	}
+
+	public function test_every_table_of_a_drop_is_the_target_of_its_own_event(): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( 'DROP TABLE IF EXISTS wp_a, otherdb.wp_b' );
+
+		$this->assertSame(
+			[ 'wp_a', 'otherdb.wp_b' ],
+			array_column( array_column( array_column( $recorder->calls, 1 ), 'target' ), 'id' )
+		);
+	}
+
+	/**
+	 * A statement that could not be read names a table only as a guess, which
+	 * the event may state in its message but not as the object it is about.
+	 */
+	public function test_a_statement_that_could_not_be_read_has_no_target(): void {
+		$recorder = $this->recorder();
+		( new DatabaseSensor( $recorder ) )->on_query( 'DROP TABLE wp_users /*!99999 , wp_options */' );
+
+		$this->assertSame( [ 7101 ], array_column( $recorder->calls, 0 ) );
+		$this->assertSame( 'yes', $recorder->calls[0][1]['metadata']['unparsed'] );
+		$this->assertNull( $recorder->calls[0][1]['target'] ?? null );
+	}
+
+	/**
 	 * Statements that only look alike leave no event: a temporary table never
 	 * outlives its connection (creating one changes no stored table, dropping
 	 * one never drops a stored table), and a tablespace, an index or a view
