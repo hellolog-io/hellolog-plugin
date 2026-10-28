@@ -162,6 +162,7 @@ final class OptionChangePolicyTest extends TestCase {
 			'firewall user locks (real)'             => [ 'lw_firewall_user_locks' ],
 			'seo cleanup done flag (real)'           => [ 'lw_seo_cleanup_v1314_done' ],
 			'woo orders table created flag (real)'   => [ 'woocommerce_custom_orders_table_created' ],
+			'woo helper last refresh (real)'         => [ 'woocommerce_admin-wc-helper-last-refresh' ],
 			// One synthetic name per alternative of the pattern.
 			'leading underscore (synthetic)'         => [ '_woocommerce_helper_data' ],
 			'transient (synthetic)'                  => [ 'woocommerce_admin_transient_x' ],
@@ -182,7 +183,9 @@ final class OptionChangePolicyTest extends TestCase {
 			'skipped (synthetic)'                    => [ 'lw_seo_skipped_urls' ],
 			'version (synthetic)'                    => [ 'rank_math_version' ],
 			'last run (synthetic)'                   => [ 'woocommerce_last_run' ],
+			'hyphenated last run (synthetic)'        => [ 'woocommerce_admin-sync-last-run' ],
 			'timestamp (synthetic)'                  => [ 'wpseo_activation_timestamp' ],
+			'hyphenated timestamp (synthetic)'       => [ 'woocommerce_admin-sync-timestamp' ],
 			'onboarding (synthetic)'                 => [ 'woocommerce_onboarding_profile' ],
 			'task list (synthetic)'                  => [ 'woocommerce_task_list_hidden' ],
 			'admin notes (synthetic)'                => [ 'woocommerce_admin_notes_x' ],
@@ -218,6 +221,8 @@ final class OptionChangePolicyTest extends TestCase {
 			'yoast titles (real)'                  => [ 'wpseo_titles' ],
 			'firewall rules (synthetic)'           => [ 'lw_firewall_rules' ],
 			'termly banner position (synthetic)'   => [ 'termly_banner_position' ],
+			'a word that holds last (synthetic)'   => [ 'woocommerce_plastic-bag-fee' ],
+			'a word that holds timestamp (synthetic)' => [ 'woocommerce_timestamps-display' ],
 		];
 	}
 

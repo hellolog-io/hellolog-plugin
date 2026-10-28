@@ -40,13 +40,16 @@ final class OptionChangePolicy {
 	/**
 	 * Option names that are plugin housekeeping, not a setting somebody chose.
 	 *
+	 * `last` and `timestamp` count after a hyphen as well as an underscore:
+	 * WooCommerce names a daily refresh stamp `woocommerce_admin-wc-helper-last-refresh`.
+	 *
 	 * Two endings are deliberately narrow because real settings share them:
 	 * `_notices$` (plural; `woocommerce_demo_store_notice` is a setting, so a
 	 * singular `_notice` only counts as `_admin_notice`), and
 	 * `_marketplace_suggestions$` unless it follows `_show`
 	 * (`woocommerce_show_marketplace_suggestions` is a switch somebody flips).
 	 */
-	private const INTERNAL = '/(^_|_transient|_queue|_notifications?$|_notices$|_admin_notices?$|_tracks_|_cache|_locks?$|_log$|_bans$|_baseline$|_rev$|_done$|_skipped_|_version$|_db_version|_last_|_timestamp$|_onboarding|_task_list|(?<!_show)_marketplace_suggestions$|_admin_notes?|_dismissed|_flush_rewrite|_schema_version|_usage_tracking|_table_created$)/';
+	private const INTERNAL = '/(^_|_transient|_queue|_notifications?$|_notices$|_admin_notices?$|_tracks_|_cache|_locks?$|_log$|_bans$|_baseline$|_rev$|_done$|_skipped_|_version$|_db_version|[_-]last[_-]|[_-]timestamp$|_onboarding|_task_list|(?<!_show)_marketplace_suggestions$|_admin_notes?|_dismissed|_flush_rewrite|_schema_version|_usage_tracking|_table_created$)/';
 
 	/**
 	 * Whether a write to an option should reach the log.
