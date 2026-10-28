@@ -46,17 +46,21 @@ namespace {
 	}
 
 	/**
-	 * @param string     $field `id` or `login`.
-	 * @param int|string $value User id or login name.
+	 * @param string     $field `id`, `login` or `email`.
+	 * @param int|string $value User id, login name or e-mail address.
 	 * @return WP_User|false
 	 */
 	function get_user_by( string $field, $value ) {
 		if ( 'id' === $field ) {
 			return WpState::$users[ (int) $value ] ?? false;
 		}
-		if ( 'login' === $field ) {
+		$column = [
+			'login' => 'user_login',
+			'email' => 'user_email',
+		][ $field ] ?? null;
+		if ( null !== $column ) {
 			foreach ( WpState::$users as $user ) {
-				if ( $user->user_login === $value ) {
+				if ( $user->$column === $value ) {
 					return $user;
 				}
 			}
