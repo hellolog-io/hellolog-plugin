@@ -244,8 +244,8 @@ final class UserTargetTest extends TestCase {
 	}
 
 	/**
-	 * The change lists the old roles sorted, as every `role` item does; the
-	 * message names the first of them.
+	 * The change and the message name the old roles the same way: sorted, as
+	 * every `role` item does.
 	 *
 	 * @runInSeparateProcess
 	 * @preserveGlobalState disabled
@@ -268,8 +268,90 @@ final class UserTargetTest extends TestCase {
 			$fields['changes']
 		);
 		$this->assertSame( 'bob', $fields['username'] );
-		$this->assertSame( 'subscriber', $fields['old_role'] );
+		$this->assertSame( 'author, subscriber', $fields['old_role'] );
 		$this->assertSame( 'editor', $fields['new_role'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_change_names_every_previous_role_in_the_message(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_role_change( 7, 'editor', [ 'subscriber', 'author', 'subscriber' ] );
+
+		$survivors = $this->survive( $recorder );
+
+		$this->assertSame( 'author, subscriber', $survivors[0]['vars']['old_role'] );
+		$this->assertSame( 'Role for bob changed from author, subscriber to editor.', $survivors[0]['message'] );
+	}
+
+	/**
+	 * A user who had no role is given one: the change reads as an addition,
+	 * with nothing on the old side.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_change_from_no_role_has_no_old_role(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_role_change( 7, 'editor', [] );
+
+		$fields = $recorder->calls[0][1];
+		$this->assertNull( $fields['old_role'] );
+		$this->assertSame(
+			[
+				[
+					'field' => 'role',
+					'old'   => null,
+					'new'   => 'editor',
+				],
+			],
+			$fields['changes']
+		);
+		$this->assertSame( [], $fields['metadata']['old_roles'] );
+	}
+
+	/**
+	 * A null is no template value: the message must not keep `{old_role}`,
+	 * and the var stays what the template has always been rendered with.
+	 *
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_change_from_no_role_leaves_no_placeholder_in_the_message(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_role_change( 7, 'editor', [] );
+
+		$survivors = $this->survive( $recorder );
+
+		$this->assertCount( 1, $survivors );
+		$this->assertNull( $survivors[0]['changes'][0]['old'] );
+		$this->assertSame( '', $survivors[0]['vars']['old_role'] );
+		$this->assertStringNotContainsString( '{', $survivors[0]['message'] );
+		$this->assertStringStartsWith( 'Role for bob changed from ', $survivors[0]['message'] );
+		$this->assertStringEndsWith( ' to editor.', $survivors[0]['message'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_change_whose_previous_role_has_no_name_is_a_change_from_no_role(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		( new UserProfileSensor( $recorder ) )->on_role_change( 7, 'editor', [ [] ] );
+
+		$fields = $recorder->calls[0][1];
+		$this->assertNull( $fields['old_role'] );
+		$this->assertNull( $fields['changes'][0]['old'] );
 	}
 
 	/**
@@ -1045,7 +1127,7 @@ final class UserTargetTest extends TestCase {
 			[
 				[
 					'field' => 'role',
-					'old'   => '',
+					'old'   => null,
 					'new'   => 'administrator',
 				],
 			],
@@ -1308,6 +1390,37 @@ final class UserTargetTest extends TestCase {
 		$survivors = $this->survive( $recorder );
 		$this->assertSame( [ 4002 ], array_column( $survivors, 'code' ) );
 		$this->assertSame( 'Role for bob changed from subscriber to administrator, subscriber.', $survivors[0]['message'] );
+	}
+
+	/**
+	 * @runInSeparateProcess
+	 * @preserveGlobalState disabled
+	 */
+	public function test_a_role_added_to_a_user_without_roles_has_no_old_role(): void {
+		$this->wp_user( 7, 'bob', [ 'editor' ] );
+
+		$recorder = $this->recorder();
+		$sensor   = new UserProfileSensor( $recorder );
+		$sensor->on_role_added( 7, 'editor' );
+		$sensor->emit_pending_role_changes();
+
+		$fields = $recorder->calls[0][1];
+		$this->assertNull( $fields['old_role'] );
+		$this->assertSame( 'editor', $fields['new_role'] );
+		$this->assertSame(
+			[
+				[
+					'field' => 'role',
+					'old'   => null,
+					'new'   => 'editor',
+				],
+			],
+			$fields['changes']
+		);
+
+		$survivors = $this->survive( $recorder );
+		$this->assertSame( '', $survivors[0]['vars']['old_role'] );
+		$this->assertStringNotContainsString( '{', $survivors[0]['message'] );
 	}
 
 	/**

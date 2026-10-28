@@ -95,7 +95,7 @@ final class UserProfileSensor extends AbstractSensor {
 	 * roles before and after, as they were at that moment, and how many
 	 * Action Scheduler jobs were running (see {@see ActionSchedulerContext::depth()}).
 	 *
-	 * @var array<int, array{blog: int, user: int, login: string, added: bool, role: string, old: string, new: string, job: int}>
+	 * @var array<int, array{blog: int, user: int, login: string, added: bool, role: string, old: ?string, new: string, job: int}>
 	 */
 	private static array $pending_roles = [];
 
@@ -264,20 +264,11 @@ final class UserProfileSensor extends AbstractSensor {
 			[
 				'target'   => self::user_target( $user_id, (string) $user->user_login ),
 				'username' => (string) $user->user_login,
-				'old_role' => $old_roles[0] ?? '',
-				'new_role' => $new_role,
-				'changes'  => [
-					[
-						'field' => 'role',
-						'old'   => self::role_list( $old_roles ),
-						'new'   => $new_role,
-					],
-				],
 				'metadata' => [
 					'old_roles' => $old_roles,
 					'new_role'  => $new_role,
 				],
-			]
+			] + RoleList::change_fields( RoleList::joined_or_null( $old_roles ), $new_role )
 		);
 	}
 
@@ -327,19 +318,10 @@ final class UserProfileSensor extends AbstractSensor {
 					[
 						'target'   => self::user_target( $note['user'], $note['login'] ),
 						'username' => $note['login'],
-						'old_role' => $note['old'],
-						'new_role' => $note['new'],
-						'changes'  => [
-							[
-								'field' => 'role',
-								'old'   => $note['old'],
-								'new'   => $note['new'],
-							],
-						],
 						'metadata' => [
 							( $note['added'] ? 'added_role' : 'removed_role' ) => $note['role'],
 						],
-					]
+					] + RoleList::change_fields( $note['old'], $note['new'] )
 				);
 			} catch ( Throwable $e ) {
 				$this->report_failure(
@@ -516,8 +498,8 @@ final class UserProfileSensor extends AbstractSensor {
 
 			$after  = array_map( 'strval', array_values( (array) $user->roles ) );
 			$before = $added ? array_diff( $after, [ $role ] ) : array_merge( $after, [ $role ] );
-			$old    = self::role_list( $before );
-			$new    = self::role_list( $after );
+			$old    = RoleList::joined( $before );
+			$new    = RoleList::joined( $after );
 			if ( $old === $new ) {
 				// A role WordPress does not know never shows among the user's roles.
 				return;
@@ -529,7 +511,7 @@ final class UserProfileSensor extends AbstractSensor {
 				'login' => (string) $user->user_login,
 				'added' => $added,
 				'role'  => $role,
-				'old'   => $old,
+				'old'   => RoleList::joined_or_null( $before ),
 				'new'   => $new,
 				'job'   => ActionSchedulerContext::depth(),
 			];
@@ -608,19 +590,6 @@ final class UserProfileSensor extends AbstractSensor {
 	 */
 	private static function blog_id(): int {
 		return function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
-	}
-
-	/**
-	 * Role slugs as the `role` change reports them: each once, sorted, joined
-	 * by `, `.
-	 *
-	 * @param array<int, string> $roles Role slugs.
-	 */
-	private static function role_list( array $roles ): string {
-		$roles = array_values( array_unique( $roles ) );
-		sort( $roles, SORT_STRING );
-
-		return implode( ', ', $roles );
 	}
 
 	/**
