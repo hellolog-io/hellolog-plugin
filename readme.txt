@@ -2,9 +2,9 @@
 Contributors:      hellologio
 Tags:              activity log, audit log, security, monitoring, woocommerce
 Requires at least: 6.4
-Tested up to:      6.7
+Tested up to:      7.1
 Requires PHP:      8.0
-Stable tag:        0.7.0
+Stable tag:        0.7.1
 License:           GPL-2.0-or-later
 License URI:       https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -89,6 +89,26 @@ every site is issued its own key, bound to its domain. Paste it into
 This version requires the HelloLog service release from October 2026 or later.
 
 == Changelog ==
+
+= 0.7.1 =
+* Change: A role change for a user who had no role reports nothing as the
+  old role, so it reads as an addition. When the user had several roles, the
+  event names all of them, not only the first.
+* Change: A failed login names the account that was tried as its target,
+  when the name or e-mail address typed belongs to one.
+* Change: A site added to or deleted from a network, and a database table
+  created or dropped, name the site or the table as their target.
+* Change: `wp hellolog sensors` before the site key is verified says that
+  sensors start once the key is verified and lists the switches as stored,
+  instead of saying that no sensors are registered.
+* Change: Tested up to WordPress 7.1.
+* Fix: WooCommerce's daily refresh stamp for its helper connection is no
+  longer logged as a setting change; options with `last` or `timestamp`
+  between hyphens count as bookkeeping.
+* Known limitation: A variation added before its product's first save (while
+  the product is still an auto-draft, as with "Add new" on the classic product
+  screen) is not logged on its own; the product's creation stands in for it.
+  The 0.7.0 notes left this out.
 
 = 0.7.0 =
 * New: WooCommerce order edits list what changed (totals, currency, payment

@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.7.1] - 2026-10-28
+
+### Changed
+- A role change for a user who had no role (one is given to them) reports
+  nothing as the old role, so it reads as an addition; it used to report an
+  empty text. When the user had several roles, the event names all of them,
+  in the order the change lists them, not only the first.
+- A failed login names the account that was tried as its target, when the
+  name or e-mail address typed belongs to one. A name that belongs to no
+  account still has no target.
+- A site added to or deleted from a network, and a database table created or
+  dropped, name the site or the table as their target.
+- `wp hellolog sensors` before the site key is verified no longer says that
+  no sensors are registered. It says that sensors start once the key is
+  verified (`wp hellolog test`, after `wp hellolog set-token` when no key is
+  stored), and lists the switches as they are stored.
+- Tested up to WordPress 7.1.
+
+### Fixed
+- The daily refresh stamp WooCommerce keeps for its helper connection
+  (`woocommerce_admin-wc-helper-last-refresh`) is no longer logged as a
+  setting somebody changed. Options with `last` or `timestamp` between
+  hyphens count as bookkeeping, as those with underscores already did.
+
+### Known limitations
+- A variation added before its product's first save (while the product is
+  still an auto-draft, as with "Add new" on the classic product screen) is
+  not logged on its own: the product's creation stands in for it. The 0.7.0
+  notes on variation creation left this out.
+
 ## [0.7.0] - 2026-10-27
 
 ### Added
