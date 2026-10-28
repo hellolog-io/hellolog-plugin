@@ -41,6 +41,7 @@ final class MultisiteSensor extends AbstractSensor {
 		$this->emit(
 			4100,
 			[
+				'target'   => self::site_target( $site ),
 				'domain'   => (string) $site->domain,
 				'metadata' => [
 					'site_id' => (int) $site->blog_id,
@@ -55,6 +56,7 @@ final class MultisiteSensor extends AbstractSensor {
 		$this->emit(
 			4101,
 			[
+				'target'   => self::site_target( $site ),
 				'domain'   => (string) $site->domain,
 				'metadata' => [
 					'site_id' => (int) $site->blog_id,
@@ -62,6 +64,21 @@ final class MultisiteSensor extends AbstractSensor {
 				],
 			]
 		);
+	}
+
+	/**
+	 * The object an event about a site of the network is about: the site by
+	 * its id, which does not change, labelled with where it lives (its domain
+	 * and path, without the trailing slash).
+	 *
+	 * @return array{type: string, id: string, label: string}
+	 */
+	public static function site_target( WP_Site $site ): array {
+		return [
+			'type'  => 'site',
+			'id'    => (string) (int) $site->blog_id,
+			'label' => rtrim( (string) $site->domain . (string) $site->path, '/' ),
+		];
 	}
 
 	public function on_archived( int $blog_id ): void {
