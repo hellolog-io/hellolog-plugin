@@ -123,14 +123,6 @@ $ wp hellolog sensors
 +---------------------+---------+-------------------+
 ```
 
-Supports the standard WP-CLI `--format` switch:
-
-```sh
-wp hellolog sensors --format=json
-wp hellolog sensors --format=csv
-wp hellolog sensors --format=yaml
-```
-
 No sensor is set up until the site key is verified. Before that, the
 command says so and names what to run (`wp hellolog test`, after
 `wp hellolog set-token` when no key is stored), and lists the switches

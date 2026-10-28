@@ -103,8 +103,8 @@ This version requires the HelloLog service release from October 2026 or later.
   instead of saying that no sensors are registered.
 * Change: Tested up to WordPress 7.1.
 * Fix: WooCommerce's daily refresh stamp for its helper connection is no
-  longer logged as a setting change; options with `last` or `timestamp`
-  between hyphens count as bookkeeping.
+  longer logged as a setting change; options with `-last-` in the name or
+  ending in `-timestamp` count as bookkeeping.
 * Known limitation: A variation added before its product's first save (while
   the product is still an auto-draft, as with "Add new" on the classic product
   screen) is not logged on its own; the product's creation stands in for it.

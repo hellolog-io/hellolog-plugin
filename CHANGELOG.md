@@ -21,8 +21,8 @@
 ### Fixed
 - The daily refresh stamp WooCommerce keeps for its helper connection
   (`woocommerce_admin-wc-helper-last-refresh`) is no longer logged as a
-  setting somebody changed. Options with `last` or `timestamp` between
-  hyphens count as bookkeeping, as those with underscores already did.
+  setting somebody changed. Options with `-last-` in the name or ending
+  in `-timestamp` count as bookkeeping, as their underscore forms already did.
 
 ### Known limitations
 - A variation added before its product's first save (while the product is
