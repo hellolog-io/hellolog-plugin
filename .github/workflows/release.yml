@@ -83,7 +83,7 @@ jobs:
           # case a contributor commits the source by mistake.
           rsync -a \
             --exclude='.git' --exclude='.github' --exclude='.claude' \
-            --exclude='tests' --exclude='bin' --exclude='node_modules' --exclude='build' \
+            --exclude='tests' --exclude='bin' --exclude='docs' --exclude='node_modules' --exclude='build' \
             --exclude='dist' --exclude='vue-admin' --exclude='wp-content' \
             --exclude='*.zip' --exclude='*.log' \
             --exclude='phpunit.xml.dist' --exclude='phpcs.xml.dist' \

@@ -1,0 +1,10 @@
+# Dev-only paths stay out of Composer dists and GitHub zipballs. The release
+# zip has its own exclude list in .github/workflows/release.yml.
+/.github            export-ignore
+/bin                export-ignore
+/docs               export-ignore
+/tests              export-ignore
+/.gitattributes     export-ignore
+/.gitignore         export-ignore
+/phpcs.xml.dist     export-ignore
+/phpunit.xml.dist   export-ignore
